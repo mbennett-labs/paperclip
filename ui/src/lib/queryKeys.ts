@@ -175,5 +175,6 @@ export const queryKeys = {
   },
   qsl: {
     issues: ["qsl", "issues"] as const,
+    state: ["qsl", "state"] as const,
   },
 };

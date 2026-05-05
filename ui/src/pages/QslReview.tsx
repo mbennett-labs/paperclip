@@ -1,6 +1,6 @@
-import { useEffect, useState } from "react";
-import { useQuery, useMutation } from "@tanstack/react-query";
-import { qslApi, type QslIssue } from "../api/qsl";
+import { useEffect, useState, useMemo } from "react";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { qslApi, type QslIssue, type QslRule } from "../api/qsl";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
 import { Button } from "@/components/ui/button";
@@ -25,9 +25,29 @@ function deriveRuleId(issue: QslIssue): string | null {
   return null;
 }
 
+function formatConfidence(value: number): string {
+  return `${Math.round(value * 100)}%`;
+}
+
+function ApprovalLabel({ approved }: { approved: boolean | null }) {
+  if (approved === true) {
+    return <span className="text-green-600">true</span>;
+  }
+  if (approved === false) {
+    return <span className="text-red-500">false</span>;
+  }
+  return <span className="text-muted-foreground">null</span>;
+}
+
 type CardStatus = "idle" | "loading" | "approved" | "denied" | "error";
 
-function QslIssueCard({ issue }: { issue: QslIssue }) {
+interface QslIssueCardProps {
+  issue: QslIssue;
+  rule?: QslRule;
+  onDecision: () => void;
+}
+
+function QslIssueCard({ issue, rule, onDecision }: QslIssueCardProps) {
   const [status, setStatus] = useState<CardStatus>("idle");
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
@@ -47,6 +67,7 @@ function QslIssueCard({ issue }: { issue: QslIssue }) {
     },
     onSuccess: (_data, approved) => {
       setStatus(approved ? "approved" : "denied");
+      onDecision();
     },
     onError: (err) => {
       setStatus("error");
@@ -83,6 +104,22 @@ function QslIssueCard({ issue }: { issue: QslIssue }) {
               </span>
             )}
           </div>
+          {rule && (
+            <div className="flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
+              <span>
+                Rule: <span className="font-mono">{rule.id}</span>
+              </span>
+              <span>
+                Confidence:{" "}
+                <span className="font-medium text-foreground">
+                  {formatConfidence(rule.confidence)}
+                </span>
+              </span>
+              <span>
+                Approved: <ApprovalLabel approved={rule.approved} />
+              </span>
+            </div>
+          )}
         </div>
 
         <div className="flex shrink-0 items-center gap-2">
@@ -131,6 +168,7 @@ function QslIssueCard({ issue }: { issue: QslIssue }) {
 
 export function QslReview() {
   const { setBreadcrumbs } = useBreadcrumbs();
+  const queryClient = useQueryClient();
 
   useEffect(() => {
     setBreadcrumbs([{ label: "QSL Review" }]);
@@ -140,6 +178,26 @@ export function QslReview() {
     queryKey: queryKeys.qsl.issues,
     queryFn: qslApi.listIssues,
   });
+
+  const { data: stateData } = useQuery({
+    queryKey: queryKeys.qsl.state,
+    queryFn: qslApi.getState,
+  });
+
+  const ruleLookup = useMemo(() => {
+    const map = new Map<string, QslRule>();
+    if (stateData?.rules) {
+      for (const rule of stateData.rules) {
+        map.set(rule.id, rule);
+      }
+    }
+    return map;
+  }, [stateData]);
+
+  const refetchAll = () => {
+    queryClient.invalidateQueries({ queryKey: queryKeys.qsl.issues });
+    queryClient.invalidateQueries({ queryKey: queryKeys.qsl.state });
+  };
 
   if (isLoading) {
     return (
@@ -175,9 +233,18 @@ export function QslReview() {
 
   return (
     <div className="space-y-3">
-      {issues.map((issue, i) => (
-        <QslIssueCard key={issue.id ?? i} issue={issue} />
-      ))}
+      {issues.map((issue, i) => {
+        const ruleId = deriveRuleId(issue);
+        const rule = ruleId ? ruleLookup.get(ruleId) : undefined;
+        return (
+          <QslIssueCard
+            key={issue.id ?? i}
+            issue={issue}
+            rule={rule}
+            onDecision={refetchAll}
+          />
+        );
+      })}
     </div>
   );
 }

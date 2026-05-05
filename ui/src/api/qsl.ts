@@ -29,10 +29,24 @@ export interface QslApprovalResponse {
   reason?: string;
 }
 
+export interface QslRule {
+  id: string;
+  confidence: number;
+  approved: boolean | null;
+  severity?: string;
+}
+
+export interface QslState {
+  rules: QslRule[];
+}
+
 export const qslApi = {
   listIssues: async (): Promise<QslIssue[]> => {
     const data = await api.get<QslIssue[] | { issues?: QslIssue[] }>("/qsl/issues");
     return Array.isArray(data) ? data : data.issues ?? [];
+  },
+  getState: async (): Promise<QslState> => {
+    return api.get<QslState>("/qsl/state");
   },
   approve: (data: QslApprovalRequest) =>
     api.post<QslApprovalResponse>("/qsl/approve", data),
