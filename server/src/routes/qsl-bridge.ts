@@ -2,6 +2,8 @@ import { Router } from "express";
 import { randomUUID } from "node:crypto";
 import { appendFile, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
+import type { Db } from "@paperclipai/db";
+import { qslReviewService, type QslBridgeIssue } from "../services/qsl-review.js";
 
 const ALLOWED_FILES = new Set(["manifest", "state", "issues", "approvals"]);
 
@@ -24,9 +26,156 @@ async function writeSnapshots(bridgePath: string, snapshots: ConfidenceSnapshots
   );
 }
 
-export function qslBridgeRoutes() {
-  const router = Router();
+async function readBridgeIssues(bridgePath: string): Promise<QslBridgeIssue[]> {
+  try {
+    const raw = await readFile(path.join(bridgePath, "issues.json"), "utf-8");
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : parsed.issues ?? [];
+  } catch {
+    return [];
+  }
+}
 
+export function qslBridgeRoutes(db?: Db) {
+  const router = Router();
+  const reviewSvc = db ? qslReviewService(db) : null;
+
+  // Resolve company ID from request header or default
+  function getCompanyId(req: { headers: Record<string, string | string[] | undefined> }): string | null {
+    const header = req.headers["x-company-id"];
+    return typeof header === "string" ? header : null;
+  }
+
+  // ── DB-backed findings endpoint ───────────────────────────────────
+  // Returns persisted findings with review state. Falls back to bridge files if no DB.
+  router.get("/findings", async (req, res) => {
+    const companyId = getCompanyId(req);
+    if (!reviewSvc || !companyId) {
+      // Fallback: read from bridge
+      const bridgePath = process.env.QSL_BRIDGE_PATH;
+      if (!bridgePath) {
+        res.json([]);
+        return;
+      }
+      const issues = await readBridgeIssues(bridgePath);
+      res.json(issues);
+      return;
+    }
+
+    // Sync bridge issues into DB first
+    const bridgePath = process.env.QSL_BRIDGE_PATH;
+    if (bridgePath) {
+      const bridgeIssues = await readBridgeIssues(bridgePath);
+      if (bridgeIssues.length > 0) {
+        await reviewSvc.syncFindings(companyId, bridgeIssues);
+      }
+    }
+
+    const filter = typeof req.query.reviewState === "string"
+      ? { reviewState: req.query.reviewState }
+      : undefined;
+
+    const findings = await reviewSvc.listFindings(companyId, filter);
+    res.json(findings);
+  });
+
+  // ── Review a finding (approve/deny) ───────────────────────────────
+  router.post("/findings/:id/review", async (req, res) => {
+    if (!reviewSvc) {
+      res.status(501).json({ error: "QSL review persistence not available (no database)" });
+      return;
+    }
+
+    const findingId = req.params.id;
+    const { decision, notes } = req.body;
+
+    if (decision !== "approved" && decision !== "denied") {
+      res.status(400).json({ error: "decision must be 'approved' or 'denied'" });
+      return;
+    }
+
+    const reviewerId = (req as any).actor?.userId ?? "board";
+
+    try {
+      const finding = await reviewSvc.reviewFinding(findingId, decision, reviewerId, notes);
+
+      // Also write to approvals.jsonl for backward compat with the bridge
+      const bridgePath = process.env.QSL_BRIDGE_PATH;
+      if (bridgePath && finding.ruleId) {
+        const approvalsPath = path.join(bridgePath, "..", "..", "approvals.jsonl");
+        const resolved = path.resolve(approvalsPath);
+        const resolvedBridge = path.resolve(bridgePath);
+        if (!resolved.startsWith(resolvedBridge)) {
+          const approval = {
+            id: randomUUID(),
+            created_at: new Date().toISOString(),
+            source: "paperclip",
+            rule_id: finding.ruleId,
+            approved: decision === "approved",
+            decision: decision === "approved" ? "approve" : "deny",
+            reason: notes ?? `${decision} from Paperclip QSL Review`,
+            finding_id: finding.id,
+            change: { rule_id: finding.ruleId, source: "paperclip_qsl_review" },
+          };
+          await appendFile(resolved, JSON.stringify(approval) + "\n", "utf-8").catch(() => {});
+        }
+
+        // Snapshot confidence
+        try {
+          const stateRaw = await readFile(path.join(bridgePath, "state.json"), "utf-8");
+          const state = JSON.parse(stateRaw);
+          if (state.rules && Array.isArray(state.rules) && finding.ruleId) {
+            const rule = state.rules.find((r: { id: string }) => r.id === finding.ruleId);
+            if (rule && typeof rule.confidence === "number") {
+              const snapshots = await readSnapshots(bridgePath);
+              snapshots[finding.ruleId] = rule.confidence;
+              await writeSnapshots(bridgePath, snapshots);
+            }
+          }
+        } catch { /* best-effort */ }
+      }
+
+      res.json(finding);
+    } catch (err) {
+      if (err instanceof Error && err.message === "Finding not found") {
+        res.status(404).json({ error: "Finding not found" });
+        return;
+      }
+      res.status(500).json({ error: "Failed to review finding" });
+    }
+  });
+
+  // ── Set review state (acknowledge, suppress, accept_risk, escalate) ──
+  router.post("/findings/:id/state", async (req, res) => {
+    if (!reviewSvc) {
+      res.status(501).json({ error: "QSL review persistence not available (no database)" });
+      return;
+    }
+
+    const findingId = req.params.id;
+    const { state, notes } = req.body;
+
+    const validStates = ["new", "recurring", "acknowledged", "accepted_risk", "suppressed", "escalated"];
+    if (!validStates.includes(state)) {
+      res.status(400).json({ error: `state must be one of: ${validStates.join(", ")}` });
+      return;
+    }
+
+    const reviewerId = (req as any).actor?.userId ?? "board";
+
+    try {
+      const finding = await reviewSvc.setReviewState(findingId, state, reviewerId, notes);
+      res.json(finding);
+    } catch (err) {
+      if (err instanceof Error && err.message === "Finding not found") {
+        res.status(404).json({ error: "Finding not found" });
+        return;
+      }
+      res.status(500).json({ error: "Failed to update finding state" });
+    }
+  });
+
+  // ── Legacy bridge file endpoints (kept for backward compat) ───────
   for (const name of ALLOWED_FILES) {
     router.get(`/${name}`, async (_req, res) => {
       const bridgePath = process.env.QSL_BRIDGE_PATH;
@@ -67,6 +216,7 @@ export function qslBridgeRoutes() {
     });
   }
 
+  // ── Legacy approve endpoint (kept for backward compat) ────────────
   router.post("/approve", async (req, res) => {
     const bridgePath = process.env.QSL_BRIDGE_PATH;
     if (!bridgePath) {
@@ -85,12 +235,8 @@ export function qslBridgeRoutes() {
     }
 
     // Derive approvals.jsonl from bridge path's grandparent
-    // QSL_BRIDGE_PATH = .../quantumshield-core/bridge/output
-    // approvals target = .../quantumshield-core/approvals.jsonl
     const approvalsPath = path.join(bridgePath, "..", "..", "approvals.jsonl");
     const resolved = path.resolve(approvalsPath);
-
-    // Safety: ensure we're not writing inside bridge/output
     const resolvedBridge = path.resolve(bridgePath);
     if (resolved.startsWith(resolvedBridge)) {
       res.status(400).json({ error: "Invalid approvals path" });
