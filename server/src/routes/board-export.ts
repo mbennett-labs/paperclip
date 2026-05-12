@@ -1,6 +1,7 @@
 import { Router } from "express";
 import type { Db } from "@paperclipai/db";
 import { generateBoardExport } from "../services/board-export.js";
+import { generateProviderUsageExport } from "../services/provider-usage-export.js";
 
 export function boardExportRoutes(db: Db) {
   const router = Router();
@@ -56,6 +57,15 @@ export function boardExportRoutes(db: Db) {
       res.json(bundle.crawdaddy);
     } catch (err) {
       res.status(500).json({ error: "Failed to generate CrawDaddy export" });
+    }
+  });
+
+  router.get("/provider-usage", async (_req, res) => {
+    try {
+      const markdown = await generateProviderUsageExport(db);
+      res.type("text/markdown").send(markdown);
+    } catch (err) {
+      res.status(500).json({ error: "Failed to generate provider usage export" });
     }
   });
 
