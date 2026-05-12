@@ -947,3 +947,18 @@ export type {
   EnvironmentProviderCapability,
   EnvironmentSupportStatus,
 } from "./environment-support.js";
+
+export {
+  ALL_CONFIDENCE_STATES,
+  CONFIDENCE_DISPLAY,
+  GOVERNANCE_CONFIDENCE_RULES,
+  isValidConfidence,
+  verified,
+  inferred,
+  blocked,
+} from "./data-confidence.js";
+
+export type {
+  DataConfidence,
+  ConfidenceEnvelope,
+} from "./data-confidence.js";
