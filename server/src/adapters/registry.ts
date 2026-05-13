@@ -72,6 +72,8 @@ import {
   execute as hermesExecute,
   testEnvironment as hermesTestEnvironment,
   sessionCodec as hermesSessionCodec,
+  listSkills as hermesListSkills,
+  syncSkills as hermesSyncSkills,
 } from "hermes-paperclip-adapter/server";
 import {
   agentConfigurationDoc as hermesAgentConfigurationDoc,
@@ -289,6 +291,8 @@ const hermesLocalAdapter: ServerAdapterModule = {
   supportsLocalAgentJwt: true,
   supportsInstructionsBundle: false,
   requiresMaterializedRuntimeSkills: false,
+  listSkills: hermesListSkills,
+  syncSkills: hermesSyncSkills,
   agentConfigurationDoc: hermesAgentConfigurationDoc,
 };
 
