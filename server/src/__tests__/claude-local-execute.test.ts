@@ -661,7 +661,7 @@ describe("claude execute", () => {
     }
   }, 15_000);
 
-  it("classifies Claude 'out of extra usage' failures as transient upstream errors", async () => {
+  it("classifies Claude 'out of extra usage' failures as quota-exhausted transient errors", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-execute-transient-"));
     const workspace = path.join(root, "workspace");
     const commandPath = path.join(root, "claude");
@@ -709,7 +709,7 @@ describe("claude execute", () => {
       });
 
       expect(result.exitCode).toBe(1);
-      expect(result.errorCode).toBe("claude_transient_upstream");
+      expect(result.errorCode).toBe("claude_quota_exhausted");
       expect(result.errorFamily).toBe("transient_upstream");
       const expectedRetryNotBefore = "2026-04-22T21:00:00.000Z";
       expect(result.retryNotBefore).toBe(expectedRetryNotBefore);
