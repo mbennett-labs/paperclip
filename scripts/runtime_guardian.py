@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """
-Runtime Guardian V3 for Paperclip/Selarix
+Runtime Guardian V4 for Paperclip/Selarix
 
 Recurring operational health monitor built on runtime_topology_report.py.
-Produces a health score (healthy/warning/critical), writes timestamped logs,
-and supports one-shot, JSON, and watch modes.
+Produces a health score (healthy/warning/critical + weighted 0-100),
+writes timestamped logs, and supports one-shot, JSON, and watch modes.
 
-V2 adds --remediate flag to auto-generate remediation plans.
-V3 adds --history flag to auto-record snapshots for trend analysis,
-and --trends to show trend summary inline.
+V2: --remediate for remediation plan generation.
+V3: --history for snapshot persistence, --trends for inline analysis.
+V4: Weighted health scoring (0-100), governance escalation tracking.
 
 Read-only by default. No destructive actions. No auto-delete. No runtime mutation.
 
@@ -233,6 +233,152 @@ def check_storage_size(report: dict) -> Check:
     )
 
 
+# Weighted scoring: dimension weights (must sum to 100)
+SCORE_WEIGHTS = {
+    "durability": 25,         # backup freshness + instance path
+    "governance": 15,         # missing metadata + duplicates
+    "topology_stability": 15, # orphans + stale entities
+    "remediation_health": 15, # pending/failed remediation ratio
+    "backup_reliability": 15, # backup archive count + freshness
+    "operational_continuity": 15,  # storage size + overall state
+}
+
+# Escalation state file
+ESCALATION_FILE = REPO_ROOT / "logs" / "runtime-guardian" / "escalation-state.json"
+
+
+def compute_weighted_score(checks: list, topology: dict) -> dict:
+    """Compute weighted health score 0-100 across governance dimensions."""
+    status_score = {"healthy": 100, "warning": 50, "critical": 0}
+    checks_by_name = {c.name: c for c in checks}
+
+    def _score(name: str) -> int:
+        c = checks_by_name.get(name)
+        return status_score.get(c.status, 0) if c else 100
+
+    dimensions = {}
+
+    # Durability: backup freshness + instance path
+    durability = (_score("backup_freshness") + _score("instance_path")) / 2
+    dimensions["durability"] = round(durability, 1)
+
+    # Governance: missing metadata + duplicates
+    governance = (_score("missing_metadata") + _score("duplicate_agents")) / 2
+    dimensions["governance"] = round(governance, 1)
+
+    # Topology stability: orphans + stale entities
+    topo_stab = (_score("orphan_count") + _score("stale_entities")) / 2
+    dimensions["topology_stability"] = round(topo_stab, 1)
+
+    # Remediation health: based on pending/failed counts from remediation dir
+    rem_dir = REPO_ROOT / "logs" / "runtime-remediation"
+    pending = len(list((rem_dir / "pending").glob("REM-*.json"))) if (rem_dir / "pending").exists() else 0
+    failed = len(list((rem_dir / "failed").glob("REM-*.json"))) if (rem_dir / "failed").exists() else 0
+    if pending + failed == 0:
+        rem_score = 100
+    elif failed > 0:
+        rem_score = max(0, 100 - (failed * 20) - (pending * 5))
+    else:
+        rem_score = max(0, 100 - (pending * 10))
+    dimensions["remediation_health"] = round(rem_score, 1)
+
+    # Backup reliability
+    dimensions["backup_reliability"] = dimensions["durability"]  # Mirrors durability for now
+
+    # Operational continuity
+    op_cont = _score("storage_size")
+    dimensions["operational_continuity"] = round(op_cont, 1)
+
+    # Weighted total
+    total = sum(dimensions[k] * SCORE_WEIGHTS[k] / 100 for k in SCORE_WEIGHTS)
+    total = round(max(0, min(100, total)), 1)
+
+    return {"score": total, "dimensions": dimensions}
+
+
+def load_escalation_state() -> dict:
+    """Load escalation tracking state."""
+    if ESCALATION_FILE.exists():
+        try:
+            return json.loads(ESCALATION_FILE.read_text())
+        except (json.JSONDecodeError, OSError):
+            pass
+    return {"escalations": [], "consecutive_criticals": 0, "consecutive_warnings": 0}
+
+
+def save_escalation_state(state: dict):
+    """Save escalation tracking state."""
+    ESCALATION_FILE.parent.mkdir(parents=True, exist_ok=True)
+    ESCALATION_FILE.write_text(json.dumps(state, indent=2))
+
+
+def update_escalation(result: dict) -> dict:
+    """Update escalation state based on guardian result. Returns escalation info."""
+    state = load_escalation_state()
+    now = datetime.now(tz=timezone.utc).isoformat()
+    status = result["overall_status"]
+
+    # Track consecutive statuses
+    if status == "critical":
+        state["consecutive_criticals"] = state.get("consecutive_criticals", 0) + 1
+        state["consecutive_warnings"] = 0
+    elif status == "warning":
+        state["consecutive_warnings"] = state.get("consecutive_warnings", 0) + 1
+        state["consecutive_criticals"] = 0
+    else:
+        state["consecutive_criticals"] = 0
+        state["consecutive_warnings"] = 0
+
+    # Determine escalation level
+    escalation_level = "informational"
+    escalation_reasons = []
+
+    if state["consecutive_criticals"] >= 3:
+        escalation_level = "governance-review"
+        escalation_reasons.append(f"{state['consecutive_criticals']} consecutive critical findings")
+    elif state["consecutive_criticals"] >= 1:
+        escalation_level = "critical"
+        escalation_reasons.append("Critical finding detected")
+
+    if state["consecutive_warnings"] >= 5:
+        if escalation_level not in ("critical", "governance-review"):
+            escalation_level = "critical"
+            escalation_reasons.append(f"{state['consecutive_warnings']} consecutive warnings - escalating")
+
+    # Check for specific escalation triggers
+    for check in result.get("checks", []):
+        if check["name"] == "backup_freshness" and check["status"] == "critical":
+            detail = check.get("detail", {})
+            hours = detail.get("hours_since_last", 0)
+            if hours > 168:  # 7 days
+                escalation_level = "governance-review"
+                escalation_reasons.append(f"Backup gap exceeds 7 days ({hours:.0f}h)")
+
+    # Record escalation event if not informational
+    if escalation_level != "informational":
+        event = {
+            "timestamp": now,
+            "level": escalation_level,
+            "reasons": escalation_reasons,
+            "overall_status": status,
+        }
+        state.setdefault("escalations", []).append(event)
+        # Keep only last 50 escalation events
+        state["escalations"] = state["escalations"][-50:]
+
+    state["last_check"] = now
+    state["last_level"] = escalation_level
+    save_escalation_state(state)
+
+    return {
+        "level": escalation_level,
+        "reasons": escalation_reasons,
+        "consecutive_criticals": state["consecutive_criticals"],
+        "consecutive_warnings": state["consecutive_warnings"],
+        "total_escalations": len(state.get("escalations", [])),
+    }
+
+
 def run_guardian(instance_root: Path) -> dict:
     """Run all guardian checks and produce a scored result."""
     now = datetime.now(tz=timezone.utc)
@@ -260,10 +406,15 @@ def run_guardian(instance_root: Path) -> dict:
     else:
         overall = "healthy"
 
+    # Weighted health score
+    weighted = compute_weighted_score(checks, topology)
+
     result = {
         "generated_at": now.isoformat(),
         "instance_root": str(instance_root),
         "overall_status": overall,
+        "health_score": weighted["score"],
+        "health_dimensions": weighted["dimensions"],
         "checks": [c.to_dict() for c in checks],
         "topology_summary": {
             "companies": len(topology["companies"]),
@@ -275,6 +426,10 @@ def run_guardian(instance_root: Path) -> dict:
         },
     }
 
+    # Escalation tracking
+    escalation = update_escalation(result)
+    result["escalation"] = escalation
+
     return result
 
 
@@ -284,11 +439,12 @@ def format_text_output(result: dict) -> str:
     status_icon = {"healthy": "[OK]", "warning": "[WARN]", "critical": "[CRIT]"}
 
     lines.append("=" * 60)
-    lines.append("  PAPERCLIP RUNTIME GUARDIAN V3")
+    lines.append("  PAPERCLIP RUNTIME GUARDIAN V4")
     lines.append("=" * 60)
     lines.append(f"  Time:     {result['generated_at']}")
     lines.append(f"  Instance: {result['instance_root']}")
-    lines.append(f"  Status:   {status_icon[result['overall_status']]} {result['overall_status'].upper()}")
+    score = result.get("health_score", "?")
+    lines.append(f"  Status:   {status_icon[result['overall_status']]} {result['overall_status'].upper()} (score: {score}/100)")
     lines.append("-" * 60)
 
     # Summary line
@@ -302,6 +458,25 @@ def format_text_output(result: dict) -> str:
     for check in result["checks"]:
         icon = status_icon[check["status"]]
         lines.append(f"    {icon} {check['name']}: {check['message']}")
+
+    # Health dimensions
+    dims = result.get("health_dimensions", {})
+    if dims:
+        lines.append("-" * 60)
+        lines.append("  DIMENSIONS:")
+        for dim, val in dims.items():
+            bar_len = int(val / 5)
+            bar = "#" * bar_len + "." * (20 - bar_len)
+            lines.append(f"    {dim:25s} {val:5.1f} [{bar}]")
+
+    # Escalation
+    esc = result.get("escalation", {})
+    if esc.get("level") and esc["level"] != "informational":
+        lines.append("-" * 60)
+        esc_icon = {"warning": "[WARN]", "critical": "[CRIT]", "governance-review": "[GOV!]"}
+        lines.append(f"  ESCALATION: {esc_icon.get(esc['level'], '[??]')} {esc['level'].upper()}")
+        for reason in esc.get("reasons", []):
+            lines.append(f"    - {reason}")
 
     lines.append("=" * 60)
     return "\n".join(lines)

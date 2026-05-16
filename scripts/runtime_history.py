@@ -34,7 +34,7 @@ SNAPSHOTS_FILE = HISTORY_DIR / "snapshots.jsonl"
 REMEDIATION_DIR = REPO_ROOT / "logs" / "runtime-remediation"
 
 # Schema version for forward compatibility
-SNAPSHOT_SCHEMA_VERSION = 1
+SNAPSHOT_SCHEMA_VERSION = 2
 
 
 def ensure_dirs():
@@ -112,6 +112,11 @@ def create_snapshot(instance_root: Path) -> dict:
         "missing_metadata": metadata_detail.get("count", 0),
         "remediation": remediation,
         "check_statuses": {c["name"]: c["status"] for c in result["checks"]},
+        # V4 fields
+        "weighted_score": result.get("health_score"),
+        "health_dimensions": result.get("health_dimensions", {}),
+        "escalation_level": result.get("escalation", {}).get("level", "informational"),
+        "escalation_count": result.get("escalation", {}).get("total_escalations", 0),
     }
 
     return snapshot
@@ -368,6 +373,7 @@ def compute_summary(snapshots: list[dict]) -> dict:
         "backup_reliability_pct": round(backup_reliability, 1) if backup_reliability is not None else None,
         "storage_growth_bytes": storage_growth,
         "storage_growth_human": format_size(abs(storage_growth)),
+        "current_weighted_score": snapshots[-1].get("weighted_score"),
     }
 
 
@@ -387,7 +393,9 @@ def format_summary_text(summary: dict) -> str:
     tr = summary["time_range"]
     lines.append(f"  Snapshots:  {summary['snapshot_count']}")
     lines.append(f"  Range:      {tr['first'][:19]} to {tr['last'][:19]}")
-    lines.append(f"  Current:    {summary['current_health'].upper()}")
+    current_score = summary.get("current_weighted_score")
+    score_str = f" (score: {current_score}/100)" if current_score is not None else ""
+    lines.append(f"  Current:    {summary['current_health'].upper()}{score_str}")
     lines.append("-" * 64)
 
     # Health distribution
@@ -483,12 +491,15 @@ def format_snapshots_text(snapshots: list[dict]) -> str:
     for i, s in enumerate(snapshots):
         icon = status_icon.get(s["health_score"], "[??]")
         topo = s["topology"]
+        ws = s.get("weighted_score")
+        ws_str = f" s={ws}" if ws is not None else ""
         lines.append(
             f"  {icon} {s['timestamp'][:19]}  "
             f"co={topo['companies']} ag={topo['agents']} "
             f"orph={s.get('orphan_count', 0)} "
             f"bkup={s.get('backup_freshness_hours', '?')}h "
             f"stor={format_size(s.get('storage_total_bytes', 0))}"
+            f"{ws_str}"
         )
 
     lines.append("")

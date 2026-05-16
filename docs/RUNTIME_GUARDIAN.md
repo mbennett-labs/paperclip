@@ -1,9 +1,10 @@
-# Runtime Guardian V3
+# Runtime Guardian V4
 
-Recurring operational health monitor for Paperclip/Selarix runtime state. Built on `runtime_topology_report.py`, the guardian evaluates topology data against health thresholds and produces an overall score: **healthy**, **warning**, or **critical**.
+Recurring operational health monitor for Paperclip/Selarix runtime state. Built on `runtime_topology_report.py`, the guardian evaluates topology data against health thresholds, produces both categorical (healthy/warning/critical) and weighted (0-100) health scores, and tracks governance escalation.
 
-V2 added `--remediate` for automatic remediation plan generation.
-V3 adds `--history` for snapshot persistence and `--trends` for inline trend analysis. See [RUNTIME_HISTORY_MODEL.md](RUNTIME_HISTORY_MODEL.md) for the full history and governance model.
+V2: `--remediate` for remediation plan generation.
+V3: `--history` for snapshots, `--trends` for inline analysis.
+V4: Weighted health scoring (0-100), governance escalation tracking, operational continuity tooling. See [RUNTIME_OPERATIONS_V4.md](RUNTIME_OPERATIONS_V4.md).
 
 Read-only by default. No destructive actions. No auto-delete. No runtime mutation.
 
@@ -13,18 +14,22 @@ Read-only by default. No destructive actions. No auto-delete. No runtime mutatio
 runtime_topology_report.py    <-- enumerates disk state
         |
         v
-runtime_guardian.py           <-- evaluates health, scores, logs
+runtime_guardian.py (V4)      <-- health checks, weighted scoring, escalation
         |                          --history records snapshots
         |                          --trends shows inline analysis
         |                          --remediate generates plans
         v
 runtime_history.py            <-- snapshot persistence, trend detection
 runtime_remediator.py         <-- approval workflows, dedup, expiration
+runtime_rotation.py (V4)      <-- deterministic log retention
+runtime_export.py (V4)        <-- operational continuity bundles
         |
         v
-logs/runtime-guardian/        <-- timestamped JSON logs
+logs/runtime-guardian/        <-- timestamped JSON logs + escalation state
 logs/runtime-history/         <-- append-only JSONL snapshots
 logs/runtime-remediation/     <-- plan lifecycle directories
+logs/runtime-archives/        <-- compressed rotation archives
+logs/exports/                 <-- continuity export bundles
 ```
 
 ## Health Checks
