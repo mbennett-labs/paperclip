@@ -1,18 +1,22 @@
 #!/usr/bin/env python3
 """
-Runtime Guardian V1 for Paperclip/Selarix
+Runtime Guardian V2 for Paperclip/Selarix
 
 Recurring operational health monitor built on runtime_topology_report.py.
 Produces a health score (healthy/warning/critical), writes timestamped logs,
 and supports one-shot, JSON, and watch modes.
 
-Read-only. No destructive actions. No auto-delete. No runtime mutation.
+V2 adds --remediate flag to auto-generate remediation plans for detected issues
+via runtime_remediator.py.
+
+Read-only by default. No destructive actions. No auto-delete. No runtime mutation.
 
 Usage:
     python scripts/runtime_guardian.py --once
     python scripts/runtime_guardian.py --json
     python scripts/runtime_guardian.py --watch --interval 300
     python scripts/runtime_guardian.py --once --fail-on-warning
+    python scripts/runtime_guardian.py --once --remediate
 """
 
 import argparse
@@ -277,7 +281,7 @@ def format_text_output(result: dict) -> str:
     status_icon = {"healthy": "[OK]", "warning": "[WARN]", "critical": "[CRIT]"}
 
     lines.append("=" * 60)
-    lines.append("  PAPERCLIP RUNTIME GUARDIAN V1")
+    lines.append("  PAPERCLIP RUNTIME GUARDIAN V2")
     lines.append("=" * 60)
     lines.append(f"  Time:     {result['generated_at']}")
     lines.append(f"  Instance: {result['instance_root']}")
@@ -338,6 +342,10 @@ def main():
         "--no-log", action="store_true",
         help="Skip writing log files",
     )
+    parser.add_argument(
+        "--remediate", action="store_true",
+        help="Auto-generate remediation plans for detected issues",
+    )
     args = parser.parse_args()
 
     # Default to --once if neither --once nor --watch specified
@@ -374,6 +382,29 @@ def main():
             if not args.no_log:
                 print(f"  Log: {log_file}")
             print()
+
+        # Generate remediation plans if requested and issues found
+        if args.remediate and result["overall_status"] != "healthy":
+            from runtime_remediator import generate_plans_from_guardian, save_plan, format_plan_text
+            # Re-use the guardian result by generating plans from a fresh scan
+            plans = generate_plans_from_guardian(args.instance_root)
+            for plan in plans:
+                save_plan(plan)
+            if args.json:
+                result["remediation_plans"] = plans
+                # Re-print with plans included
+            else:
+                print(f"  Generated {len(plans)} remediation plan(s):")
+                print()
+                for plan in plans:
+                    print(format_plan_text(plan))
+                    print()
+                pending = [p for p in plans if p["requires_approval"]]
+                if pending:
+                    print("  Approve with:")
+                    for p in pending:
+                        print(f"    python scripts/runtime_remediator.py --approve {p['issue_id']}")
+                    print()
 
         # Determine exit code
         if result["overall_status"] == "critical":

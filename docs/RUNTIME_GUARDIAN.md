@@ -1,8 +1,10 @@
-# Runtime Guardian V1
+# Runtime Guardian V2
 
 Recurring operational health monitor for Paperclip/Selarix runtime state. Built on `runtime_topology_report.py`, the guardian evaluates topology data against health thresholds and produces an overall score: **healthy**, **warning**, or **critical**.
 
-Read-only. No destructive actions. No auto-delete. No runtime mutation.
+V2 adds `--remediate` flag for automatic remediation plan generation via `runtime_remediator.py`. See [RUNTIME_REMEDIATION_MODEL.md](RUNTIME_REMEDIATION_MODEL.md) for the full remediation lifecycle.
+
+Read-only by default. No destructive actions. No auto-delete. No runtime mutation.
 
 ## Architecture
 
@@ -11,9 +13,13 @@ runtime_topology_report.py    <-- enumerates disk state
         |
         v
 runtime_guardian.py           <-- evaluates health checks, scores, logs
+        |                          --remediate generates plans
+        v
+runtime_remediator.py         <-- approval-aware corrective workflows
         |
         v
 logs/runtime-guardian/        <-- timestamped JSON logs
+logs/runtime-remediation/     <-- remediation plans and snapshots
 ```
 
 ## Health Checks
@@ -82,6 +88,14 @@ python scripts/runtime_guardian.py --once --no-log
 ```bash
 python scripts/runtime_guardian.py --once --instance-root /path/to/instance
 ```
+
+### Auto-generate remediation plans
+
+```bash
+python scripts/runtime_guardian.py --once --remediate
+```
+
+When issues are detected, generates structured remediation plans in `logs/runtime-remediation/pending/`. Prints approval commands for plans that require manual approval. See [RUNTIME_REMEDIATION_MODEL.md](RUNTIME_REMEDIATION_MODEL.md).
 
 ## Log Output
 
