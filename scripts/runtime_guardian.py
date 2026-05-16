@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """
-Runtime Guardian V2 for Paperclip/Selarix
+Runtime Guardian V3 for Paperclip/Selarix
 
 Recurring operational health monitor built on runtime_topology_report.py.
 Produces a health score (healthy/warning/critical), writes timestamped logs,
 and supports one-shot, JSON, and watch modes.
 
-V2 adds --remediate flag to auto-generate remediation plans for detected issues
-via runtime_remediator.py.
+V2 adds --remediate flag to auto-generate remediation plans.
+V3 adds --history flag to auto-record snapshots for trend analysis,
+and --trends to show trend summary inline.
 
 Read-only by default. No destructive actions. No auto-delete. No runtime mutation.
 
@@ -17,6 +18,8 @@ Usage:
     python scripts/runtime_guardian.py --watch --interval 300
     python scripts/runtime_guardian.py --once --fail-on-warning
     python scripts/runtime_guardian.py --once --remediate
+    python scripts/runtime_guardian.py --once --history
+    python scripts/runtime_guardian.py --once --history --trends
 """
 
 import argparse
@@ -281,7 +284,7 @@ def format_text_output(result: dict) -> str:
     status_icon = {"healthy": "[OK]", "warning": "[WARN]", "critical": "[CRIT]"}
 
     lines.append("=" * 60)
-    lines.append("  PAPERCLIP RUNTIME GUARDIAN V2")
+    lines.append("  PAPERCLIP RUNTIME GUARDIAN V3")
     lines.append("=" * 60)
     lines.append(f"  Time:     {result['generated_at']}")
     lines.append(f"  Instance: {result['instance_root']}")
@@ -346,6 +349,14 @@ def main():
         "--remediate", action="store_true",
         help="Auto-generate remediation plans for detected issues",
     )
+    parser.add_argument(
+        "--history", action="store_true",
+        help="Record a history snapshot for trend analysis",
+    )
+    parser.add_argument(
+        "--trends", action="store_true",
+        help="Show trend summary after check (requires --history or existing snapshots)",
+    )
     args = parser.parse_args()
 
     # Default to --once if neither --once nor --watch specified
@@ -405,6 +416,28 @@ def main():
                     for p in pending:
                         print(f"    python scripts/runtime_remediator.py --approve {p['issue_id']}")
                     print()
+
+        # Record history snapshot if requested
+        if args.history:
+            from runtime_history import create_snapshot, record_snapshot
+            snapshot = create_snapshot(args.instance_root)
+            record_snapshot(snapshot)
+            if not args.json:
+                print(f"  History snapshot recorded.")
+
+        # Show trends if requested
+        if args.trends:
+            from runtime_history import load_snapshots_since, detect_trends, format_trends_text
+            snaps_24h = load_snapshots_since(24)
+            trend_result = detect_trends(snaps_24h, "Last 24 hours")
+            if args.json:
+                result["trends_24h"] = trend_result
+            else:
+                if trend_result["trends"] or trend_result["anomalies"]:
+                    print(format_trends_text([trend_result]))
+                else:
+                    print("  Trends: No significant changes in last 24h.")
+                print()
 
         # Determine exit code
         if result["overall_status"] == "critical":

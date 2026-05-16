@@ -1,8 +1,9 @@
-# Runtime Guardian V2
+# Runtime Guardian V3
 
 Recurring operational health monitor for Paperclip/Selarix runtime state. Built on `runtime_topology_report.py`, the guardian evaluates topology data against health thresholds and produces an overall score: **healthy**, **warning**, or **critical**.
 
-V2 adds `--remediate` flag for automatic remediation plan generation via `runtime_remediator.py`. See [RUNTIME_REMEDIATION_MODEL.md](RUNTIME_REMEDIATION_MODEL.md) for the full remediation lifecycle.
+V2 added `--remediate` for automatic remediation plan generation.
+V3 adds `--history` for snapshot persistence and `--trends` for inline trend analysis. See [RUNTIME_HISTORY_MODEL.md](RUNTIME_HISTORY_MODEL.md) for the full history and governance model.
 
 Read-only by default. No destructive actions. No auto-delete. No runtime mutation.
 
@@ -12,14 +13,18 @@ Read-only by default. No destructive actions. No auto-delete. No runtime mutatio
 runtime_topology_report.py    <-- enumerates disk state
         |
         v
-runtime_guardian.py           <-- evaluates health checks, scores, logs
+runtime_guardian.py           <-- evaluates health, scores, logs
+        |                          --history records snapshots
+        |                          --trends shows inline analysis
         |                          --remediate generates plans
         v
-runtime_remediator.py         <-- approval-aware corrective workflows
+runtime_history.py            <-- snapshot persistence, trend detection
+runtime_remediator.py         <-- approval workflows, dedup, expiration
         |
         v
 logs/runtime-guardian/        <-- timestamped JSON logs
-logs/runtime-remediation/     <-- remediation plans and snapshots
+logs/runtime-history/         <-- append-only JSONL snapshots
+logs/runtime-remediation/     <-- plan lifecycle directories
 ```
 
 ## Health Checks
@@ -95,7 +100,31 @@ python scripts/runtime_guardian.py --once --instance-root /path/to/instance
 python scripts/runtime_guardian.py --once --remediate
 ```
 
-When issues are detected, generates structured remediation plans in `logs/runtime-remediation/pending/`. Prints approval commands for plans that require manual approval. See [RUNTIME_REMEDIATION_MODEL.md](RUNTIME_REMEDIATION_MODEL.md).
+When issues are detected, generates structured remediation plans in `logs/runtime-remediation/pending/`. Plans are deduplicated by fingerprint. Prints approval commands for plans that require manual approval. See [RUNTIME_REMEDIATION_MODEL.md](RUNTIME_REMEDIATION_MODEL.md).
+
+### Record history snapshot
+
+```bash
+python scripts/runtime_guardian.py --once --history
+```
+
+Records a snapshot to `logs/runtime-history/snapshots.jsonl` for trend analysis.
+
+### Show inline trends
+
+```bash
+python scripts/runtime_guardian.py --once --history --trends
+```
+
+Records snapshot and displays 24h trend analysis inline.
+
+### Full operational cycle
+
+```bash
+python scripts/runtime_guardian.py --once --history --trends --remediate
+```
+
+Health check + history recording + trend analysis + remediation plan generation in a single run.
 
 ## Log Output
 

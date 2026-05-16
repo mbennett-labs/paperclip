@@ -1,10 +1,15 @@
 #!/usr/bin/env python3
 """
-Runtime Remediator V2 for Paperclip/Selarix
+Runtime Remediator V3 for Paperclip/Selarix
 
 Approval-aware corrective workflow engine for guardian findings.
 Generates structured remediation plans, manages approval lifecycle,
 and executes only safe, auditable actions.
+
+V3 adds:
+- Plan deduplication (fingerprint-based)
+- Plan expiration (configurable threshold)
+- Governance metadata (created_by, occurrence_count, issue_hash)
 
 Core principle:
   Guardian DETECTS and PREPARES remediation automatically.
@@ -16,17 +21,19 @@ Usage:
     python scripts/runtime_remediator.py --approve ISSUE_ID
     python scripts/runtime_remediator.py --execute ISSUE_ID
     python scripts/runtime_remediator.py --status ISSUE_ID
+    python scripts/runtime_remediator.py --expire-stale
     python scripts/runtime_remediator.py --json
 """
 
 import argparse
+import hashlib
 import json
 import os
 import shutil
 import subprocess
 import sys
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 # Import guardian and topology
@@ -40,6 +47,11 @@ PENDING_DIR = REMEDIATION_DIR / "pending"
 APPROVED_DIR = REMEDIATION_DIR / "approved"
 EXECUTED_DIR = REMEDIATION_DIR / "executed"
 FAILED_DIR = REMEDIATION_DIR / "failed"
+EXPIRED_DIR = REMEDIATION_DIR / "expired"
+
+# Expiration thresholds
+PENDING_EXPIRY_HOURS = 72
+APPROVED_EXPIRY_HOURS = 168  # 7 days
 
 # Guardian log directory (for log rotation remediation)
 GUARDIAN_LOG_DIR = REPO_ROOT / "logs" / "runtime-guardian"
@@ -93,7 +105,7 @@ SUPPORTED_ACTIONS = {
 
 def ensure_dirs():
     """Create remediation directory structure."""
-    for d in [PENDING_DIR, APPROVED_DIR, EXECUTED_DIR, FAILED_DIR]:
+    for d in [PENDING_DIR, APPROVED_DIR, EXECUTED_DIR, FAILED_DIR, EXPIRED_DIR]:
         d.mkdir(parents=True, exist_ok=True)
 
 
@@ -102,16 +114,60 @@ def generate_issue_id() -> str:
     return f"REM-{uuid.uuid4().hex[:8].upper()}"
 
 
+def compute_issue_fingerprint(action: str, check_name: str) -> str:
+    """Compute a stable fingerprint for deduplication.
+
+    The fingerprint is based on action + check_name, so the same type of
+    issue from the same check produces the same fingerprint regardless of
+    when it's detected or what the specific metric values are.
+    """
+    raw = f"{action}:{check_name}"
+    return hashlib.sha256(raw.encode()).hexdigest()[:12]
+
+
+def find_existing_plan(fingerprint: str) -> tuple[dict | None, Path | None]:
+    """Find an existing plan with the same fingerprint in pending or approved."""
+    ensure_dirs()
+    for d in [PENDING_DIR, APPROVED_DIR]:
+        for f in d.glob("REM-*.json"):
+            try:
+                plan = json.loads(f.read_text())
+                if plan.get("issue_fingerprint") == fingerprint:
+                    return plan, f
+            except (json.JSONDecodeError, OSError):
+                continue
+    return None, None
+
+
 def create_plan(
     action: str,
     severity: str,
     evidence: dict,
     instance_root: Path = DEFAULT_INSTANCE_ROOT,
-) -> dict:
-    """Create a structured remediation plan."""
+    deduplicate: bool = True,
+) -> dict | None:
+    """Create a structured remediation plan.
+
+    Returns None if deduplication finds an existing equivalent plan
+    (the existing plan is updated in-place with incremented occurrence_count).
+    """
     action_meta = SUPPORTED_ACTIONS[action]
-    issue_id = generate_issue_id()
     now = datetime.now(tz=timezone.utc).isoformat()
+
+    check_name = evidence.get("check", "unknown")
+    fingerprint = compute_issue_fingerprint(action, check_name)
+
+    # Deduplication: check for existing pending/approved plan with same fingerprint
+    if deduplicate:
+        existing, existing_path = find_existing_plan(fingerprint)
+        if existing is not None:
+            existing["occurrence_count"] = existing.get("occurrence_count", 1) + 1
+            existing["last_seen"] = now
+            existing["evidence"] = evidence  # Update with latest evidence
+            existing_path.write_text(json.dumps(existing, indent=2))
+            return None  # Signal that we reused an existing plan
+
+    issue_id = generate_issue_id()
 
     plan = {
         "issue_id": issue_id,
@@ -132,13 +188,23 @@ def create_plan(
         "executed_at": None,
         "completed_at": None,
         "result": None,
+        # V3 governance metadata
+        "issue_fingerprint": fingerprint,
+        "occurrence_count": 1,
+        "last_seen": now,
+        "created_by": "runtime_guardian",
+        "approved_by": None,
+        "executed_by": None,
+        "expiration_reason": None,
     }
 
     return plan
 
 
-def save_plan(plan: dict) -> Path:
-    """Save a plan to the pending directory."""
+def save_plan(plan: dict | None) -> Path | None:
+    """Save a plan to the pending directory. Returns None if plan was deduplicated."""
+    if plan is None:
+        return None
     ensure_dirs()
     path = PENDING_DIR / f"{plan['issue_id']}.json"
     path.write_text(json.dumps(plan, indent=2))
@@ -148,7 +214,7 @@ def save_plan(plan: dict) -> Path:
 def load_plan(issue_id: str) -> tuple[dict | None, Path | None]:
     """Find and load a plan by issue ID from any state directory."""
     ensure_dirs()
-    for d in [PENDING_DIR, APPROVED_DIR, EXECUTED_DIR, FAILED_DIR]:
+    for d in [PENDING_DIR, APPROVED_DIR, EXECUTED_DIR, FAILED_DIR, EXPIRED_DIR]:
         path = d / f"{issue_id}.json"
         if path.exists():
             return json.loads(path.read_text()), path
@@ -165,7 +231,7 @@ def move_plan(plan: dict, old_path: Path, new_dir: Path) -> Path:
     return new_path
 
 
-def approve_plan(issue_id: str) -> dict:
+def approve_plan(issue_id: str, approved_by: str = "operator") -> dict:
     """Approve a pending plan."""
     plan, path = load_plan(issue_id)
     if plan is None:
@@ -175,6 +241,7 @@ def approve_plan(issue_id: str) -> dict:
 
     plan["state"] = "approved"
     plan["approved_at"] = datetime.now(tz=timezone.utc).isoformat()
+    plan["approved_by"] = approved_by
     move_plan(plan, path, APPROVED_DIR)
     return {"ok": True, "issue_id": issue_id, "state": "approved"}
 
@@ -193,9 +260,11 @@ def execute_plan(issue_id: str) -> dict:
     if plan["state"] == "pending":
         plan["state"] = "approved"
         plan["approved_at"] = datetime.now(tz=timezone.utc).isoformat()
+        plan["approved_by"] = "auto"
         path = move_plan(plan, path, APPROVED_DIR)
 
     plan["executed_at"] = datetime.now(tz=timezone.utc).isoformat()
+    plan["executed_by"] = "operator"
     instance_root = Path(plan["instance_root"])
 
     try:
@@ -466,7 +535,37 @@ def generate_plans_from_guardian(instance_root: Path) -> list[dict]:
         instance_root,
     ))
 
-    return plans
+    # Filter out None (deduplicated plans)
+    return [p for p in plans if p is not None]
+
+
+def expire_stale_plans() -> list[dict]:
+    """Expire pending and approved plans that have exceeded their threshold."""
+    ensure_dirs()
+    now = datetime.now(tz=timezone.utc)
+    expired = []
+
+    for d, threshold_hours, reason in [
+        (PENDING_DIR, PENDING_EXPIRY_HOURS, f"pending > {PENDING_EXPIRY_HOURS}h"),
+        (APPROVED_DIR, APPROVED_EXPIRY_HOURS, f"approved but unexecuted > {APPROVED_EXPIRY_HOURS}h"),
+    ]:
+        for f in sorted(d.glob("REM-*.json")):
+            try:
+                plan = json.loads(f.read_text())
+            except (json.JSONDecodeError, OSError):
+                continue
+
+            created = datetime.fromisoformat(plan["created_at"])
+            age_hours = (now - created).total_seconds() / 3600
+
+            if age_hours > threshold_hours:
+                plan["state"] = "expired"
+                plan["completed_at"] = now.isoformat()
+                plan["expiration_reason"] = reason
+                move_plan(plan, f, EXPIRED_DIR)
+                expired.append(plan)
+
+    return expired
 
 
 def list_all_plans() -> list[dict]:
@@ -474,7 +573,8 @@ def list_all_plans() -> list[dict]:
     ensure_dirs()
     plans = []
     for state, d in [("pending", PENDING_DIR), ("approved", APPROVED_DIR),
-                     ("executed", EXECUTED_DIR), ("failed", FAILED_DIR)]:
+                     ("executed", EXECUTED_DIR), ("failed", FAILED_DIR),
+                     ("expired", EXPIRED_DIR)]:
         for f in sorted(d.glob("REM-*.json")):
             try:
                 plan = json.loads(f.read_text())
@@ -490,6 +590,7 @@ def format_plan_text(plan: dict) -> str:
     state_icon = {
         "pending": "[PEND]", "approved": "[APPR]",
         "executed": "[DONE]", "failed": "[FAIL]",
+        "expired": "[EXPD]",
     }
     icon = state_icon.get(plan["state"], "[????]")
 
@@ -498,11 +599,19 @@ def format_plan_text(plan: dict) -> str:
                  f"Approval: {'required' if plan['requires_approval'] else 'auto'}")
     lines.append(f"         Created: {plan['created_at']}")
 
+    # V3 governance metadata
+    occ = plan.get("occurrence_count", 1)
+    if occ > 1:
+        lines.append(f"         Occurrences: {occ} (last: {plan.get('last_seen', 'unknown')[:19]})")
+
     if plan["state"] == "pending" and plan["requires_approval"]:
         lines.append(f"         >> python scripts/runtime_remediator.py --approve {plan['issue_id']}")
 
     if plan["state"] == "approved":
         lines.append(f"         >> python scripts/runtime_remediator.py --execute {plan['issue_id']}")
+
+    if plan["state"] == "expired":
+        lines.append(f"         Expired: {plan.get('expiration_reason', 'unknown')}")
 
     if plan["result"]:
         status = plan["result"].get("status", "unknown")
@@ -518,14 +627,14 @@ def format_list_text(plans: list[dict]) -> str:
 
     lines = []
     lines.append("=" * 64)
-    lines.append("  PAPERCLIP RUNTIME REMEDIATOR V2")
+    lines.append("  PAPERCLIP RUNTIME REMEDIATOR V3")
     lines.append("=" * 64)
 
     by_state = {}
     for p in plans:
         by_state.setdefault(p["state"], []).append(p)
 
-    for state in ["pending", "approved", "executed", "failed"]:
+    for state in ["pending", "approved", "executed", "failed", "expired"]:
         state_plans = by_state.get(state, [])
         if state_plans:
             lines.append(f"\n  --- {state.upper()} ({len(state_plans)}) ---")
@@ -539,7 +648,7 @@ def format_list_text(plans: list[dict]) -> str:
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Paperclip Runtime Remediator V2 - Approval-aware corrective workflows"
+        description="Paperclip Runtime Remediator V3 - Approval-aware corrective workflows"
     )
     parser.add_argument("--instance-root", type=Path, default=DEFAULT_INSTANCE_ROOT)
     parser.add_argument("--list", action="store_true", help="List all remediation plans")
@@ -547,12 +656,27 @@ def main():
     parser.add_argument("--execute", type=str, metavar="ISSUE_ID", help="Execute an approved plan")
     parser.add_argument("--status", type=str, metavar="ISSUE_ID", help="Show status of a plan")
     parser.add_argument("--scan", action="store_true", help="Scan for issues and generate plans")
+    parser.add_argument("--expire-stale", action="store_true", help="Expire stale pending/approved plans")
     parser.add_argument("--json", action="store_true", help="Output JSON")
     args = parser.parse_args()
 
     # Default to --list if no action specified
-    if not any([args.list, args.approve, args.execute, args.status, args.scan]):
+    if not any([args.list, args.approve, args.execute, args.status, args.scan, args.expire_stale]):
         args.list = True
+
+    if args.expire_stale:
+        expired = expire_stale_plans()
+        if args.json:
+            print(json.dumps([p for p in expired], indent=2))
+        elif expired:
+            print(f"\n  Expired {len(expired)} stale plan(s):\n")
+            for p in expired:
+                print(format_plan_text(p))
+                print()
+        else:
+            print("  No stale plans to expire.")
+        if not any([args.list, args.scan]):
+            sys.exit(0)
 
     if args.scan:
         plans = generate_plans_from_guardian(args.instance_root)
