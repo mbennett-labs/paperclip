@@ -1997,6 +1997,47 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   });
   const workspaceOperationsSvc = workspaceOperationService(db);
   const activeRunExecutions = new Set<string>();
+
+  // ---------------------------------------------------------------------------
+  // Quota-protection: per-agent sliding-window failure rate limiter.
+  // Tracks timestamps of recent failed runs per agent.  If an agent accumulates
+  // more than QUOTA_PROTECTION_MAX_FAILURES_PER_HOUR failures within a rolling
+  // hour, further enqueue attempts are rejected until the window clears.
+  // ---------------------------------------------------------------------------
+  const QUOTA_PROTECTION_MAX_FAILURES_PER_HOUR = 2;
+  const QUOTA_PROTECTION_WINDOW_MS = 60 * 60 * 1000; // 1 hour
+  const QUOTA_PROTECTION_ALERT_DEDUP_MS = 60 * 60 * 1000; // suppress duplicate alerts for 1 hour
+  const agentFailureTimestamps = new Map<string, number[]>();
+  const agentQuotaAlertLastEmitted = new Map<string, number>();
+
+  function recordAgentFailure(agentId: string) {
+    const now = Date.now();
+    const timestamps = agentFailureTimestamps.get(agentId) ?? [];
+    timestamps.push(now);
+    // Prune entries older than the window
+    const cutoff = now - QUOTA_PROTECTION_WINDOW_MS;
+    const pruned = timestamps.filter((t) => t > cutoff);
+    agentFailureTimestamps.set(agentId, pruned);
+  }
+
+  function isAgentQuotaBlocked(agentId: string): boolean {
+    const now = Date.now();
+    const timestamps = agentFailureTimestamps.get(agentId);
+    if (!timestamps) return false;
+    const cutoff = now - QUOTA_PROTECTION_WINDOW_MS;
+    const recentFailures = timestamps.filter((t) => t > cutoff);
+    agentFailureTimestamps.set(agentId, recentFailures);
+    return recentFailures.length >= QUOTA_PROTECTION_MAX_FAILURES_PER_HOUR;
+  }
+
+  function shouldEmitQuotaAlert(agentId: string): boolean {
+    const now = Date.now();
+    const lastEmitted = agentQuotaAlertLastEmitted.get(agentId);
+    if (lastEmitted && now - lastEmitted < QUOTA_PROTECTION_ALERT_DEDUP_MS) return false;
+    agentQuotaAlertLastEmitted.set(agentId, now);
+    return true;
+  }
+
   const budgetHooks = {
     cancelWorkForScope: cancelBudgetScopeWork,
   };
@@ -2668,6 +2709,15 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       .then((rows) => rows[0] ?? null);
 
     if (updated) {
+      // Quota-protection: track failed runs for sliding-window rate limiting
+      if (updated.status === "failed" || updated.status === "timed_out") {
+        recordAgentFailure(updated.agentId);
+        logger.info(
+          { agentId: updated.agentId, runId: updated.id, status: updated.status, errorCode: updated.errorCode },
+          "quota-protection: recorded agent failure for rate-limit window",
+        );
+      }
+
       publishLiveEvent({
         companyId: updated.companyId,
         type: "heartbeat.run.status",
@@ -6253,6 +6303,40 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       agent.status === "pending_approval"
     ) {
       throw conflict("Agent is not invokable in its current state", { status: agent.status });
+    }
+
+    // Quota-protection: reject enqueue if agent has exceeded failure rate limit
+    if (isAgentQuotaBlocked(agentId)) {
+      logger.warn(
+        { agentId, companyId: agent.companyId, source, reason, maxFailuresPerHour: QUOTA_PROTECTION_MAX_FAILURES_PER_HOUR },
+        "quota-protection: agent blocked from enqueue due to repeated failures within sliding window",
+      );
+      if (shouldEmitQuotaAlert(agentId)) {
+        logger.warn(
+          { agentId, companyId: agent.companyId, alert: "BOARD_REQUIRED" },
+          "quota-protection: BOARD_REQUIRED — agent requires manual intervention after repeated failures; automatic recovery suspended for 1 hour",
+        );
+        void logActivity(db, {
+          companyId: agent.companyId,
+          actorType: "system",
+          actorId: "system",
+          agentId,
+          runId: null,
+          action: "agent.quota_protection.board_required",
+          entityType: "agent",
+          entityId: agentId,
+          details: {
+            reason: "repeated_failure_rate_limit",
+            maxFailuresPerHour: QUOTA_PROTECTION_MAX_FAILURES_PER_HOUR,
+            windowMs: QUOTA_PROTECTION_WINDOW_MS,
+            alertDedupMs: QUOTA_PROTECTION_ALERT_DEDUP_MS,
+          },
+        }).catch((err) => {
+          logger.error({ err, agentId }, "quota-protection: failed to log BOARD_REQUIRED activity");
+        });
+      }
+      await writeSkippedRequest("quota_protection.failure_rate_exceeded");
+      return null;
     }
 
     const policy = parseHeartbeatPolicy(agent);

@@ -120,12 +120,38 @@ function didAutomaticRecoveryFail(
 ) {
   if (!latestRun) return false;
 
+  const isTerminalFailure = UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES.includes(
+    latestRun.status as (typeof UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES)[number],
+  );
+  if (!isTerminalFailure) return false;
+
   const latestContext = parseObject(latestRun.contextSnapshot);
   const latestRetryReason = readNonEmptyString(latestContext.retryReason);
-  return latestRetryReason === expectedRetryReason &&
-    UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES.includes(
-      latestRun.status as (typeof UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES)[number],
-    );
+
+  // Original check: exact retry-reason match
+  if (latestRetryReason === expectedRetryReason) return true;
+
+  // Broadened guardrail: any recovery-originated run that ended in a terminal
+  // failure should also trigger escalation so that stranded-issue recovery
+  // doesn't re-enqueue indefinitely when the failure has a different error code
+  // than expected (e.g. transient_upstream, quota_exhausted).
+  const recoveryRetryReasons = new Set([
+    "assignment_recovery",
+    "issue_continuation_needed",
+    "transient_failure",
+  ]);
+  if (latestRetryReason && recoveryRetryReasons.has(latestRetryReason)) return true;
+
+  // Also catch runs that were enqueued by the recovery system (source marker)
+  const latestSource = readNonEmptyString(latestContext.source);
+  if (
+    latestSource === "issue.assignment_recovery" ||
+    latestSource === "issue.continuation_recovery"
+  ) {
+    return true;
+  }
+
+  return false;
 }
 
 function issueIdFromRunContext(contextSnapshot: unknown) {
@@ -1411,6 +1437,29 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         blockerIssueIds: nextBlockerIds,
       },
     });
+
+    // Quota-protection: place a pause hold on the issue so automatic recovery
+    // cannot resume until a human explicitly releases the hold.
+    try {
+      await treeControlSvc.createHold(input.issue.companyId, input.issue.id, {
+        mode: "pause",
+        reason:
+          "Automatic recovery suspended after repeated failure. " +
+          "A board operator must investigate and release this hold before automated execution can resume.",
+        releasePolicy: { strategy: "manual" },
+        actor: { actorType: "system", actorId: "system" },
+      });
+      logger.warn(
+        { companyId: input.issue.companyId, issueId: input.issue.id },
+        "quota-protection: pause hold created on escalated issue; manual release required before automated recovery resumes",
+      );
+    } catch (holdErr) {
+      // Don't fail the escalation if the hold fails (e.g. if one already exists)
+      logger.warn(
+        { err: holdErr, companyId: input.issue.companyId, issueId: input.issue.id },
+        "quota-protection: failed to create pause hold on escalated issue (may already exist)",
+      );
+    }
 
     return updated;
   }

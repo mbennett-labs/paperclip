@@ -143,7 +143,7 @@ function collectDeploymentEnvRows(config: PaperclipConfig | null, configPath: st
   }
 
   const heartbeatInterval = process.env.HEARTBEAT_SCHEDULER_INTERVAL_MS ?? DEFAULT_HEARTBEAT_SCHEDULER_INTERVAL_MS;
-  const heartbeatEnabled = process.env.HEARTBEAT_SCHEDULER_ENABLED ?? "true";
+  const heartbeatEnabled = process.env.HEARTBEAT_SCHEDULER_ENABLED ?? "false";
   const secretsProvider =
     process.env.PAPERCLIP_SECRETS_PROVIDER ??
     config?.secrets?.provider ??
