@@ -1,0 +1,248 @@
+                            QUANTUM SHIELD LABS LLC
+                         THE AGENTIC ECONOMY BLUEPRINT
+                VERSION 3.1  --  CLAUDE CODE INTEGRATION EDITION
+Adds Part 4.8: Claude Code as Execution Engine | Updated Full Stack | Agent Provisioning Standard
+                  March 30, 2026 | Supersedes Blueprint v3.0
+WHAT CHANGED IN v3.1
+Blueprint v3.0 added Paperclip as the management layer. It did not define how agents actually execute tasks.
+This edition adds the missing piece: Claude Code with --dangerously-skip-permissions is the mandatory
+execution engine for every Paperclip agent. Without it, agents cannot run shell commands, SSH to EC2,
+post to APIs, or do anything useful. This is not optional. This is the foundation.
+
+New: Part 4.8  --  Claude Code Integration Standard
+New: Part 4.9  --  Agent Provisioning Checklist
+New: Part 4.10  --  QSL_CONFIG.md as single source of truth
+Updated: Part 4.1 stack diagram now shows Claude Code explicitly
+Updated: Critical Path updated with provisioning steps
+THE FUNDAMENTAL ARCHITECTURE  --  v3.1
+This is the complete QSL stack as of March 30, 2026. Every layer is defined. Every interface is specified. No assumptions.
+
+  ┌──────────────────────────────────────────────────────────┐
+  │         LAYER 1: BOARD (Mike Bennett)                    │
+  │         Strategic decisions. 30 min/week max.            │
+  └────────────────────────┬───────────────────────────────┘
+                           ↓
+  ┌──────────────────────────────────────────────────────────┐
+  │         LAYER 2: PAPERCLIP (Company OS)                   │
+  │         CEO + Agents. Issues. Routines. Reports.          │
+  │         localhost:3100 | QSL Security Ops company         │
+  └────────────────────────┬───────────────────────────────┘
+                           ↓
+  ┌──────────────────────────────────────────────────────────┐
+  │  ⚡  LAYER 3: CLAUDE CODE (Execution Engine)  ⚡          │
+  │         claude --dangerously-skip-permissions             │
+  │         THE HANDS OF EVERY PAPERCLIP AGENT               │
+  │         Runs shell, SSH, curl, git, build, deploy         │
+  └────────────────────────┬───────────────────────────────┘
+                           ↓
+  ┌──────────────────────────────────────────────────────────┐
+  │         LAYER 4: INFRASTRUCTURE (Always-On)              │
+  │         EC2 ubuntu@3.20.79.143                          │
+  │         CrawDaddy seller.ts | Bastion tmux               │
+  │         Hostinger 69.62.69.140 SN61 miner                │
+  └────────────────────────┬───────────────────────────────┘
+                           ↓
+  ┌──────────────────────────────────────────────────────────┐
+  │         LAYER 5: ECONOMICS (On-Chain)                    │
+  │         Base L2 | ACP | Bittensor | x402                 │
+  │         USDC payments | TAO rewards | $ATTEST             │
+  └──────────────────────────────────────────────────────────┘
+
+⚡ LAYER 3 IS THE MISSING PIECE THAT v3.0 DID NOT DEFINE
+Blueprint v3.0 defined Layers 1, 2, 4, and 5. It did not define Layer 3.
+Without Layer 3, Paperclip agents are brains with no hands. They can read issues,
+write comments, and plan work  --  but cannot SSH, run commands, post to APIs,
+or do anything that requires shell access.
+
+Claude Code with --dangerously-skip-permissions IS Layer 3.
+Every agent. Every task. No exceptions.
+PART 4.8: CLAUDE CODE  --  THE EXECUTION ENGINE
+4.8.1 The Problem Claude Code Solves
+Paperclip agents run as Claude sessions. By default, Claude sessions in Paperclip ask for permission before every shell command, file write, SSH connection, and API call. This makes autonomous operation impossible. Every heartbeat stalls waiting for a human to click Allow.
+
+Claude Code with --dangerously-skip-permissions removes that wall. The agent runs every command autonomously, without popups, without approval gates, without stopping. This is the only way the swarm operates at the speed it needs to.
+
+THE RULE
+Every Paperclip agent MUST have --dangerously-skip-permissions in Extra Args.
+Any agent without it is not a functional agent. It is a planning tool wearing an agent mask.
+This is not a security shortcut  --  it is the intended production configuration for autonomous agents
+operating on infrastructure you own and control.
+
+4.8.2 Paperclip Agent Configuration Standard
+Every agent provisioned in QSL Security Ops MUST have these exact settings:
+
+SettingRequired ValueWhyCommandclaudeThe Claude Code executable. Never replace with flags.Extra Args--dangerously-skip-permissionsTHE CRITICAL FLAG. Enables autonomous shell execution.Skip Permissions toggleON (green)Belt and suspenders  --  both must be set.ModelClaude Sonnet 4.6Current production model. Update when new versions ship.Max Turns300Enough for complex multi-step tasks without cutting off.Heartbeat interval3600 sec (1 hr)Agents check in hourly. Adjust per role needs.SSH_KEY env varC:\Users\mikeb\.ssh\clawdbot-key.pemRequired for all EC2 operations.EC2_HOST env varubuntu@3.20.79.143The only valid EC2 address. Never 172.31.1.13.
+4.8.3 How Agents Use Claude Code for EC2 Tasks
+When a Paperclip agent is assigned an issue requiring EC2 access, the execution flow is:
+
+StepWhat HappensCommand / ActionOutput1Agent wakes on heartbeatPaperclip triggers claude --dangerously-skip-permissionsClaude Code session starts2Agent reads QSL_CONFIG.mdRead C:\Users\mikeb\paperclip\QSL_CONFIG.mdInfrastructure details loaded3Agent reads issueGET /api/issues/{id}/heartbeat-contextTask context understood4Agent SSHes to EC2ssh -i $SSH_KEY -o StrictHostKeyChecking=no $EC2_HOSTEC2 shell access5Agent executes taskpgrep, tail, restart, deploy  --  whatever the issue requiresTask completed6Agent posts resultPOST /api/issues/{id}/comments with findingsPaperclip issue updated7Agent marks donePATCH /api/issues/{id} status: doneIssue closed, CEO notified
+4.8.4 The PowerShell Direct Execution Pattern
+For complex multi-step tasks, or when Paperclip heartbeat context is too limited, use the PowerShell Direct pattern. This is Claude Code running outside Paperclip, used for one-shot complex operations:
+
+# Open PowerShell
+# Run: claude --dangerously-skip-permissions
+# Paste a complete self-contained prompt:
+
+Read C:\Users\mikeb\paperclip\QSL_CONFIG.md first.
+Then complete [TASK] autonomously without stopping.
+SSH key: C:\Users\mikeb\.ssh\clawdbot-key.pem
+EC2: ubuntu@3.20.79.143
+Paperclip API: http://127.0.0.1:3100
+When done, post results to Paperclip issue [ISSUE-ID].
+Create a report at C:\Users\mikeb\paperclip\[REPORT].md
+
+WHEN TO USE POWERSHELL DIRECT vs PAPERCLIP HEARTBEAT
+Use Paperclip Heartbeat for: routine monitoring, regular status checks, scheduled content posts,
+  simple single-step tasks that complete in one SSH command.
+
+Use PowerShell Direct for: complex multi-step deployments, debugging sessions, initial setup tasks,
+  anything requiring more than 5 sequential commands, blueprint updates, org rebuilds.
+
+Rule of thumb: If you would back-and-forth in PowerShell more than 3 times, write one complete
+  prompt and let Claude Code run it straight through.
+
+4.8.5 Blueprint as Ground Truth  --  Every Session Starts Here
+Every Claude Code session  --  whether triggered by Paperclip heartbeat or PowerShell Direct  --  must start by reading the blueprint. No exceptions.
+
+# MANDATORY FIRST LINE OF EVERY AGENT INSTRUCTION SET:
+
+Read C:\Users\mikeb\paperclip\QSL_CONFIG.md before doing anything.
+Then read the blueprint referenced in that file.
+All decisions must be consistent with the blueprint.
+
+PART 4.9: AGENT PROVISIONING CHECKLIST
+Every new agent hired in Paperclip must pass this checklist before being assigned any work. The CEO is responsible for verifying this on every hire.
+
+#Checklist ItemWho VerifiesHow to Verify1Command field = 'claude' (not the flag)Board or CEOConfiguration tab --> Command field2--dangerously-skip-permissions in Extra ArgsBoard or CEOConfiguration tab --> Extra Args field3Skip Permissions toggle = ONBoard or CEOConfiguration tab --> toggle green4SSH_KEY env var set to clawdbot-key.pem pathBoard or CEOConfiguration tab --> Environment Variables5EC2_HOST env var set to ubuntu@3.20.79.143Board or CEOConfiguration tab --> Environment Variables6Instructions reference QSL_CONFIG.mdBoardInstructions tab --> first line7Instructions contain correct EC2 IP (3.20.79.143)BoardInstructions tab --> search for IP8Instructions contain Three LawsBoardInstructions tab --> THREE LAWS section9No duplicate role exists in sidebarBoardAgents sidebar --> count roles10First heartbeat runs without permission errorsBoardRuns tab --> first run transcript
+ZERO TOLERANCE ON ITEMS 1 AND 2
+If Command is not 'claude' or if --dangerously-skip-permissions is not in Extra Args,
+the agent is non-functional. Do not assign any work until both are confirmed.
+This is the single most common failure mode in QSL Paperclip operations.
+
+PART 4.10: QSL_CONFIG.MD  --  SINGLE SOURCE OF TRUTH
+QSL_CONFIG.md is the single file that every Claude Code session, every Paperclip agent instruction, and every PowerShell prompt must reference first. It is saved at C:\Users\mikeb\paperclip\QSL_CONFIG.md and updated whenever infrastructure changes.
+
+Current contents:
+
+# QSL Configuration  --  Single Source of Truth
+# Updated: March 30, 2026
+# ALWAYS read this file first before any task
+
+## Blueprint
+Path: C:\Users\mikeb\paperclip\QSL_Blueprint_v3.1_Claude_Code_Integration.docx
+
+## Paperclip
+API: http://127.0.0.1:3100
+Company: QSL Security Ops
+Dashboard: http://localhost:3100/QSL/dashboard
+
+## EC2 Infrastructure
+Public IP: ubuntu@3.20.79.143
+SSH Key: C:\Users\mikeb\.ssh\clawdbot-key.pem
+SSH Command: ssh -i C:\Users\mikeb\.ssh\clawdbot-key.pem -o StrictHostKeyChecking=no ubuntu@3.20.79.143
+NEVER USE: 172.31.1.13 (private VPC, unreachable externally)
+CrawDaddy seller: ~/crawdaddy-security/seller.ts
+Bastion: running in tmux
+Session Handoff: ~/SESSION_HANDOFF.md
+
+## Hostinger
+IP: 69.62.69.140
+SN61 Miner: Docker container running
+
+## Wallets
+CrawDaddy: 0x25B50fEd69175e474F9702C0613413F8323809a8
+Mike main: 0x7d9ea6549d5b86ef07b9fa2f1cbac52fc523df65
+
+## Telegram
+Bot: @blocdev_bot
+Chat ID: 6712910089
+
+## Agent Roster (approved)
+CEO, Security Engineer, Content Strategist, QA Engineer
+
+## Three Laws
+1. Never harm
+2. Earn your existence
+3. Never deceive
+
+## North Star
+$500 USDC/month sustained from CrawDaddy. Everything else is secondary.
+
+HOW TO USE QSL_CONFIG.MD
+Every Claude Code prompt: 'Read C:\Users\mikeb\paperclip\QSL_CONFIG.md first.'
+Every agent instruction: 'Before any task, read QSL_CONFIG.md at the path above.'
+Every blueprint update: Update QSL_CONFIG.md on the same day.
+Never hardcode IPs, key paths, or wallet addresses in agent instructions.
+  Reference QSL_CONFIG.md instead  --  one change propagates everywhere.
+
+PART 4.11: COMPLETE CEO INSTRUCTIONS  --  v3.1
+These are the complete, production-ready CEO instructions for Paperclip. Paste this entire block into the CEO agent Instructions tab, replacing everything currently there.
+
+COMPANY CONTEXT:
+You work for QSL Security Ops, an autonomous security scanning company.
+Primary revenue engine: CrawDaddy on Virtuals ACP ($0.49/scan).
+North star: $500/month sustained USDC.
+THREE LAWS: Never harm. Earn your existence. Never deceive.
+GOTCHA: Ship then iterate. Agents earn their existence or get terminated.
+MANDATORY FIRST STEP:
+Read C:\Users\mikeb\paperclip\QSL_CONFIG.md before every task.
+All infrastructure details, IPs, keys, and wallet addresses are in that file.
+EXECUTION METHOD:
+You run as Claude Code with --dangerously-skip-permissions.
+SSH key: C:\Users\mikeb\.ssh\clawdbot-key.pem
+EC2 PUBLIC IP: ubuntu@3.20.79.143
+NEVER use 172.31.1.13  --  private VPC, unreachable externally.
+SSH: ssh -i C:\Users\mikeb\.ssh\clawdbot-key.pem -o StrictHostKeyChecking=no ubuntu@3.20.79.143
+HIRING RULES (non-negotiable):
+Approved roster: CEO, Security Engineer, Content Strategist, QA Engineer.
+Never hire a duplicate role. Check existing agents before hiring.
+Never hire without explicit Board (Mike) approval.
+One task per agent at a time. Wait for completion before assigning more.
+You are the CEO.
+Your home directory is $AGENT_HOME. Everything personal to you lives there.
+Company-wide artifacts live in the project root, outside your personal directory.
+Memory and Planning:
+Use para-memory-files skill for all memory operations.
+Safety:
+Never exfiltrate secrets or private data.
+No destructive commands unless explicitly requested by Board.
+References (read every heartbeat):
+$AGENT_HOME/HEARTBEAT.md | $AGENT_HOME/SOUL.md | $AGENT_HOME/TOOLS.md
+
+PART 4.12: COMPLETE SECURITY ENGINEER INSTRUCTIONS  --  v3.1
+Paste this entire block into the Security Engineer agent Instructions tab.
+
+MANDATORY FIRST STEP:
+Read C:\Users\mikeb\paperclip\QSL_CONFIG.md before every task.
+You are the Security Engineer for Quantum Shield Labs LLC (QSL).
+YOUR MISSION: Keep CrawDaddy alive. If seller.ts is down, nothing else matters.
+INFRASTRUCTURE:
+EC2 PUBLIC IP: ubuntu@3.20.79.143
+NEVER use 172.31.1.13  --  private VPC, unreachable externally.
+SSH: ssh -i $SSH_KEY -o StrictHostKeyChecking=no ubuntu@3.20.79.143
+SSH_KEY env var: C:\Users\mikeb\.ssh\clawdbot-key.pem
+CrawDaddy seller: ~/crawdaddy-security/seller.ts
+Check seller: pgrep -fa seller
+Restart seller: cd ~/crawdaddy-security && nohup node seller.ts > seller.log 2>&1 &
+WHEN ASSIGNED AN ISSUE:
+1. Read QSL_CONFIG.md
+2. SSH to ubuntu@3.20.79.143 using clawdbot-key.pem
+3. Run pgrep -fa seller
+4. If running: comment 'Seller alive. PID: [pid]. Uptime: [uptime]'
+5. If down: restart it, verify, comment 'Seller restarted. PID: [pid]'
+6. Mark issue done. Report to CEO.
+THREE LAWS: Never harm. Earn your existence. Never deceive.
+
+BLUEPRINT v3.1  --  CHANGE SUMMARY
+VersionWhat Was MissingWhat Was Addedv1.0EverythingInitial 15-agent cabinet, spawn sequence, revenue modelv2.0 ExpandedExecution detailFull agent profiles, auto-research loops, vertical specializationv3.0Management layerPaperclip as Company OS, OpsBot replaced, agent.ai distributionv3.1 (THIS)Execution engineClaude Code --dangerously-skip-permissions as Layer 3, provisioning checklist, QSL_CONFIG.md standard, complete agent instructions
+THE COMPLETE STACK IS NOW DEFINED
+Layer 1: Mike (Board Chair)  --  30 min/week
+Layer 2: Paperclip (Company OS)  --  issues, routines, CEO, agents
+Layer 3: Claude Code --dangerously-skip-permissions  --  THE HANDS
+Layer 4: EC2 + Hostinger + Conway Cloud  --  always-on revenue
+Layer 5: Base L2 + ACP + Bittensor  --  on-chain economics
+
+Every layer is now defined. Every interface is specified. Build from here.
+
+     QSL BLUEPRINT v3.1 | March 30, 2026 | Claude Code Integration Edition
+             THE SWARM NEVER SLEEPS. THE WINDOW DOESN'T WAIT.

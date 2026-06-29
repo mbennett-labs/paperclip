@@ -1,0 +1,5 @@
+[
+  {"title":"Weak RSA-2048 key detected in TLS certificate","severity":"high","threat_category":"quantum_vulnerability","risk_score":85,"rule_id":"pqc_weak_rsa"},
+  {"title":"No post-quantum key exchange in SSH config","severity":"medium","threat_category":"quantum_vulnerability","risk_score":60,"rule_id":"pqc_ssh_kex"},
+  {"title":"Deprecated MD5 hash in legacy endpoint","severity":"low","threat_category":"hash_weakness","risk_score":30,"rule_id":"hash_md5_deprecated"}
+]
