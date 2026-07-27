@@ -27,3 +27,11 @@ Deferred until the QSL Security company completes its first governed end-to-end 
 ## Trigger
 
 Begin this maintenance only after the current revenue-focused security demonstration milestone is complete or when upstream incompatibility blocks development.
+
+## Fork Patches Applied (upstream candidates)
+
+| Date | File | Change | Why | Upstream candidate? |
+|---|---|---|---|---|
+| 2026-07-27 | `server/src/services/plugin-loader.ts` | Wrap `DEV_TSX_LOADER_PATH` in `pathToFileURL(...).href` for the worker `--import` flag | Bare Windows path crashes every plugin activation on win32 (`ERR_UNSUPPORTED_ESM_URL_SCHEME`); blocks all plugin use on Windows | **Yes** — 3-line Windows compat fix with repro (install any local-path plugin on Windows) |
+| 2026-07-27 | `packages/plugins/plugin-email/` (new) | QSL Email Connector plugin (workspace package, not a core change) | Email Company mail I/O per completion mission | No — QSL-specific; candidate for separate distribution later |
+| 2026-07-27 | `skills/install-catalog` 422 bug | **Not fixed — observed and documented** (Gotcha #9) | `install-catalog` fails with empty-body 422 for `issue-triage`/`task-planning` on this build | Yes — needs upstream bug report with repro |

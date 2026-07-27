@@ -97,6 +97,69 @@ If that prints a version, process spawning is healthy. Also note: `script-shell=
 
 ---
 
+## 5. Headless Agents Require `dangerouslySkipPermissions: true`
+
+**Symptom:** Agent runs stay alive for minutes producing nothing; run logs show repeated `tool_use` errors: "The user rejected permission to use this specific tool call."
+
+**Cause:** With `dangerouslySkipPermissions: false`, the agent CLI raises a permission prompt for tool calls (bash, file writes). Heartbeat runs are unattended — nobody can answer the prompt, so every call auto-rejects and the model spins trying alternatives. Observed 2026-07-27 when the Email Operations Lead's config carried `false` (the audited 2026-07-19 baseline had `true`).
+
+**Fix:** PATCH the agent's `adapterConfig.dangerouslySkipPermissions` to `true`; cancel the spinning run; re-wake.
+
+**Prevention:** Governance boundary is dispositions + budgets + approval gates, not per-tool prompts that cannot be answered headless. Verify this flag on every new/reconfigured agent before waking it.
+
+---
+
+## 6. Plugin Worker Crashes on Windows: `--import` Needs a file:// URL
+
+**Symptom:** Any plugin installed on Windows fails activation with `Worker process exited (code=1)` and worker stderr `ERR_UNSUPPORTED_ESM_URL_SCHEME ... Received protocol 'c:'`.
+
+**Cause:** `plugin-loader.ts` passes `DEV_TSX_LOADER_PATH` (a bare absolute path, `C:\...\tsx\dist\loader.mjs`) to Node's `--import` flag. `--import` expects a URL or bare specifier; Windows drive letters parse as a URL scheme. Works on POSIX, breaks on win32.
+
+**Fix:** Fork patch applied 2026-07-27 (`server/src/services/plugin-loader.ts`): wrap with `pathToFileURL(DEV_TSX_LOADER_PATH).href`. Upstream candidate — submit with a Windows repro.
+
+**Prevention:** On Windows, any Node `--import` / dynamic `import()` of a filesystem path must go through `pathToFileURL`. Test plugin activation on win32 before assuming POSIX-verified plugin docs apply.
+
+---
+
+## 7. esbuild ESM Worker + CJS Dependencies: `Dynamic require of "tls" is not supported`
+
+**Symptom:** Plugin worker bundle builds fine but crashes at startup: `Error: Dynamic require of "tls" is not supported` (or another Node builtin), originating in a bundled CJS dependency (imapflow, nodemailer).
+
+**Cause:** esbuild ESM output cannot execute CJS `require()` of Node builtins at runtime.
+
+**Fix:** Add a `createRequire` banner to the worker build (see `packages/plugins/plugin-email/esbuild.config.mjs`):
+```js
+banner: { js: 'import { createRequire as __pluginCreateRequire } from "node:module"; const require = __pluginCreateRequire(import.meta.url);' }
+```
+
+**Prevention:** Any plugin bundling CJS mail/network/crypto deps needs this banner. Verify with `node dist/worker.js` (should start and wait on stdin) before installing.
+
+---
+
+## 8. Plugin Config Is Company-Scoped; `ctx.config` Is a Client, Not an Object
+
+**Symptom:** Worker actions fail because `ctx.config` reads as a static object are empty; settings saved via the UI never reach the worker.
+
+**Cause:** Paperclip plugin configuration is company-scoped. Workers receive an empty bootstrap config; the runtime read is `await ctx.config.get(companyId)`.
+
+**Fix:** Design workers to resolve config per company at call time. For instance-wide jobs (cron), iterate `ctx.companies.list()` and use each company's scoped config — this also makes the plugin naturally reusable across companies. Set values via `POST /api/plugins/:pluginId/config` (`{ companyId, configJson }`) or `paperclipai plugin config:set`.
+
+**Prevention:** Read the loader contract before writing worker config code (`plugin-loader.ts`: "Workers receive an empty bootstrap config and must use ctx.config.get(companyId) at runtime").
+
+---
+
+## 9. Catalog Skills Must Be Installed Into the Company Library Before Agents Can Reference Them
+
+**Symptom:** Agent hire/update fails with `Invalid company skill selection (unknown references: ...)`, or `skills/install-catalog` returns 422 with an empty body.
+
+**Cause:** `desiredSkills` resolves against the **company skill library**, not the instance catalog. Catalog ids (`paperclipai:bundled:<cat>:<slug>`) are for `install-catalog`; installed skills are referenced by company-library keys (`paperclipai/bundled/<cat>/<slug>`). Separately, `install-catalog` on this build 422s with "Internal server error" for `issue-triage`/`task-planning` (works for `summarize-status`/`reflection-coach`) — upstream bug candidate.
+
+**Fix:** Install first (`POST /api/companies/:cid/skills/install-catalog`), then reference by the installed key. Where install-catalog fails, attach company-authored SOP skills instead (minimal-skills doctrine makes this the preferred path anyway).
+
+**Prevention:** Treat skills as company doctrine: prefer company-authored SOPs; use bundled catalog skills only when they add mechanics an SOP cannot (e.g. summarize-status harness integration).
+
+---
+
 ## Running Log
 
 | # | Date | Discovered during |
@@ -105,3 +168,8 @@ If that prints a version, process spawning is healthy. Also note: `script-shell=
 | 2 | 2026-07-19 | Initial `pnpm dev` failure on Windows 11 |
 | 3 | 2026-07-19 | Migration errors on stale embedded DB |
 | 4 | 2026-07-19 | Recovery from corrupted dev database |
+| 5 | 2026-07-27 | Email Company completion mission (agent permission rejections) |
+| 6 | 2026-07-27 | plugin-email activation on Windows |
+| 7 | 2026-07-27 | plugin-email worker bundling (imapflow/nodemailer) |
+| 8 | 2026-07-27 | plugin-email config wiring |
+| 9 | 2026-07-27 | Stage-1 agent hiring (skill references) |
