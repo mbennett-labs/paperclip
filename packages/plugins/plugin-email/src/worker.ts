@@ -253,10 +253,15 @@ async function runPollForCompany(
   const results: ProfilePollResult[] = [];
   for (const profile of profiles) {
     const result: ProfilePollResult = { key: profile.key, ok: true, found: 0, created: 0, skippedDuplicates: 0 };
+    const cursorKey = `uid-cursor:${profile.key}`;
     try {
-      const fetched = await fetchUnseen(profile, password);
+      const cursorRaw = await ctx.state.get({ scopeKind: "company", scopeId: companyId, namespace: STATE_NS, stateKey: cursorKey });
+      const afterUid = typeof cursorRaw === "number" ? cursorRaw : 0;
+      const fetched = await fetchUnseen(profile, password, afterUid);
       result.found = fetched.length;
+      let maxUid = afterUid;
       for (const raw of fetched) {
+        maxUid = Math.max(maxUid, raw.uid);
         const msg = normalizeMessage({
           uid: raw.uid,
           folder: profile.pollFolder,
@@ -274,6 +279,9 @@ async function runPollForCompany(
         } else {
           result.skippedDuplicates += 1;
         }
+      }
+      if (maxUid > afterUid) {
+        await ctx.state.set({ scopeKind: "company", scopeId: companyId, namespace: STATE_NS, stateKey: cursorKey }, maxUid);
       }
     } catch (err) {
       result.ok = false;
@@ -369,6 +377,22 @@ const plugin = definePlugin({
         });
       }
       return { ok: true, companies: active.length };
+    });
+
+    ctx.actions.register("reset-cursor", async (params) => {
+      const companyId = params?.companyId as string;
+      if (!companyId) throw configError("reset-cursor requires companyId.");
+      const profileKey = typeof params?.profileKey === "string" && params.profileKey ? params.profileKey : "primary";
+      const uid = Number(params?.uid);
+      if (!Number.isInteger(uid) || uid < 0) throw configError("reset-cursor requires a non-negative integer uid.");
+      const cursorKey = `uid-cursor:${profileKey}`;
+      await ctx.state.set({ scopeKind: "company", scopeId: companyId, namespace: STATE_NS, stateKey: cursorKey }, uid);
+      await ctx.activity.log({
+        companyId,
+        message: `Email intake cursor reset by operator: profile ${profileKey} -> UID ${uid}`,
+        metadata: { profileKey, uid },
+      });
+      return { ok: true, profileKey, uid };
     });
 
     ctx.actions.register("send-reply", async (params) => {

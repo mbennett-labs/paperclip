@@ -41,10 +41,11 @@ function imapClient(profile: ConnectorProfile, password: string): ImapFlow {
   } as ConstructorParameters<typeof ImapFlow>[0]);
 }
 
-/** Fetch up to `max` UNSEEN messages from the profile's poll folder. */
+/** Fetch up to `max` UNSEEN messages with UID > afterUid from the profile's poll folder. */
 export async function fetchUnseen(
   profile: ConnectorProfile,
   password: string,
+  afterUid: number,
 ): Promise<FetchedMessage[]> {
   const client = imapClient(profile, password);
   const out: FetchedMessage[] = [];
@@ -52,7 +53,9 @@ export async function fetchUnseen(
   try {
     const lock = await client.getMailboxLock(profile.pollFolder);
     try {
-      const uids = await client.search({ seen: false }, { uid: true });
+      const criteria: Record<string, unknown> = { seen: false };
+      if (afterUid > 0) criteria.uid = `${afterUid + 1}:*`;
+      const uids = await client.search(criteria, { uid: true });
       const selected = (Array.isArray(uids) ? uids : []).slice(0, profile.maxMessagesPerPoll);
       for (const uid of selected) {
         const msg = await client.fetchOne(

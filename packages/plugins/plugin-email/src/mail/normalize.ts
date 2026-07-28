@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 /**
  * Message normalization and heuristic classification for the QSL Email Company.
  *
@@ -21,6 +23,8 @@ export type NormalizedMessage = {
   snippet: string;
   classHint: MessageClassHint;
   ventureHint: string;
+  rawHeaders: string;
+  evidenceId: string;
 };
 
 export type MessageClassHint =
@@ -32,6 +36,10 @@ export type MessageClassHint =
   | "contact_general"
   | "partnership_affiliate"
   | "spam_irrelevant"
+  | "correction"
+  | "customer_inquiry"
+  | "sales_opportunity"
+  | "support_request"
   | "unknown";
 
 const MAX_BODY_CHARS = 20000;
@@ -72,6 +80,11 @@ function classify(subject: string, fromAddress: string, body: string): MessageCl
   if (s.includes("newsletter") || s.includes("subscribe") || s.includes("stay in the loop")) return "newsletter_signup";
   if (s.includes("intelligence") || b.includes("intelligence request") || s.includes("data report")) return "intelligence_request";
   if (s.includes("affiliate") || s.includes("partner") || s.includes("wholesale") || s.includes("supplier")) return "partnership_affiliate";
+  if (s.includes("correction") || b.includes("wrong") || b.includes("error")) return "correction";
+  if (s.includes("customer") || b.includes("order")) return "customer_inquiry";
+  if (s.includes("sales") || b.includes("opportunity")) return "sales_opportunity";
+  if (s.includes("support") || b.includes("help")) return "support_request";
+  if (s.includes("spam") || b.includes("unsubscribe")) return "spam_irrelevant";
   if (s.includes("contact") || s.includes("question") || s.includes("inquiry") || s.includes("hello")) return "contact_general";
   return "unknown";
 }
@@ -97,6 +110,7 @@ export function normalizeMessage(input: {
     date?: Date | string;
     inReplyTo?: string;
     references?: string[] | string;
+    raw?: string;
   };
   bodyText: string;
 }): NormalizedMessage {
@@ -113,6 +127,7 @@ export function normalizeMessage(input: {
       : [];
   const messageId = envelope.messageId?.trim() || `uid-${input.uid}@${input.profileKey}`;
   const fromAddress = firstAddress(from);
+  const evidenceId = `ev-${createHash("sha1").update(`${messageId}:${input.profileKey}`).digest("hex")}`;
 
   return {
     messageId,
@@ -130,6 +145,8 @@ export function normalizeMessage(input: {
     snippet: body.slice(0, 280),
     classHint: classify(subject, fromAddress, body),
     ventureHint: ventureOf(to, fromAddress, subject, body),
+    rawHeaders: envelope.raw || "",
+    evidenceId,
   };
 }
 

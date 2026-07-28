@@ -67,10 +67,16 @@ const manifest: PaperclipPluginManifestV1 = {
         default: DEFAULTS.username,
       },
       credentialSecretRef: {
-        type: "string",
+        type: "object",
         title: "Mailbox Credential",
         description: "Secret binding holding the mailbox password (for Gmail: an app password). Resolved at execution time only.",
         format: "secret-ref",
+        properties: {
+          type: { type: "string", const: "secret_ref" },
+          secretId: { type: "string" },
+          version: { type: ["string", "number"] },
+        },
+        required: ["type", "secretId"],
       },
       imapHost: { type: "string", title: "IMAP Host", default: DEFAULTS.imapHost },
       imapPort: { type: "integer", title: "IMAP Port", default: DEFAULTS.imapPort },
