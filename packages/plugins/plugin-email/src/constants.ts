@@ -32,7 +32,7 @@ export const DEFAULTS = {
   username: "",
   pollFolder: "INBOX",
   archiveFolder: "",
-  markSeen: true,
+  markSeen: false,
   maxMessagesPerPoll: 20,
   billingCode: "mission:email-ops",
   intakeProjectId: "",

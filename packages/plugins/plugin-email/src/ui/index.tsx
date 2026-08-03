@@ -60,7 +60,7 @@ export function EmailIssueTab({ context }: PluginDetailTabProps) {
   const [busy, setBusy] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
 
-  const outboundEnabled = configData?.outboundEnabled !== false;
+  const outboundEnabled = configData?.outboundEnabled === true;
 
   if (loading) return <div style={box}>Loading email record…</div>;
   if (error) return <div style={box}><span style={errStyle}>Error: {error.message}</span></div>;
