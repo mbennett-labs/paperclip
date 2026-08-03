@@ -42,6 +42,18 @@ const manifest: PaperclipPluginManifestV1 = {
         title: "Connector Enabled",
         default: DEFAULTS.enabled,
       },
+      scheduledPollingEnabled: {
+        type: "boolean",
+        title: "Scheduled Polling",
+        description: "Allow the recurring inbox polling job. Leave disabled for manual-only operation.",
+        default: DEFAULTS.scheduledPollingEnabled,
+      },
+      outboundEnabled: {
+        type: "boolean",
+        title: "Outbound Sending",
+        description: "Allow Board-invoked SMTP replies. Leave disabled for read-only intake.",
+        default: DEFAULTS.outboundEnabled,
+      },
       intakeProjectId: {
         type: "string",
         title: "Intake Project ID",
@@ -64,7 +76,6 @@ const manifest: PaperclipPluginManifestV1 = {
         type: "string",
         title: "Mailbox Username",
         description: "IMAP/SMTP username (for Gmail: the full address).",
-        default: DEFAULTS.username,
       },
       credentialSecretRef: {
         type: "object",

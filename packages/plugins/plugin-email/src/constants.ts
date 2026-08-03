@@ -21,6 +21,8 @@ export const STATE_NS = "email";
 
 export const DEFAULTS = {
   enabled: true,
+  scheduledPollingEnabled: false,
+  outboundEnabled: false,
   imapHost: "imap.gmail.com",
   imapPort: 993,
   imapSecure: true,

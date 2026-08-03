@@ -28,6 +28,8 @@ import {
 
 type EmailPluginConfig = {
   enabled?: boolean;
+  scheduledPollingEnabled?: boolean;
+  outboundEnabled?: boolean;
   intakeProjectId?: string;
   triageAgentId?: string;
   billingCode?: string;
@@ -234,6 +236,7 @@ async function runPollForCompany(
   ctx: PluginContext,
   companyId: string,
   config: EmailPluginConfig,
+  scheduled: boolean,
 ): Promise<ProfilePollResult[]> {
   const status = await getStatus(ctx, companyId);
 
@@ -241,6 +244,14 @@ async function runPollForCompany(
     status.lastPollAt = new Date().toISOString();
     status.profiles = [{ key: "primary", ok: true, found: 0, created: 0, skippedDuplicates: 0, error: "connector disabled" }];
     await ctx.state.set({ scopeKind: "company", scopeId: companyId, namespace: STATE_NS, stateKey: "mailbox-status" }, status);
+    return status.profiles;
+  }
+
+  if (scheduled && config.scheduledPollingEnabled !== true) {
+    status.lastPollAt = new Date().toISOString();
+    status.profiles = [{ key: "primary", ok: true, found: 0, created: 0, skippedDuplicates: 0, error: "scheduled polling disabled; set scheduledPollingEnabled to enable recurring polls" }];
+    await ctx.state.set({ scopeKind: "company", scopeId: companyId, namespace: STATE_NS, stateKey: "mailbox-status" }, status);
+    ctx.logger.info("poll skipped: scheduledPollingEnabled is false for this company", { companyId });
     return status.profiles;
   }
 
@@ -333,7 +344,7 @@ const plugin = definePlugin({
         return;
       }
       for (const { companyId, config } of active) {
-        await runPollForCompany(ctx, companyId, config).catch((err) => {
+        await runPollForCompany(ctx, companyId, config, true).catch((err) => {
           ctx.logger.error("poll failed for company", { companyId, error: summarizeError(err) });
         });
       }
@@ -343,6 +354,16 @@ const plugin = definePlugin({
       const companyId = params?.companyId as string;
       if (!companyId) return { lastPollAt: null, totals: { polls: 0, ingested: 0, sent: 0 }, profiles: [] };
       return getStatus(ctx, companyId);
+    });
+
+    ctx.data.register("plugin-config", async (params) => {
+      const companyId = params?.companyId as string;
+      if (!companyId) return null;
+      try {
+        return await ctx.config.get(companyId) as EmailPluginConfig;
+      } catch {
+        return null;
+      }
     });
 
     ctx.data.register("issue-email", async (params) => {
@@ -366,13 +387,14 @@ const plugin = definePlugin({
       const companyId = params?.companyId as string;
       if (companyId) {
         const config = (await ctx.config.get(companyId)) as EmailPluginConfig;
+        if (config?.enabled === false) throw configError("Connector is disabled for this company.");
         if (!config?.username) throw configError("Mailbox is not configured for this company.");
-        const results = await runPollForCompany(ctx, companyId, config);
+        const results = await runPollForCompany(ctx, companyId, config, false);
         return { ok: true, results };
       }
       const active = await resolveActiveCompanies(ctx);
       for (const target of active) {
-        await runPollForCompany(ctx, target.companyId, target.config).catch((err) => {
+        await runPollForCompany(ctx, target.companyId, target.config, false).catch((err) => {
           ctx.logger.error("manual poll failed for company", { companyId: target.companyId, error: summarizeError(err) });
         });
       }
@@ -399,6 +421,9 @@ const plugin = definePlugin({
       const companyId = params?.companyId as string;
       if (!companyId) throw configError("send-reply requires companyId.");
       const config = (await ctx.config.get(companyId)) as EmailPluginConfig;
+      if (config?.outboundEnabled !== true) {
+        throw configError("Outbound email is disabled for this company.");
+      }
       if (!config?.username) throw configError("Mailbox is not configured for this company.");
       const issueId = params?.issueId as string;
       if (!issueId) throw configError("send-reply requires issueId.");
