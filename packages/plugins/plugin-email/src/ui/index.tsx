@@ -54,10 +54,13 @@ export function EmailIssueTab({ context }: PluginDetailTabProps) {
   const issueId = context.entityId;
   const companyId = context.companyId;
   const { data, loading, error, refresh } = usePluginData<IssueEmailData>("issue-email", { issueId, companyId });
+  const { data: configData } = usePluginData<{ outboundEnabled?: boolean } | null>("plugin-config", { companyId });
   const sendReply = usePluginAction("send-reply");
   const [confirming, setConfirming] = useState(false);
   const [busy, setBusy] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
+
+  const outboundEnabled = configData?.outboundEnabled === true;
 
   if (loading) return <div style={box}>Loading email record…</div>;
   if (error) return <div style={box}><span style={errStyle}>Error: {error.message}</span></div>;
@@ -116,7 +119,9 @@ export function EmailIssueTab({ context }: PluginDetailTabProps) {
           ) : (
             <div style={{ opacity: 0.75 }}>No <code>reply-draft</code> document yet. The Communications Drafter attaches one; only then can the Board send.</div>
           )}
-          {!confirming ? (
+          {!outboundEnabled ? (
+            <div style={errStyle}>Outbound email is disabled for this company. Enable outboundEnabled in plugin settings to send replies.</div>
+          ) : !confirming ? (
             <div>
               <button style={{ ...btn, opacity: draft ? 1 : 0.5 }} disabled={!draft || busy} onClick={() => setConfirming(true)}>
                 Send approved reply
@@ -129,7 +134,7 @@ export function EmailIssueTab({ context }: PluginDetailTabProps) {
               <div style={{ display: "flex", gap: 8 }}>
                 <button style={btn} disabled={busy} onClick={() => setConfirming(false)}>Cancel</button>
                 <button style={{ ...btn, background: "#1e8449", color: "#fff", borderColor: "#1e8449" }} disabled={busy} onClick={() => void handleSend()}>
-                  {busy ? "Sending…" : "Confirm send"}
+                  {busy ? "Sending..." : "Confirm send"}
                 </button>
               </div>
             </div>
