@@ -7,17 +7,22 @@ export const JOB_KEYS = {
 
 export const SLOT_IDS = {
   issueTab: "email-issue-tab",
+  storeIntakeTab: "store-intake-tab",
+  storeIntakePage: "store-intake-page",
   dashboardWidget: "email-metrics-widget",
 } as const;
 
 export const EXPORT_NAMES = {
   issueTab: "EmailIssueTab",
+  storeIntakeTab: "StoreIntakeTab",
+  storeIntakePage: "StoreIntakePage",
   dashboardWidget: "EmailMetricsWidget",
 } as const;
 
 export const ORIGIN_KIND_INTAKE = `plugin:${PLUGIN_ID}:intake`;
 
 export const STATE_NS = "email";
+export const STATE_NS_INTAKE = "email-intake";
 
 export const DEFAULTS = {
   enabled: true,

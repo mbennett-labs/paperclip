@@ -149,6 +149,97 @@ describe("detectSource — deterministic form-source detection", () => {
     expect(r.sourceForm).toBe("thebinmap_submit");
     expect(r.confidence).toBeGreaterThan(0.7);
   });
+
+  // ---------------------------------------------------------------------------
+  // Classifier tightening tests (Deliverable 7)
+  // ---------------------------------------------------------------------------
+
+  it("does NOT classify generic Web3Forms 'thebinmap' mention as store_submission", () => {
+    const r = detectSource(
+      "Thanks for your interest",
+      "notify@web3forms.com",
+      "Someone mentioned thebinmap.com on our website."
+    );
+    expect(r.sourceType).not.toBe("store_submission");
+    expect(r.sourceType).toBe("unknown");
+  });
+
+  it("does NOT classify generic Web3Forms 'store' mention as store_submission", () => {
+    const r = detectSource(
+      "A store just applied",
+      "notify@web3forms.com",
+      "We found a new store near thebinmap area."
+    );
+    expect(r.sourceType).not.toBe("store_submission");
+  });
+
+  it("exact known store-submission subject remains correct", () => {
+    const r = detectSource(
+      "New store submission — TheBinMap",
+      "notify@web3forms.com",
+      makeSubmitBody(),
+    );
+    expect(r.sourceType).toBe("store_submission");
+    expect(r.sourceForm).toBe("thebinmap_submit");
+    expect(r.confidence).toBeGreaterThanOrEqual(0.9);
+  });
+
+  it("contact form is distinguishable from store submission", () => {
+    const r = detectSource(
+      "Contact form — TheBinMap",
+      "notify@web3forms.com",
+      "Hello, I have a question about TheBinMap."
+    );
+    expect(r.sourceType).toBe("contact");
+    expect(r.sourceType).not.toBe("store_submission");
+  });
+
+  it("listing claim is distinguishable from store submission", () => {
+    const r = detectSource(
+      "Listing claim — TheBinMap",
+      "notify@web3forms.com",
+      "role: owner\nclaim this listing for TheBinMap store."
+    );
+    expect(r.sourceType).toBe("listing_claim");
+    expect(r.sourceType).not.toBe("store_submission");
+  });
+
+  it("alert signup is NOT classified as store_submission", () => {
+    const r = detectSource(
+      "Restock Alert - TheBinMap",
+      "notify@web3forms.com",
+      "notify me when this item is back in stock"
+    );
+    expect(r.sourceType).not.toBe("store_submission");
+  });
+
+  it("waitlist signup is NOT classified as store_submission", () => {
+    const r = detectSource(
+      "Stay in the loop",
+      "notify@web3forms.com",
+      "subscribe to our newsletter about TheBinMap"
+    );
+    expect(r.sourceType).not.toBe("store_submission");
+  });
+
+  it("Web3Forms + explicit 'store submission' in subject IS classified correctly", () => {
+    const r = detectSource(
+      "store submission for new location",
+      "notify@web3forms.com",
+      "Store Name: Test\nAddress: 123 Main"
+    );
+    expect(r.sourceType).toBe("store_submission");
+    expect(r.confidence).toBeGreaterThanOrEqual(0.7);
+  });
+
+  it("generic TheBinMap mentions alone are insufficient", () => {
+    const r = detectSource(
+      "Hello",
+      "friend@gmail.com",
+      "I love shopping at TheBinMap stores"
+    );
+    expect(r.sourceType).toBe("unknown");
+  });
 });
 
 // ---------------------------------------------------------------------------

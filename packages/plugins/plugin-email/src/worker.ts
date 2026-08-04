@@ -10,6 +10,7 @@ import {
   JOB_KEYS,
   ORIGIN_KIND_INTAKE,
   STATE_NS,
+  STATE_NS_INTAKE,
 } from "./constants.js";
 import {
   fetchUnseen,
@@ -21,12 +22,34 @@ import {
 } from "./mail/imap.js";
 import { sendReply } from "./mail/smtp.js";
 import {
+  detectSource,
+  extractStoreIntake,
   issueDescriptionFor,
   issueTitleFor,
   normalizeMessage,
   priorityFor,
   type NormalizedMessage,
 } from "./mail/normalize.js";
+import {
+  DuplicateMatcher,
+  FixtureStoreProvider,
+  type DuplicateQuery,
+} from "./mail/duplicates.js";
+import {
+  createReviewRecord,
+  getLatestReview,
+  getLatestOutcome,
+  shouldSendIntakeNotification,
+  type ReviewRecord,
+  type ReviewVerdict,
+  type OperationalOutcome,
+  type IntakeNotificationRecord,
+} from "./mail/review.js";
+import {
+  createAnalysisRecord,
+  needsClassificationFallback,
+  type AnalysisRecord,
+} from "./mail/analysis.js";
 
 type EmailPluginConfig = {
   enabled?: boolean;
@@ -92,6 +115,24 @@ type MailboxStatus = {
   lastDurationMs: number;
   totals: { polls: number; ingested: number; sent: number };
   profiles: ProfilePollResult[];
+};
+
+type IntakeEvidence = {
+  messageId: string;
+  profileKey: string;
+  from: string;
+  fromAddress: string;
+  to: string;
+  subject: string;
+  date: string;
+  classHint: string;
+  ventureHint: string;
+  evidenceId: string;
+  sourceDetection: ReturnType<typeof detectSource>;
+  storeIntake: ReturnType<typeof extractStoreIntake>;
+  originalFields: Record<string, string>;
+  normalizedFields: Record<string, string>;
+  ingestedAt: string;
 };
 
 function summarizeError(error: unknown): string {
@@ -222,6 +263,89 @@ async function ingestMessage(
   };
   await ctx.state.set({ scopeKind: "issue", scopeId: issue.id, namespace: STATE_NS, stateKey: "thread" }, thread);
   await ctx.state.set({ scopeKind: "company", scopeId: companyId, namespace: STATE_NS, stateKey: key }, { issueId: issue.id, at: thread.ingestedAt });
+
+  // -- Governed intake: evidence (immutable, written once) --
+  const detection = detectSource(msg.subject, msg.fromAddress, msg.bodyText);
+  const storeIntake = extractStoreIntake(msg, detection, issue.id);
+  const evidence: IntakeEvidence = {
+    messageId: msg.messageId,
+    profileKey: profile.key,
+    from: msg.from,
+    fromAddress: msg.fromAddress,
+    to: msg.to,
+    subject: msg.subject,
+    date: msg.date,
+    classHint: msg.classHint,
+    ventureHint: msg.ventureHint,
+    evidenceId: msg.evidenceId,
+    sourceDetection: detection,
+    storeIntake,
+    originalFields: storeIntake?.originalValues ?? {},
+    normalizedFields: storeIntake?.normalizedValues ?? {},
+    ingestedAt: thread.ingestedAt,
+  };
+  await ctx.state.set({ scopeKind: "issue", scopeId: issue.id, namespace: STATE_NS_INTAKE, stateKey: "intake-evidence" }, evidence);
+
+  // -- Governed intake: duplicate matching (read-only, no write to TheBinMap) --
+  if (storeIntake) {
+    try {
+      const dupQuery: DuplicateQuery = {
+        storeName: storeIntake.originalValues.storeName || "",
+        address: storeIntake.originalValues.address || "",
+        city: storeIntake.originalValues.city || "",
+        state: storeIntake.originalValues.state || "",
+        phone: storeIntake.originalValues.phone || "",
+        website: storeIntake.originalValues.website || "",
+        facebookUrl: storeIntake.originalValues.facebookUrl || "",
+        otherSocialUrl: storeIntake.originalValues.otherSocialUrl || "",
+      };
+      const matcher = new DuplicateMatcher(new FixtureStoreProvider());
+      const dupes = await matcher.findDuplicates(dupQuery);
+      await ctx.state.set({ scopeKind: "issue", scopeId: issue.id, namespace: STATE_NS_INTAKE, stateKey: "intake-duplicates" }, dupes);
+    } catch {
+      // Duplicate matching is advisory only; never blocks intake
+    }
+  }
+
+  // -- Governed intake: deterministic analysis (proposal only, not a verdict) --
+  const fallback = needsClassificationFallback();
+  const analysisOutput = {
+    ...fallback,
+    category: msg.classHint,
+    confidence: detection.confidence,
+    priority: priorityFor(msg.classHint),
+    priorityReason: "Deterministic source detection: " + detection.sourceType + " (" + detection.sourceForm + "), confidence " + detection.confidence,
+    humanApprovalRequired: true,
+    summary: detection.sourceType !== "unknown"
+      ? "Store submission from " + detection.sourceForm + " via " + detection.sourcePage + "."
+      : "General intake message classified as " + msg.classHint + ".",
+  };
+  const analysisRecord = createAnalysisRecord(
+    "deterministic", "classifier-v1",
+    analysisOutput,
+    "ev-" + msg.evidenceId,
+    "deterministic_only",
+  );
+  await ctx.state.set({ scopeKind: "issue", scopeId: issue.id, namespace: STATE_NS_INTAKE, stateKey: "intake-analyses" }, [analysisRecord]);
+
+  // -- Governed intake: deduplicated notification for high-priority store submissions --
+  if (storeIntake && shouldSendIntakeNotification("high", "store_submission", null)) {
+    const notificationRecord: IntakeNotificationRecord = {
+      sent: true,
+      sentAt: new Date().toISOString(),
+      issueId: issue.id,
+      priority: "high",
+      category: "store_submission",
+    };
+    await ctx.state.set({ scopeKind: "issue", scopeId: issue.id, namespace: STATE_NS_INTAKE, stateKey: "intake-notification" }, notificationRecord);
+    await ctx.activity.log({
+      companyId,
+      message: "NEW STORE SUBMISSION REQUIRES REVIEW: " + (storeIntake.originalValues.storeName || "unknown store"),
+      entityType: "issue",
+      entityId: issue.id,
+      metadata: { priority: "high", category: "store_submission", evidenceId: msg.evidenceId },
+    });
+  }
 
   await ctx.activity.log({
     companyId,
@@ -383,6 +507,78 @@ const plugin = definePlugin({
         if (doc?.body) draft = parseReplyDraft(doc.body);
       }
       return { thread: thread ?? null, sent: sent ?? null, draft };
+    });
+
+    // -- Store intake data provider --
+    ctx.data.register("store-intake", async (params) => {
+      const issueId = params?.issueId as string;
+      if (!issueId) return null;
+      try {
+        const [evidence, duplicates, rawAnalyses, rawReviews, notification] = await Promise.all([
+          ctx.state.get({ scopeKind: "issue", scopeId: issueId, namespace: STATE_NS_INTAKE, stateKey: "intake-evidence" }),
+          ctx.state.get({ scopeKind: "issue", scopeId: issueId, namespace: STATE_NS_INTAKE, stateKey: "intake-duplicates" }),
+          ctx.state.get({ scopeKind: "issue", scopeId: issueId, namespace: STATE_NS_INTAKE, stateKey: "intake-analyses" }),
+          ctx.state.get({ scopeKind: "issue", scopeId: issueId, namespace: STATE_NS_INTAKE, stateKey: "intake-reviews" }),
+          ctx.state.get({ scopeKind: "issue", scopeId: issueId, namespace: STATE_NS_INTAKE, stateKey: "intake-notification" }),
+        ]);
+        const reviews: ReviewRecord[] = Array.isArray(rawReviews) ? rawReviews : [];
+        const analyses: AnalysisRecord[] = Array.isArray(rawAnalyses) ? rawAnalyses : [];
+        const latestAnalysis = analyses.length > 0 ? analyses[analyses.length - 1].analysis : null;
+        const latestReview = getLatestReview(reviews);
+        return {
+          evidence: evidence ?? null,
+          duplicates: duplicates ?? [],
+          analyses,
+          reviews,
+          latestAnalysis,
+          latestReview,
+          latestVerdict: latestReview?.verdict ?? null,
+          latestOutcome: getLatestOutcome(reviews),
+          notification,
+        };
+      } catch {
+        return null;
+      }
+    });
+
+    // -- Perform human review action --
+    ctx.actions.register("perform-review", async (params) => {
+      const issueId = params?.issueId as string;
+      if (!issueId) throw configError("perform-review requires issueId.");
+      const reviewer = (params?.reviewer as string) || "board";
+      const verdict = params?.verdict as ReviewVerdict;
+      if (!verdict) throw configError("perform-review requires a verdict.");
+      const validVerdicts: ReviewVerdict[] = ["genuine_external", "internal_test", "family_test", "spam", "duplicate", "unsure"];
+      if (!validVerdicts.includes(verdict)) throw configError("Invalid verdict: " + verdict + ". Must be one of: " + validVerdicts.join(", "));
+      const notes = (params?.notes as string) || "";
+      const operationalOutcome = params?.operationalOutcome as OperationalOutcome | undefined;
+      const duplicateLink = params?.duplicateLink as ReviewRecord["duplicateLink"] | undefined;
+
+      let reviews: ReviewRecord[] = [];
+      try {
+        const existing = await ctx.state.get({ scopeKind: "issue", scopeId: issueId, namespace: STATE_NS_INTAKE, stateKey: "intake-reviews" });
+        if (Array.isArray(existing)) reviews = existing;
+      } catch { /* ignore */ }
+
+      const nextIndex = reviews.length > 0 ? Math.max(...reviews.map((r) => r.reviewIndex)) + 1 : 0;
+      const reviewRecord = createReviewRecord(nextIndex, verdict, reviewer, {
+        notes,
+        duplicateLink,
+        operationalOutcome,
+      });
+
+      reviews.push(reviewRecord);
+      await ctx.state.set({ scopeKind: "issue", scopeId: issueId, namespace: STATE_NS_INTAKE, stateKey: "intake-reviews" }, reviews);
+
+      await ctx.activity.log({
+        companyId: params?.companyId as string || "unknown",
+        message: "Human review verdict: " + verdict + " for issue " + issueId + " (review #" + nextIndex + ")",
+        entityType: "issue",
+        entityId: issueId,
+        metadata: { verdict, reviewer, reviewIndex: nextIndex, operationalOutcome: operationalOutcome ?? null },
+      });
+
+      return { ok: true, review: reviewRecord, totalReviews: reviews.length };
     });
 
     ctx.actions.register("poll-now", async (params) => {

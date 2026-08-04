@@ -28,6 +28,7 @@ const manifest: PaperclipPluginManifestV1 = {
     "secrets.read-ref",
     "ui.detailTab.register",
     "ui.dashboardWidget.register",
+    "ui.page.register",
   ],
   entrypoints: {
     worker: "./dist/worker.js",
@@ -141,6 +142,19 @@ const manifest: PaperclipPluginManifestV1 = {
         displayName: "Email",
         exportName: EXPORT_NAMES.issueTab,
         entityTypes: ["issue"],
+      },
+      {
+        type: "detailTab",
+        id: SLOT_IDS.storeIntakeTab,
+        displayName: "Store Intake",
+        exportName: EXPORT_NAMES.storeIntakeTab,
+        entityTypes: ["issue"],
+      },
+      {
+        type: "page",
+        id: SLOT_IDS.storeIntakePage,
+        displayName: "Store Intake Review",
+        exportName: EXPORT_NAMES.storeIntakePage,
       },
       {
         type: "dashboardWidget",
