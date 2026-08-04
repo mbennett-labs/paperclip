@@ -42,7 +42,93 @@ export type MessageClassHint =
   | "support_request"
   | "unknown";
 
+// ---------------------------------------------------------------------------
+// Form-source detection types
+// ---------------------------------------------------------------------------
+
+export type SourceType = "store_submission" | "listing_claim" | "contact" | "unknown";
+
+export type SourceForm = "thebinmap_submit" | "unknown";
+
+export interface SourceDetection {
+  sourceType: SourceType;
+  sourceForm: SourceForm;
+  sourcePage: string;
+  confidence: number;
+  evidence: string[];
+  rulesMatched: string[];
+  requiresHumanReview: boolean;
+}
+
+// ---------------------------------------------------------------------------
+// Store-intake record types
+// ---------------------------------------------------------------------------
+
+export interface StoreIntakeRecord {
+  recordType: "store_intake";
+  sourceIssueId: string;
+  sourceType: SourceType;
+  sourceForm: SourceForm;
+  sourcePage: string;
+  category: string;
+  priority: string;
+  status: string;
+  originalValues: Record<string, string>;
+  normalizedValues: Record<string, string>;
+  confidenceByField: Record<string, number>;
+  evidenceByField: Record<string, string>;
+  missingFields: string[];
+  duplicateCandidates: Array<{ name: string; reason: string }>;
+  requiresHumanReview: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
 const MAX_BODY_CHARS = 20000;
+
+const THEBINMAP_SUBMIT_SUBJECT = "New store submission — TheBinMap";
+const THEBINMAP_CLAIM_SUBJECT = "Listing claim — TheBinMap";
+const THEBINMAP_CONTACT_SUBJECT = "Contact form — TheBinMap";
+const THEBINMAP_SUBMIT_SENDER = "TheBinMap Submit Form";
+const THEBINMAP_FOOTER = "https://thebinmap.com/";
+
+const STORE_INTAKE_FIELDS = [
+  "storeName",
+  "address",
+  "city",
+  "state",
+  "postalCode",
+  "phone",
+  "website",
+  "facebookUrl",
+  "otherSocialUrl",
+  "submitterName",
+  "submitterEmail",
+  "submitterRelationship",
+  "restockDays",
+  "pricingSchedule",
+  "description",
+] as const;
+
+type StoreIntakeField = (typeof STORE_INTAKE_FIELDS)[number];
+
+interface BodyFieldPattern {
+  key: StoreIntakeField;
+  patterns: RegExp[];
+}
+
+const FIELD_EXTRACTORS: BodyFieldPattern[] = [
+  { key: "storeName", patterns: [/store name[:\s]+(.+)/i, /^(.+ store|.+ bin.*store)$/im] },
+  { key: "address", patterns: [/address[:\s]+(.+)/i, /^(address\s*\n)(.+)$/im] },
+  { key: "city", patterns: [/city[:\s]+(.+)/i] },
+  { key: "state", patterns: [/state[:\s]+(.+)/i, /\b(TN|FL|CA|TX|NY|OH|PA|IL|GA|NC|MI|NJ|VA|WA|AZ|MA|IN|MO|MD|WI|CO|MN|SC|AL|LA|KY|OR|OK|CT|IA|MS|AR|KS|UT|NV|NM|NE|WV|ID|HI|NH|ME|MT|RI|DE|SD|AK|ND|VT|WY|DC)\b/i] },
+  { key: "restockDays", patterns: [/restock.*?[:\s]+(.+)/i, /restock schedule[:\s]+(.+)/i] },
+  { key: "submitterEmail", patterns: [/your email[:\s]+(.+)/i, /submitter email[:\s]+(.+)/i, /([\w.+-]+@[\w-]+\.[\w.-]+)/i] },
+];
 
 function decodeAddrList(input: unknown): string {
   if (!input) return "";
@@ -64,7 +150,217 @@ export function firstAddress(input: string): string {
   return match ? match[0].toLowerCase() : "";
 }
 
+// ---------------------------------------------------------------------------
+// Deterministic form-source detection
+// ---------------------------------------------------------------------------
+
+export function detectSource(
+  subject: string,
+  fromAddress: string,
+  body: string,
+): SourceDetection {
+  const s = subject.toLowerCase();
+  const b = body.slice(0, 4000).toLowerCase();
+  const f = fromAddress.toLowerCase();
+  const isWeb3Forms = f.includes("web3forms.com");
+
+  const detection: SourceDetection = {
+    sourceType: "unknown",
+    sourceForm: "unknown",
+    sourcePage: "unknown",
+    confidence: 0,
+    evidence: [],
+    rulesMatched: [],
+    requiresHumanReview: true,
+  };
+
+  // Rule 1: Exact subject-line match (strongest signal)
+  if (subject === THEBINMAP_SUBMIT_SUBJECT) {
+    detection.sourceType = "store_submission";
+    detection.sourceForm = "thebinmap_submit";
+    detection.sourcePage = "/submit";
+    detection.confidence = 0.95;
+    detection.evidence.push("subject-line exact match: 'New store submission — TheBinMap'");
+    detection.rulesMatched.push("subject-exact:thebinmap_submit");
+    detection.requiresHumanReview = false;
+    return detection;
+  }
+
+  // Rule 2: Subject + body field-name combination
+  if (subject === THEBINMAP_CLAIM_SUBJECT) {
+    detection.sourceType = "listing_claim";
+    detection.sourceForm = "unknown";
+    detection.sourcePage = "unknown";
+    detection.confidence = 0.9;
+    detection.evidence.push("subject-line exact match: 'Listing claim — TheBinMap'");
+    detection.rulesMatched.push("subject-exact:thebinmap_claim");
+    detection.requiresHumanReview = false;
+    return detection;
+  }
+
+  if (subject === THEBINMAP_CONTACT_SUBJECT) {
+    detection.sourceType = "contact";
+    detection.sourceForm = "unknown";
+    detection.sourcePage = "unknown";
+    detection.confidence = 0.9;
+    detection.evidence.push("subject-line exact match: 'Contact form — TheBinMap'");
+    detection.rulesMatched.push("subject-exact:thebinmap_contact");
+    detection.requiresHumanReview = false;
+    return detection;
+  }
+
+  // Rule 3: Web3Forms sender + TheBinMap keywords in subject
+  if (isWeb3Forms) {
+    if (s.includes("store submission") || s.includes("thebinmap")) {
+      detection.sourceType = "store_submission";
+      detection.sourceForm = "thebinmap_submit";
+      detection.sourcePage = "/submit";
+      detection.confidence = 0.8;
+      detection.evidence.push("Web3Forms sender + store-submission subject pattern");
+      detection.rulesMatched.push("web3forms:thebinmap_submit_pattern");
+      return detection;
+    }
+    if (s.includes("listing claim")) {
+      detection.sourceType = "listing_claim";
+      detection.sourceForm = "unknown";
+      detection.sourcePage = "unknown";
+      detection.confidence = 0.8;
+      detection.evidence.push("Web3Forms sender + listing-claim subject pattern");
+      detection.rulesMatched.push("web3forms:thebinmap_claim_pattern");
+      return detection;
+    }
+  }
+
+  // Rule 4: Body contains known submit-form field names + TheBinMap footer
+  if (b.includes("store name") && b.includes(THEBINMAP_FOOTER)) {
+    detection.sourceType = "store_submission";
+    detection.sourceForm = "thebinmap_submit";
+    detection.sourcePage = "/submit";
+    detection.confidence = 0.75;
+    detection.evidence.push("body contains store-name field + TheBinMap footer URL");
+    detection.rulesMatched.push("body-fields:thebinmap_submit_footer");
+    return detection;
+  }
+
+  // Rule 5: Body contains known submit-form field combination
+  if (b.includes("store name") && b.includes("city") && b.includes("restock")) {
+    detection.sourceType = "store_submission";
+    detection.sourceForm = "thebinmap_submit";
+    detection.sourcePage = "/submit";
+    detection.confidence = 0.6;
+    detection.evidence.push("body contains store-name + city + restock field combination");
+    detection.rulesMatched.push("body-fields:thebinmap_submit_combo");
+    return detection;
+  }
+
+  return detection;
+}
+
+// ---------------------------------------------------------------------------
+// Store-intake extraction
+// ---------------------------------------------------------------------------
+
+export function extractStoreIntake(
+  msg: NormalizedMessage,
+  detection: SourceDetection,
+  sourceIssueId: string,
+): StoreIntakeRecord | null {
+  if (detection.sourceType !== "store_submission" || detection.sourceForm !== "thebinmap_submit") {
+    return null;
+  }
+
+  const now = new Date().toISOString();
+  const originalValues: Record<string, string> = {};
+  const normalizedValues: Record<string, string> = {};
+  const confidenceByField: Record<string, number> = {};
+  const evidenceByField: Record<string, string> = {};
+  const missingFields: string[] = [];
+  const duplicateCandidates: Array<{ name: string; reason: string }> = [];
+
+  const lines = msg.bodyText.split("\n");
+
+  for (const field of FIELD_EXTRACTORS) {
+    let found = false;
+    for (const pattern of field.patterns) {
+      for (const line of lines) {
+        const match = line.match(pattern);
+        if (match && match[1]?.trim()) {
+          const value = match[1].trim();
+          originalValues[field.key] = value;
+          normalizedValues[field.key] = value
+            .replace(/"/g, "'")
+            .replace(/[\n\r]+/g, ", ")
+            .trim()
+            .slice(0, 500);
+          confidenceByField[field.key] = 0.7;
+          evidenceByField[field.key] = line.trim().slice(0, 200);
+          found = true;
+          break;
+        }
+      }
+      if (found) break;
+    }
+    if (!found) {
+      originalValues[field.key] = "";
+      missingFields.push(field.key);
+    }
+  }
+
+  // Check for state abbreviation in body
+  if (!originalValues.state) {
+    const stateMatch = msg.bodyText.match(/\b(TN|FL|CA|TX|NY|OH|PA|IL|GA|NC|MI|NJ|VA|WA|AZ|MA|IN|MO|MD|WI|CO|MN|SC|AL|LA|KY|OR|OK|CT|IA|MS|AR|KS|UT|NV|NM|NE|WV|ID|HI|NH|ME|MT|RI|DE|SD|AK|ND|VT|WY|DC)\b/i);
+    if (stateMatch) {
+      originalValues.state = stateMatch[1].toUpperCase();
+      normalizedValues.state = stateMatch[1].toUpperCase();
+      confidenceByField.state = 0.5;
+      evidenceByField.state = `found in body: ${stateMatch[0]}`;
+    }
+  }
+
+  // Classify store type if present
+  const b = msg.bodyText.toLowerCase();
+  if (b.includes("bin store") || b.includes("bin-store")) {
+    normalizedValues.storeType = "bin-store";
+  } else if (b.includes("liquidation")) {
+    normalizedValues.storeType = "liquidation";
+  } else if (b.includes("discount")) {
+    normalizedValues.storeType = "discount";
+  } else if (b.includes("amazon returns")) {
+    normalizedValues.storeType = "amazon-returns";
+  }
+
+  return {
+    recordType: "store_intake",
+    sourceIssueId,
+    sourceType: detection.sourceType,
+    sourceForm: detection.sourceForm,
+    sourcePage: detection.sourcePage,
+    category: "store_submission",
+    priority: "high",
+    status: "needs_review",
+    originalValues,
+    normalizedValues,
+    confidenceByField,
+    evidenceByField,
+    missingFields,
+    duplicateCandidates,
+    requiresHumanReview: false,
+    createdAt: now,
+    updatedAt: now,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Classification (existing, updated with source detection)
+// ---------------------------------------------------------------------------
+
 function classify(subject: string, fromAddress: string, body: string): MessageClassHint {
+  const detection = detectSource(subject, fromAddress, body);
+
+  if (detection.sourceType === "store_submission") return "store_submission";
+  if (detection.sourceType === "listing_claim") return "listing_claim";
+  if (detection.sourceType === "contact") return "contact_general";
+
   const s = subject.toLowerCase();
   const b = body.slice(0, 4000).toLowerCase();
   const f = fromAddress.toLowerCase();
@@ -151,18 +447,25 @@ export function normalizeMessage(input: {
 }
 
 export function priorityFor(classHint: MessageClassHint): "low" | "medium" | "high" {
-  if (classHint === "intelligence_request" || classHint === "listing_claim") return "high";
+  if (classHint === "intelligence_request" || classHint === "listing_claim" || classHint === "store_submission") return "high";
   if (classHint === "spam_irrelevant") return "low";
   return "medium";
 }
 
 export function issueTitleFor(msg: NormalizedMessage): string {
+  const detection = detectSource(msg.subject, msg.fromAddress, msg.bodyText);
   const who = msg.from.length > 60 ? msg.fromAddress || msg.from.slice(0, 60) : msg.from;
-  return `[Email:${msg.ventureHint}] ${msg.subject} — ${who}`;
+  const prefix = detection.sourceType === "store_submission" ? "[Store Submission]"
+    : detection.sourceType === "listing_claim" ? "[Listing Claim]"
+    : `[Email:${msg.ventureHint}]`;
+  return `${prefix} ${msg.subject} — ${who}`;
 }
 
 export function issueDescriptionFor(msg: NormalizedMessage): string {
-  return [
+  const detection = detectSource(msg.subject, msg.fromAddress, msg.bodyText);
+  const intake = detection.sourceType === "store_submission" ? extractStoreIntake(msg, detection, "") : null;
+
+  const lines: (string | null)[] = [
     `## Inbound email (connector: ${msg.profileKey})`,
     "",
     `- **From:** ${msg.from}`,
@@ -173,15 +476,40 @@ export function issueDescriptionFor(msg: NormalizedMessage): string {
     msg.inReplyTo ? `- **In-Reply-To:** \`${msg.inReplyTo}\`` : null,
     `- **Class hint:** \`${msg.classHint}\` (connector heuristic — assign the authoritative class per email-triage-sop)`,
     `- **Venture hint:** \`${msg.ventureHint}\``,
-    "",
-    "---",
-    "",
-    msg.bodyText || "_(no text body extracted)_",
-    "",
-    "---",
-    "",
-    "Triage per **email-triage-sop**: one class label, one venture label, triage note, route or escalate. Never reply to the sender from this issue — drafts go to the Communications Drafter; only the Board sends.",
-  ]
-    .filter((line) => line !== null)
-    .join("\n");
+  ];
+
+  if (detection.sourceType !== "unknown") {
+    lines.push("", "## Source Detection", "");
+    lines.push(`- **Source Type:** \`${detection.sourceType}\``);
+    lines.push(`- **Source Form:** \`${detection.sourceForm}\``);
+    lines.push(`- **Source Page:** \`${detection.sourcePage}\``);
+    lines.push(`- **Confidence:** ${detection.confidence}`);
+    lines.push(`- **Evidence:** ${detection.evidence.join("; ")}`);
+  }
+
+  if (intake) {
+    lines.push("", "## Store Intake Record", "");
+    lines.push(`- **Status:** \`${intake.status}\``);
+    lines.push(`- **Priority:** \`${intake.priority}\``);
+    lines.push(`- **Category:** \`${intake.category}\``);
+    lines.push("", "### Extracted Fields", "");
+    const fields = STORE_INTAKE_FIELDS;
+    for (const f of fields) {
+      if (intake.originalValues[f]) {
+        lines.push(`- **${f}:** ${intake.originalValues[f]}${intake.confidenceByField[f] ? ` (confidence: ${intake.confidenceByField[f]})` : ""}`);
+      }
+    }
+    if (intake.missingFields.length > 0) {
+      lines.push("", "### Missing Fields", "");
+      for (const f of intake.missingFields) {
+        lines.push(`- ${f}`);
+      }
+    }
+    lines.push("", "> **Next action:** Human verification required before store publication.");
+  }
+
+  lines.push("", "---", "", msg.bodyText || "_(no text body extracted)_", "", "---", "",
+    "Triage per **email-triage-sop**: one class label, one venture label, triage note, route or escalate. Never reply to the sender from this issue — drafts go to the Communications Drafter; only the Board sends.");
+
+  return lines.filter((line) => line !== null).join("\n");
 }

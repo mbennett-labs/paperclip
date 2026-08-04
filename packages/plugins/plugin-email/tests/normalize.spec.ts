@@ -232,7 +232,7 @@ describe("priorityFor", () => {
 
   it("returns medium for all other types", () => {
     expect(priorityFor("unknown")).toBe("medium");
-    expect(priorityFor("store_submission")).toBe("medium");
+    expect(priorityFor("store_submission")).toBe("high");
     expect(priorityFor("contact_general")).toBe("medium");
     expect(priorityFor("correction")).toBe("medium");
     expect(priorityFor("customer_inquiry")).toBe("medium");

@@ -15,7 +15,9 @@ import {
   fetchUnseen,
   markReplied,
   markSeen,
+  searchBySubject,
   type ConnectorProfile,
+  type FetchedMessage,
 } from "./mail/imap.js";
 import { sendReply } from "./mail/smtp.js";
 import {
@@ -399,6 +401,86 @@ const plugin = definePlugin({
         });
       }
       return { ok: true, companies: active.length };
+    });
+
+    ctx.actions.register("poll-target", async (params) => {
+      const companyId = params?.companyId as string;
+      if (!companyId) throw configError("poll-target requires companyId.");
+      const config = (await ctx.config.get(companyId)) as EmailPluginConfig;
+      if (config?.enabled === false) throw configError("Connector is disabled for this company.");
+      if (!config?.username) throw configError("Mailbox is not configured for this company.");
+      if (config?.outboundEnabled === true) {
+        throw configError("poll-target is not available when outbound is enabled.");
+      }
+
+      const subject = typeof params?.subject === "string" && params.subject.trim() ? params.subject.trim() : "";
+      if (!subject) throw configError("poll-target requires a subject to search for.");
+      if (subject.length < 3) throw configError("poll-target subject search too short; must be at least 3 characters.");
+
+      const fromDomain = typeof params?.fromDomain === "string" && params.fromDomain.trim() ? params.fromDomain.trim() : undefined;
+      const dateSince = typeof params?.dateSince === "string" ? new Date(params.dateSince) : undefined;
+      const dateBefore = typeof params?.dateBefore === "string" ? new Date(params.dateBefore) : undefined;
+      const maxResults = Number(params?.maxResults ?? 1);
+      if (!Number.isInteger(maxResults) || maxResults < 1 || maxResults > 1) {
+        throw configError("poll-target maxResults must be 1 during this pilot.");
+      }
+
+      const profiles = buildProfiles(config);
+      if (profiles.length === 0) throw configError("No mailbox profiles configured.");
+      const password = await resolvePassword(ctx, config, companyId);
+      const profile = profiles[0];
+
+      const fetched = await searchBySubject(profile, password, {
+        subject,
+        unreadOnly: true,
+        since: dateSince instanceof Date && !isNaN(dateSince.getTime()) ? dateSince : undefined,
+        before: dateBefore instanceof Date && !isNaN(dateBefore.getTime()) ? dateBefore : undefined,
+        maxResults,
+      });
+
+      if (fetched.length === 0) {
+        await ctx.activity.log({
+          companyId,
+          message: `Targeted search returned no results: subject "${subject}"`,
+          metadata: { action: "poll-target", subject, profileKey: profile.key },
+        });
+        return { ok: true, found: 0, created: 0, results: [] };
+      }
+
+      let created = 0;
+      const results: ProfilePollResult[] = [];
+      for (const raw of fetched) {
+        const msg = normalizeMessage({
+          uid: raw.uid,
+          folder: profile.pollFolder,
+          profileKey: profile.key,
+          envelope: raw.envelope,
+          bodyText: raw.bodyText,
+        });
+        const { created: isNew } = await ingestMessage(ctx, config, companyId, profile, msg);
+        if (isNew) {
+          created += 1;
+          // Do NOT markSeen — targeted search preserves mailbox state
+          results.push({ key: profile.key, ok: true, found: fetched.length, created: 1, skippedDuplicates: 0 });
+        } else {
+          results.push({ key: profile.key, ok: true, found: fetched.length, created: 0, skippedDuplicates: 1 });
+        }
+      }
+
+      const status = await getStatus(ctx, companyId);
+      status.lastPollAt = new Date().toISOString();
+      status.totals.polls += 1;
+      if (created > 0) status.totals.ingested += created;
+      status.profiles = results;
+      await ctx.state.set({ scopeKind: "company", scopeId: companyId, namespace: STATE_NS, stateKey: "mailbox-status" }, status);
+
+      await ctx.activity.log({
+        companyId,
+        message: `Targeted search "${subject}": ${created} new issue(s) from ${fetched.length} message(s)`,
+        metadata: { action: "poll-target", subject, found: fetched.length, created },
+      });
+
+      return { ok: true, found: fetched.length, created, results };
     });
 
     ctx.actions.register("reset-cursor", async (params) => {

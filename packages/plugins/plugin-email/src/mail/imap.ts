@@ -77,6 +77,53 @@ export async function fetchUnseen(
   return out;
 }
 
+export interface TargetedSearchParams {
+  subject: string;
+  unreadOnly?: boolean;
+  since?: Date;
+  before?: Date;
+  fromPattern?: string;
+  maxResults?: number;
+}
+
+export async function searchBySubject(
+  profile: ConnectorProfile,
+  password: string,
+  params: TargetedSearchParams,
+): Promise<FetchedMessage[]> {
+  const client = imapClient(profile, password);
+  await client.connect();
+  try {
+    const lock = await client.getMailboxLock(profile.pollFolder);
+    try {
+      const criteria: Record<string, unknown> = { subject: params.subject };
+      if (params.unreadOnly !== false) criteria.seen = false;
+      if (params.since) criteria.since = params.since;
+      if (params.before) criteria.before = params.before;
+      if (params.fromPattern) criteria.from = params.fromPattern;
+      const uids = await client.search(criteria, { uid: true });
+      const max = params.maxResults ?? 1;
+      const selected = (Array.isArray(uids) ? uids : []).slice(0, max);
+      const out: FetchedMessage[] = [];
+      for (const uid of selected) {
+        const msg = await client.fetchOne(
+          String(uid),
+          { envelope: true, bodyParts: ["text"] },
+          { uid: true },
+        );
+        if (!msg) continue;
+        const bodyPart = msg.bodyParts?.get("text");
+        out.push({ uid, envelope: msg.envelope ?? {}, bodyText: bodyPart ? bodyPart.toString("utf8") : "" });
+      }
+      return out;
+    } finally {
+      lock.release();
+    }
+  } finally {
+    await client.logout().catch(() => undefined);
+  }
+}
+
 /** Mark a message seen, flag answered, optionally move to the archive folder. */
 export async function markReplied(
   profile: ConnectorProfile,
