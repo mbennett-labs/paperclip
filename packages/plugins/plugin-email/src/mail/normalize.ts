@@ -466,14 +466,11 @@ export function issueDescriptionFor(msg: NormalizedMessage): string {
   const lines: (string | null)[] = [
     `## Inbound email (connector: ${msg.profileKey})`,
     "",
-    `- **From:** ${msg.from}`,
-    `- **To:** ${msg.to}`,
     `- **Date:** ${msg.date}`,
     `- **Subject:** ${msg.subject}`,
-    `- **Message-ID:** \`${msg.messageId}\``,
-    msg.inReplyTo ? `- **In-Reply-To:** \`${msg.inReplyTo}\`` : null,
     `- **Class hint:** \`${msg.classHint}\` (connector heuristic — assign the authoritative class per email-triage-sop)`,
     `- **Venture hint:** \`${msg.ventureHint}\``,
+    `- **Evidence ref:** \`${msg.evidenceId}\``,
   ];
 
   if (detection.sourceType !== "unknown") {
@@ -491,8 +488,8 @@ export function issueDescriptionFor(msg: NormalizedMessage): string {
     lines.push(`- **Priority:** \`${intake.priority}\``);
     lines.push(`- **Category:** \`${intake.category}\``);
     lines.push("", "### Extracted Fields", "");
-    const fields = STORE_INTAKE_FIELDS;
-    for (const f of fields) {
+    const safeFields = ["storeName", "address", "city", "state", "postalCode", "website", "facebookUrl", "otherSocialUrl", "restockDays", "pricingSchedule"];
+    for (const f of safeFields) {
       if (intake.originalValues[f]) {
         lines.push(`- **${f}:** ${intake.originalValues[f]}${intake.confidenceByField[f] ? ` (confidence: ${intake.confidenceByField[f]})` : ""}`);
       }
@@ -500,14 +497,16 @@ export function issueDescriptionFor(msg: NormalizedMessage): string {
     if (intake.missingFields.length > 0) {
       lines.push("", "### Missing Fields", "");
       for (const f of intake.missingFields) {
-        lines.push(`- ${f}`);
+        if (safeFields.includes(f)) {
+          lines.push(`- ${f}`);
+        }
       }
     }
-    lines.push("", "> **Next action:** Human verification required before store publication.");
+    lines.push("", "> **Operational summary:** Store submission from " + detection.sourceForm + " (" + detection.sourcePage + "). Use the governed Store Intake tab for full review, duplicate matching, and human verdict. Do not expose raw message body, submitter contact, or provider identifiers in this description.");
+  } else {
+    lines.push("", "---", "", msg.snippet + (msg.bodyText.length > msg.snippet.length ? "..." : ""), "", "---", "",
+      "Triage per **email-triage-sop**: one class label, one venture label, triage note, route or escalate. Never reply to the sender from this issue — drafts go to the Communications Drafter; only the Board sends.");
   }
-
-  lines.push("", "---", "", msg.bodyText || "_(no text body extracted)_", "", "---", "",
-    "Triage per **email-triage-sop**: one class label, one venture label, triage note, route or escalate. Never reply to the sender from this issue — drafts go to the Communications Drafter; only the Board sends.");
 
   return lines.filter((line) => line !== null).join("\n");
 }

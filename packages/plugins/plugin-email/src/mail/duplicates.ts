@@ -199,7 +199,85 @@ export class FixtureStoreProvider implements StoreProvider {
   }
 }
 
-export function createConfigurableDuplicateMatcher(config?: { stores?: StoreRecord[] }): DuplicateMatcher {
+import { readFileSync, existsSync } from "node:fs";
+import { resolve } from "node:path";
+
+function isStoreRecord(raw: unknown): raw is StoreRecord {
+  if (!raw || typeof raw !== "object") return false;
+  const r = raw as Record<string, unknown>;
+  return typeof r.id === "string" && typeof r.name === "string";
+}
+
+export class JsonStoreProvider implements StoreProvider {
+  private stores: StoreRecord[] | null = null;
+  private providerAvailable: boolean;
+  private providerError: string | null = null;
+
+  constructor(private filePath: string) {
+    this.providerAvailable = false;
+    this.initialize();
+  }
+
+  private initialize(): void {
+    try {
+      const resolved = resolve(this.filePath);
+      if (!existsSync(resolved)) {
+        this.providerError = "Store export file not found: " + this.filePath;
+        return;
+      }
+      const raw = readFileSync(resolved, "utf-8");
+      const parsed = JSON.parse(raw);
+      const records = Array.isArray(parsed) ? parsed : (parsed.stores ?? parsed.data ?? []);
+      if (!Array.isArray(records)) {
+        this.providerError = "Store export file does not contain an array: " + this.filePath;
+        return;
+      }
+      this.stores = records.filter(isStoreRecord).map((r) => ({
+        id: r.id,
+        name: r.name,
+        address: r.address || "",
+        city: r.city || "",
+        state: r.state || "",
+        postalCode: r.postalCode || "",
+        phone: r.phone || "",
+        website: r.website || "",
+        facebookUrl: r.facebookUrl || "",
+        otherSocialUrl: r.otherSocialUrl || "",
+      }));
+      this.providerAvailable = true;
+    } catch (err) {
+      this.providerError = err instanceof Error ? err.message : String(err);
+    }
+  }
+
+  isAvailable(): boolean {
+    return this.providerAvailable;
+  }
+
+  getError(): string | null {
+    return this.providerError;
+  }
+
+  async lookup(field: string, value: string): Promise<StoreRecord[]> {
+    if (!this.stores) return [];
+    const normalized = value.toLowerCase();
+    return this.stores.filter((s) => {
+      const v = (s as Record<string, string>)[field]?.toLowerCase() ?? "";
+      return v.includes(normalized);
+    });
+  }
+
+  async listAll(): Promise<StoreRecord[]> {
+    return this.stores ?? [];
+  }
+}
+
+export function createConfigurableDuplicateMatcher(config?: { stores?: StoreRecord[]; storeExportPath?: string }): { matcher: DuplicateMatcher; provider: StoreProvider } {
+  if (config?.storeExportPath) {
+    const jsonProvider = new JsonStoreProvider(config.storeExportPath);
+    return { matcher: new DuplicateMatcher(jsonProvider), provider: jsonProvider };
+  }
   const stores = config?.stores ?? [];
-  return new DuplicateMatcher(new FixtureStoreProvider(stores));
+  const fixtureProvider = new FixtureStoreProvider(stores);
+  return { matcher: new DuplicateMatcher(fixtureProvider), provider: fixtureProvider };
 }

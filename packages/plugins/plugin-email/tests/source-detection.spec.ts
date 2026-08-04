@@ -322,7 +322,11 @@ describe("issueDescriptionFor with source detection", () => {
     expect(desc).toContain("Store Intake Record");
     expect(desc).toContain("Test Store");
     expect(desc).toContain("needs_review");
-    expect(desc).toContain("Next action");
+    expect(desc).toContain("Operational summary");
+    // Raw body should not appear in governed intake descriptions
+    expect(desc).not.toContain("Submitted By");
+    expect(desc).not.toContain("**From:**");
+    expect(desc).not.toContain("**Message-ID:**");
   });
 
   it("does not include intake for non-store messages", () => {

@@ -33,6 +33,7 @@ import {
 import {
   DuplicateMatcher,
   FixtureStoreProvider,
+  JsonStoreProvider,
   type DuplicateQuery,
 } from "./mail/duplicates.js";
 import {
@@ -264,87 +265,110 @@ async function ingestMessage(
   await ctx.state.set({ scopeKind: "issue", scopeId: issue.id, namespace: STATE_NS, stateKey: "thread" }, thread);
   await ctx.state.set({ scopeKind: "company", scopeId: companyId, namespace: STATE_NS, stateKey: key }, { issueId: issue.id, at: thread.ingestedAt });
 
-  // -- Governed intake: evidence (immutable, written once) --
-  const detection = detectSource(msg.subject, msg.fromAddress, msg.bodyText);
-  const storeIntake = extractStoreIntake(msg, detection, issue.id);
-  const evidence: IntakeEvidence = {
-    messageId: msg.messageId,
-    profileKey: profile.key,
-    from: msg.from,
-    fromAddress: msg.fromAddress,
-    to: msg.to,
-    subject: msg.subject,
-    date: msg.date,
-    classHint: msg.classHint,
-    ventureHint: msg.ventureHint,
-    evidenceId: msg.evidenceId,
-    sourceDetection: detection,
-    storeIntake,
-    originalFields: storeIntake?.originalValues ?? {},
-    normalizedFields: storeIntake?.normalizedValues ?? {},
-    ingestedAt: thread.ingestedAt,
-  };
-  await ctx.state.set({ scopeKind: "issue", scopeId: issue.id, namespace: STATE_NS_INTAKE, stateKey: "intake-evidence" }, evidence);
-
-  // -- Governed intake: duplicate matching (read-only, no write to TheBinMap) --
-  if (storeIntake) {
-    try {
-      const dupQuery: DuplicateQuery = {
-        storeName: storeIntake.originalValues.storeName || "",
-        address: storeIntake.originalValues.address || "",
-        city: storeIntake.originalValues.city || "",
-        state: storeIntake.originalValues.state || "",
-        phone: storeIntake.originalValues.phone || "",
-        website: storeIntake.originalValues.website || "",
-        facebookUrl: storeIntake.originalValues.facebookUrl || "",
-        otherSocialUrl: storeIntake.originalValues.otherSocialUrl || "",
-      };
-      const matcher = new DuplicateMatcher(new FixtureStoreProvider());
-      const dupes = await matcher.findDuplicates(dupQuery);
-      await ctx.state.set({ scopeKind: "issue", scopeId: issue.id, namespace: STATE_NS_INTAKE, stateKey: "intake-duplicates" }, dupes);
-    } catch {
-      // Duplicate matching is advisory only; never blocks intake
+  // -- Governed intake: evidence (write-once) --
+  const existingEvidence = await ctx.state.get({ scopeKind: "issue", scopeId: issue.id, namespace: STATE_NS_INTAKE, stateKey: "intake-evidence" });
+  if (existingEvidence) {
+    // Evidence already exists; verify fingerprint match if present
+    const existing = existingEvidence as Record<string, unknown>;
+    if (existing.evidenceId !== msg.evidenceId) {
+      await ctx.activity.log({
+        companyId,
+        message: `Evidence integrity: conflicting re-ingestion attempt for issue ${issue.id} (existing=${existing.evidenceId}, incoming=${msg.evidenceId})`,
+        entityType: "issue",
+        entityId: issue.id,
+        metadata: { action: "evidence_conflict", existingEvidenceId: existing.evidenceId, incomingEvidenceId: msg.evidenceId },
+      });
     }
-  }
-
-  // -- Governed intake: deterministic analysis (proposal only, not a verdict) --
-  const fallback = needsClassificationFallback();
-  const analysisOutput = {
-    ...fallback,
-    category: msg.classHint,
-    confidence: detection.confidence,
-    priority: priorityFor(msg.classHint),
-    priorityReason: "Deterministic source detection: " + detection.sourceType + " (" + detection.sourceForm + "), confidence " + detection.confidence,
-    humanApprovalRequired: true,
-    summary: detection.sourceType !== "unknown"
-      ? "Store submission from " + detection.sourceForm + " via " + detection.sourcePage + "."
-      : "General intake message classified as " + msg.classHint + ".",
-  };
-  const analysisRecord = createAnalysisRecord(
-    "deterministic", "classifier-v1",
-    analysisOutput,
-    "ev-" + msg.evidenceId,
-    "deterministic_only",
-  );
-  await ctx.state.set({ scopeKind: "issue", scopeId: issue.id, namespace: STATE_NS_INTAKE, stateKey: "intake-analyses" }, [analysisRecord]);
-
-  // -- Governed intake: deduplicated notification for high-priority store submissions --
-  if (storeIntake && shouldSendIntakeNotification("high", "store_submission", null)) {
-    const notificationRecord: IntakeNotificationRecord = {
-      sent: true,
-      sentAt: new Date().toISOString(),
-      issueId: issue.id,
-      priority: "high",
-      category: "store_submission",
+  } else {
+    const detection = detectSource(msg.subject, msg.fromAddress, msg.bodyText);
+    const storeIntake = extractStoreIntake(msg, detection, issue.id);
+    const evidence: IntakeEvidence = {
+      messageId: msg.messageId,
+      profileKey: profile.key,
+      from: msg.from,
+      fromAddress: msg.fromAddress,
+      to: msg.to,
+      subject: msg.subject,
+      date: msg.date,
+      classHint: msg.classHint,
+      ventureHint: msg.ventureHint,
+      evidenceId: msg.evidenceId,
+      sourceDetection: detection,
+      storeIntake,
+      originalFields: storeIntake?.originalValues ?? {},
+      normalizedFields: storeIntake?.normalizedValues ?? {},
+      ingestedAt: thread.ingestedAt,
     };
-    await ctx.state.set({ scopeKind: "issue", scopeId: issue.id, namespace: STATE_NS_INTAKE, stateKey: "intake-notification" }, notificationRecord);
-    await ctx.activity.log({
-      companyId,
-      message: "NEW STORE SUBMISSION REQUIRES REVIEW: " + (storeIntake.originalValues.storeName || "unknown store"),
-      entityType: "issue",
-      entityId: issue.id,
-      metadata: { priority: "high", category: "store_submission", evidenceId: msg.evidenceId },
-    });
+    await ctx.state.set({ scopeKind: "issue", scopeId: issue.id, namespace: STATE_NS_INTAKE, stateKey: "intake-evidence" }, evidence);
+
+    // -- Governed intake: duplicate matching (read-only, no write to TheBinMap) --
+    if (storeIntake) {
+      try {
+        const dupQuery: DuplicateQuery = {
+          storeName: storeIntake.originalValues.storeName || "",
+          address: storeIntake.originalValues.address || "",
+          city: storeIntake.originalValues.city || "",
+          state: storeIntake.originalValues.state || "",
+          phone: storeIntake.originalValues.phone || "",
+          website: storeIntake.originalValues.website || "",
+          facebookUrl: storeIntake.originalValues.facebookUrl || "",
+          otherSocialUrl: storeIntake.originalValues.otherSocialUrl || "",
+        };
+        const matcher = new DuplicateMatcher(new FixtureStoreProvider());
+        const dupes = await matcher.findDuplicates(dupQuery);
+        await ctx.state.set({ scopeKind: "issue", scopeId: issue.id, namespace: STATE_NS_INTAKE, stateKey: "intake-duplicates" }, dupes);
+      } catch {
+        // Duplicate matching is advisory only; never blocks intake
+      }
+    }
+
+    // -- Governed intake: deterministic analysis (proposal only, not a verdict) --
+    const fallback = needsClassificationFallback();
+    const analysisOutput = {
+      ...fallback,
+      category: msg.classHint,
+      confidence: detection.confidence,
+      priority: priorityFor(msg.classHint),
+      priorityReason: "Deterministic source detection: " + detection.sourceType + " (" + detection.sourceForm + "), confidence " + detection.confidence,
+      humanApprovalRequired: true,
+      summary: detection.sourceType !== "unknown"
+        ? "Store submission from " + detection.sourceForm + " via " + detection.sourcePage + "."
+        : "General intake message classified as " + msg.classHint + ".",
+    };
+    const analysisRecord = createAnalysisRecord(
+      "deterministic", "classifier-v1",
+      analysisOutput,
+      "ev-" + msg.evidenceId,
+      "deterministic_only",
+    );
+    const analysisKey = "intake-analysis-" + Date.now() + "-" + msg.evidenceId.slice(0, 12);
+    await ctx.state.set({ scopeKind: "issue", scopeId: issue.id, namespace: STATE_NS_INTAKE, stateKey: analysisKey }, analysisRecord);
+    const existingAnalysisKeys = await ctx.state.get({ scopeKind: "issue", scopeId: issue.id, namespace: STATE_NS_INTAKE, stateKey: "intake-analysis-keys" });
+    const analysisKeys: string[] = Array.isArray(existingAnalysisKeys) ? existingAnalysisKeys : [];
+    analysisKeys.push(analysisKey);
+    await ctx.state.set({ scopeKind: "issue", scopeId: issue.id, namespace: STATE_NS_INTAKE, stateKey: "intake-analysis-keys" }, analysisKeys);
+
+    // -- Governed intake: deduplicated notification (activity first, then state) --
+    if (storeIntake && shouldSendIntakeNotification("high", "store_submission", null)) {
+      const existingNotif = await ctx.state.get({ scopeKind: "issue", scopeId: issue.id, namespace: STATE_NS_INTAKE, stateKey: "intake-notification" });
+      if (!existingNotif) {
+        await ctx.activity.log({
+          companyId,
+          message: "NEW STORE SUBMISSION REQUIRES REVIEW: " + (storeIntake.originalValues.storeName || "unknown store"),
+          entityType: "issue",
+          entityId: issue.id,
+          metadata: { priority: "high", category: "store_submission", evidenceId: msg.evidenceId },
+        });
+        const notificationRecord: IntakeNotificationRecord = {
+          sent: true,
+          sentAt: new Date().toISOString(),
+          issueId: issue.id,
+          priority: "high",
+          category: "store_submission",
+        };
+        await ctx.state.set({ scopeKind: "issue", scopeId: issue.id, namespace: STATE_NS_INTAKE, stateKey: "intake-notification" }, notificationRecord);
+      }
+    }
   }
 
   await ctx.activity.log({
@@ -514,15 +538,41 @@ const plugin = definePlugin({
       const issueId = params?.issueId as string;
       if (!issueId) return null;
       try {
-        const [evidence, duplicates, rawAnalyses, rawReviews, notification] = await Promise.all([
-          ctx.state.get({ scopeKind: "issue", scopeId: issueId, namespace: STATE_NS_INTAKE, stateKey: "intake-evidence" }),
-          ctx.state.get({ scopeKind: "issue", scopeId: issueId, namespace: STATE_NS_INTAKE, stateKey: "intake-duplicates" }),
-          ctx.state.get({ scopeKind: "issue", scopeId: issueId, namespace: STATE_NS_INTAKE, stateKey: "intake-analyses" }),
-          ctx.state.get({ scopeKind: "issue", scopeId: issueId, namespace: STATE_NS_INTAKE, stateKey: "intake-reviews" }),
-          ctx.state.get({ scopeKind: "issue", scopeId: issueId, namespace: STATE_NS_INTAKE, stateKey: "intake-notification" }),
-        ]);
-        const reviews: ReviewRecord[] = Array.isArray(rawReviews) ? rawReviews : [];
-        const analyses: AnalysisRecord[] = Array.isArray(rawAnalyses) ? rawAnalyses : [];
+        const evidence = await ctx.state.get({ scopeKind: "issue", scopeId: issueId, namespace: STATE_NS_INTAKE, stateKey: "intake-evidence" });
+        const duplicates = await ctx.state.get({ scopeKind: "issue", scopeId: issueId, namespace: STATE_NS_INTAKE, stateKey: "intake-duplicates" });
+        const notification = await ctx.state.get({ scopeKind: "issue", scopeId: issueId, namespace: STATE_NS_INTAKE, stateKey: "intake-notification" });
+
+        // Gather analyses from unique keys (D3: safe per-record keys)
+        const analyses: AnalysisRecord[] = [];
+        // Fetch analyses by prefix-search: we rely on listing known keys via the analysis index
+        const analysisIndex = await ctx.state.get({ scopeKind: "issue", scopeId: issueId, namespace: STATE_NS_INTAKE, stateKey: "intake-analysis-keys" });
+        const analysisKeys: string[] = Array.isArray(analysisIndex) ? analysisIndex : [];
+        for (const key of analysisKeys) {
+          try {
+            const record = await ctx.state.get({ scopeKind: "issue", scopeId: issueId, namespace: STATE_NS_INTAKE, stateKey: key });
+            if (record) {
+              // D7: Validate stored analysis before exposing to UI
+              const validated = validateAnalysisOutput((record as AnalysisRecord).analysis);
+              const safeRecord = { ...(record as AnalysisRecord) };
+              if (!validated.ok) {
+                safeRecord.analysis = needsClassificationFallback();
+              }
+              analyses.push(safeRecord);
+            }
+          } catch { /* skip corrupted record */ }
+        }
+
+        // Gather reviews from unique keys (D3: safe per-record keys)
+        const reviews: ReviewRecord[] = [];
+        const reviewIndex = await ctx.state.get({ scopeKind: "issue", scopeId: issueId, namespace: STATE_NS_INTAKE, stateKey: "intake-review-keys" });
+        const reviewKeys: string[] = Array.isArray(reviewIndex) ? reviewIndex : [];
+        for (const key of reviewKeys) {
+          try {
+            const record = await ctx.state.get({ scopeKind: "issue", scopeId: issueId, namespace: STATE_NS_INTAKE, stateKey: key });
+            if (record) reviews.push(record as ReviewRecord);
+          } catch { /* skip corrupted record */ }
+        }
+
         const latestAnalysis = analyses.length > 0 ? analyses[analyses.length - 1].analysis : null;
         const latestReview = getLatestReview(reviews);
         return {
@@ -541,44 +591,109 @@ const plugin = definePlugin({
       }
     });
 
-    // -- Perform human review action --
-    ctx.actions.register("perform-review", async (params) => {
+    // -- Intake queue data provider (D1: review queue) --
+    ctx.data.register("intake-queue", async (params) => {
+      const companyId = params?.companyId as string;
+      if (!companyId) return [];
+      try {
+        const issues = await ctx.issues.list({
+          companyId,
+          originKindPrefix: ORIGIN_KIND_INTAKE,
+          limit: 200,
+        });
+        const items: Array<Record<string, unknown>> = [];
+        for (const issue of issues) {
+          try {
+            const evidence = await ctx.state.get({ scopeKind: "issue", scopeId: issue.id, namespace: STATE_NS_INTAKE, stateKey: "intake-evidence" });
+            const reviewKeys = await ctx.state.get({ scopeKind: "issue", scopeId: issue.id, namespace: STATE_NS_INTAKE, stateKey: "intake-review-keys" });
+            const reviewKeyList: string[] = Array.isArray(reviewKeys) ? reviewKeys : [];
+            let latestVerdict: string | null = null;
+            let latestOutcome: string | null = null;
+            if (reviewKeyList.length > 0) {
+              const lastKey = reviewKeyList[reviewKeyList.length - 1];
+              const lastReview = await ctx.state.get({ scopeKind: "issue", scopeId: issue.id, namespace: STATE_NS_INTAKE, stateKey: lastKey });
+              if (lastReview) {
+                const r = lastReview as ReviewRecord;
+                latestVerdict = r.verdict;
+                latestOutcome = r.operationalOutcome ?? null;
+              }
+            }
+            const duplicates = await ctx.state.get({ scopeKind: "issue", scopeId: issue.id, namespace: STATE_NS_INTAKE, stateKey: "intake-duplicates" });
+            const dupList = Array.isArray(duplicates) ? duplicates : [];
+            items.push({
+              issueId: issue.id,
+              identifier: issue.identifier,
+              title: issue.title,
+              status: issue.status,
+              priority: issue.priority,
+              createdAt: issue.createdAt,
+              storeName: (evidence as Record<string, unknown> | null)?.storeIntake
+                ? ((evidence as Record<string, unknown>).storeIntake as Record<string, string>)?.storeName ?? null
+                : null,
+              sourceForm: (evidence as Record<string, unknown> | null)?.sourceDetection
+                ? ((evidence as Record<string, unknown>).sourceDetection as Record<string, string>)?.sourceForm ?? null
+                : null,
+              sourceType: (evidence as Record<string, unknown> | null)?.sourceDetection
+                ? ((evidence as Record<string, unknown>).sourceDetection as Record<string, string>)?.sourceType ?? null
+                : null,
+              latestVerdict,
+              latestOutcome,
+              duplicateCount: dupList.length,
+              duplicateStrength: dupList.length > 0 ? (dupList.some((d: Record<string, unknown>) => d.matchStrength === "strong") ? "strong" : "possible") : null,
+              hasEvidence: evidence != null,
+            });
+          } catch { /* skip problematic issues */ }
+        }
+        return items;
+      } catch {
+        return [];
+      }
+    });
+
+    // -- Perform human review action (D3: unique key per review; D4: trusted actor) --
+    ctx.actions.register("perform-review", async (params, actionCtx) => {
       const issueId = params?.issueId as string;
       if (!issueId) throw configError("perform-review requires issueId.");
-      const reviewer = (params?.reviewer as string) || "board";
+      const actorUserId = actionCtx?.actor?.userId;
+      if (!actorUserId) throw configError("perform-review requires authenticated user context.");
       const verdict = params?.verdict as ReviewVerdict;
       if (!verdict) throw configError("perform-review requires a verdict.");
       const validVerdicts: ReviewVerdict[] = ["genuine_external", "internal_test", "family_test", "spam", "duplicate", "unsure"];
       if (!validVerdicts.includes(verdict)) throw configError("Invalid verdict: " + verdict + ". Must be one of: " + validVerdicts.join(", "));
       const notes = (params?.notes as string) || "";
+      if (notes.length > 2000) throw configError("Review notes must be 2000 characters or fewer.");
       const operationalOutcome = params?.operationalOutcome as OperationalOutcome | undefined;
       const duplicateLink = params?.duplicateLink as ReviewRecord["duplicateLink"] | undefined;
 
-      let reviews: ReviewRecord[] = [];
-      try {
-        const existing = await ctx.state.get({ scopeKind: "issue", scopeId: issueId, namespace: STATE_NS_INTAKE, stateKey: "intake-reviews" });
-        if (Array.isArray(existing)) reviews = existing;
-      } catch { /* ignore */ }
+      // Gather existing review keys
+      const reviewKeyIndex = await ctx.state.get({ scopeKind: "issue", scopeId: issueId, namespace: STATE_NS_INTAKE, stateKey: "intake-review-keys" });
+      const existingKeys: string[] = Array.isArray(reviewKeyIndex) ? reviewKeyIndex : [];
+      const nextIndex = existingKeys.length;
 
-      const nextIndex = reviews.length > 0 ? Math.max(...reviews.map((r) => r.reviewIndex)) + 1 : 0;
-      const reviewRecord = createReviewRecord(nextIndex, verdict, reviewer, {
+      // D4: Reviewer identity comes from authenticated actor, NOT from client
+      const reviewRecord = createReviewRecord(nextIndex, verdict, actorUserId, {
         notes,
         duplicateLink,
         operationalOutcome,
       });
 
-      reviews.push(reviewRecord);
-      await ctx.state.set({ scopeKind: "issue", scopeId: issueId, namespace: STATE_NS_INTAKE, stateKey: "intake-reviews" }, reviews);
+      // D3: Unique key per review prevents silent overwrite
+      const reviewKey = "intake-review-" + Date.now() + "-" + (reviewRecord.reviewIndex || 0);
+      await ctx.state.set({ scopeKind: "issue", scopeId: issueId, namespace: STATE_NS_INTAKE, stateKey: reviewKey }, reviewRecord);
+
+      // Update the key index
+      existingKeys.push(reviewKey);
+      await ctx.state.set({ scopeKind: "issue", scopeId: issueId, namespace: STATE_NS_INTAKE, stateKey: "intake-review-keys" }, existingKeys);
 
       await ctx.activity.log({
-        companyId: params?.companyId as string || "unknown",
+        companyId: params?.companyId as string || actionCtx?.actor?.companyId || "unknown",
         message: "Human review verdict: " + verdict + " for issue " + issueId + " (review #" + nextIndex + ")",
         entityType: "issue",
         entityId: issueId,
-        metadata: { verdict, reviewer, reviewIndex: nextIndex, operationalOutcome: operationalOutcome ?? null },
+        metadata: { verdict, reviewer: actorUserId, reviewIndex: nextIndex, operationalOutcome: operationalOutcome ?? null },
       });
 
-      return { ok: true, review: reviewRecord, totalReviews: reviews.length };
+      return { ok: true, review: reviewRecord, totalReviews: existingKeys.length };
     });
 
     ctx.actions.register("poll-now", async (params) => {

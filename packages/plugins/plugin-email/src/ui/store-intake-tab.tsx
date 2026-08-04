@@ -143,14 +143,16 @@ export function StoreIntakeTab({ context }: PluginDetailTabProps) {
     setReviewError(null);
     setReviewSuccess(false);
     try {
-      await performReview({
+      const reviewParams: Record<string, unknown> = {
         issueId,
         verdict: verdictChoice,
-        reviewer: "board",
         notes: reviewNotes,
-        operationalOutcome: outcomeChoice || undefined,
-        duplicateLink: verdictChoice === "duplicate" && duplicateRef ? { referenceId: duplicateRef, reason: reviewNotes || "Linked by reviewer" } : undefined,
-      });
+      };
+      if (outcomeChoice) reviewParams.operationalOutcome = outcomeChoice;
+      if (verdictChoice === "duplicate" && duplicateRef) {
+        reviewParams.duplicateLink = { referenceId: duplicateRef, reason: reviewNotes || "Linked by reviewer" };
+      }
+      await performReview(reviewParams);
       setReviewSuccess(true);
       refresh();
     } catch (err) {
@@ -209,8 +211,8 @@ export function StoreIntakeTab({ context }: PluginDetailTabProps) {
 
       <div style={cardStyle()}>
         <div style={{ fontWeight: 700 }}>Source</div>
-        <div style={row()}><span style={labelStyle()}>Provider</span><span>{evidence.sourceDetection.sourceForm}</span></div>
-        <div style={row()}><span style={labelStyle()}>Form</span><span>{evidence.sourceDetection.sourceType}</span></div>
+        <div style={row()}><span style={labelStyle()}>Form</span><span>{evidence.sourceDetection.sourceForm}</span></div>
+        <div style={row()}><span style={labelStyle()}>Type</span><span>{evidence.sourceDetection.sourceType}</span></div>
         <div style={row()}><span style={labelStyle()}>Page</span><span>{evidence.sourceDetection.sourcePage}</span></div>
         <div style={row()}><span style={labelStyle()}>Received</span><span>{new Date(evidence.date).toLocaleString()}</span></div>
         <div style={row()}><span style={labelStyle()}>Evidence ID</span><span style={{ fontFamily: "monospace", fontSize: 12 }}>{evidence.evidenceId.slice(0, 16)}</span></div>
