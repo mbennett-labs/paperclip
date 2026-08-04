@@ -279,3 +279,71 @@ describe("Review queue filtering logic", () => {
     expect(unreviewed.length).toBe(0);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Fix 2: End-to-end config-to-provider wiring
+// ---------------------------------------------------------------------------
+
+describe("Configuration-to-provider wiring (Fix 2)", () => {
+  it("not_configured uses fixture provider and returns no matches from empty set", async () => {
+    const { createConfigurableDuplicateMatcher } = await import("../src/mail/duplicates.js");
+    const { matcher, provider } = createConfigurableDuplicateMatcher({});
+    const results = await matcher.findDuplicates({
+      storeName: "Test Store",
+      address: "", city: "", state: "", phone: "", website: "", facebookUrl: "", otherSocialUrl: "",
+    });
+    expect(results).toEqual([]);
+  });
+
+  it("configured path with valid JSON produces candidates", async () => {
+    const { writeFileSync, unlinkSync } = await import("node:fs");
+    const { resolve } = await import("node:path");
+    const { tmpdir } = await import("node:os");
+    const { createConfigurableDuplicateMatcher, DuplicateMatcher } = await import("../src/mail/duplicates.js");
+
+    const stores = [
+      { id: "s1", name: "Bargain Bin", address: "123 Main", city: "Nashville", state: "TN", postalCode: "", phone: "", website: "", facebookUrl: "", otherSocialUrl: "" },
+    ];
+    const path = resolve(tmpdir(), "config-test-" + Date.now() + ".json");
+    writeFileSync(path, JSON.stringify(stores));
+
+    try {
+      const { matcher, provider } = createConfigurableDuplicateMatcher({ storeExportPath: path });
+      const results = await matcher.findDuplicates({
+        storeName: "Bargain Bin",
+        address: "123 Main", city: "Nashville", state: "TN", phone: "", website: "", facebookUrl: "", otherSocialUrl: "",
+      });
+      expect(results.length).toBeGreaterThanOrEqual(1);
+      expect(results[0].storeName).toBe("Bargain Bin");
+    } finally {
+      unlinkSync(path);
+    }
+  });
+
+  it("configured path with missing file reports unavailable", async () => {
+    const { JsonStoreProvider } = await import("../src/mail/duplicates.js");
+    const provider = new JsonStoreProvider("/nonexistent/test-path/stores.json");
+    expect(provider.isAvailable()).toBe(false);
+    expect(provider.getError()).toContain("not found");
+  });
+
+  it("malformed file path is distinguishable from no matches", async () => {
+    const { JsonStoreProvider } = await import("../src/mail/duplicates.js");
+    const missing = new JsonStoreProvider("/no/file.json");
+    expect(missing.isAvailable()).toBe(false);
+
+    const { tmpdir } = await import("node:os");
+    const { resolve } = await import("node:path");
+    const { writeFileSync, unlinkSync } = await import("node:fs");
+    const emptyPath = resolve(tmpdir(), "empty-config-" + Date.now() + ".json");
+    writeFileSync(emptyPath, "[]");
+    try {
+      const empty = new JsonStoreProvider(emptyPath);
+      expect(empty.isAvailable()).toBe(true);
+      const records = await empty.listAll();
+      expect(records.length).toBe(0); // Available but empty — different from unavailable
+    } finally {
+      unlinkSync(emptyPath);
+    }
+  });
+});

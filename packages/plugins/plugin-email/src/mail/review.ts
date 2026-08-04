@@ -145,10 +145,11 @@ export function getLatestOutcome(reviews: ReviewRecord[]): OperationalOutcome | 
 
 export interface IntakeNotificationRecord {
   sent: boolean;
-  sentAt: string;
+  sentAt: string | null;
   issueId: string;
   priority: string;
   category: string;
+  evidenceFingerprint: string;
 }
 
 export function shouldSendIntakeNotification(
@@ -160,4 +161,8 @@ export function shouldSendIntakeNotification(
   if (priority !== "high") return false;
   if (category !== "store_submission") return false;
   return true;
+}
+
+export function isPendingNotification(notif: IntakeNotificationRecord | null): boolean {
+  return notif != null && !notif.sent;
 }

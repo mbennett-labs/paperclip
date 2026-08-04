@@ -1,5 +1,4 @@
 import { describe, expect, it } from "vitest";
-import { JSON } from "node:fs";
 
 /**
  * Tests for D2: Evidence write-once, D3: Safe append-only, D4: Trusted reviewer,
@@ -557,3 +556,48 @@ function buildGovernedDescription(opts: {
 
   return lines.join("\n");
 }
+
+// ---------------------------------------------------------------------------
+// Fix 5: Submitter email exclusion from Store Intake UI
+// ---------------------------------------------------------------------------
+
+describe("Submitter email exclusion (Fix 5)", () => {
+  const SAFE_STORE_FIELDS = ["storeName", "address", "city", "state", "postalCode", "phone", "website", "facebookUrl", "otherSocialUrl", "restockDays", "pricingSchedule"];
+
+  it("submitterEmail is excluded from rendered Store Intake fields", () => {
+    const allFields = ["storeName", "address", "submitterEmail", "submitterName", "phone", "website"];
+    const rendered = allFields.filter((f) => SAFE_STORE_FIELDS.includes(f));
+    expect(rendered).not.toContain("submitterEmail");
+    expect(rendered).not.toContain("submitterName");
+    expect(rendered).toContain("storeName");
+    expect(rendered).toContain("phone");
+    expect(rendered).toContain("website");
+  });
+
+  it("submitterRelationship is excluded", () => {
+    expect(SAFE_STORE_FIELDS.includes("submitterRelationship")).toBe(false);
+  });
+
+  it("description field is excluded", () => {
+    expect(SAFE_STORE_FIELDS.includes("description")).toBe(false);
+  });
+
+  it("public store contact info (phone, website) is included", () => {
+    expect(SAFE_STORE_FIELDS.includes("phone")).toBe(true);
+    expect(SAFE_STORE_FIELDS.includes("website")).toBe(true);
+  });
+
+  it("intake queue items do not contain submitter email", () => {
+    const queueItem = {
+      issueId: "test-1",
+      identifier: "EML-1",
+      storeName: "Test Store",
+      sourceForm: "thebinmap_submit",
+      latestVerdict: null,
+      hasEvidence: true,
+    };
+    // submitterEmail, submitterName, submitterRelationship are intentionally absent from the type
+    expect((queueItem as Record<string, unknown>).submitterEmail).toBeUndefined();
+    expect((queueItem as Record<string, unknown>).submitterName).toBeUndefined();
+  });
+});

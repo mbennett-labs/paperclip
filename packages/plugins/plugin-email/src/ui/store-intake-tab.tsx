@@ -186,7 +186,7 @@ export function StoreIntakeTab({ context }: PluginDetailTabProps) {
       {intake && (
         <div style={cardStyle()}>
           <div style={{ fontWeight: 700 }}>Store information</div>
-          {["storeName", "address", "city", "state", "postalCode", "phone", "website", "facebookUrl", "otherSocialUrl", "restockDays", "pricingSchedule", "submitterName", "submitterRelationship", "description"].map((field) => {
+          {["storeName", "address", "city", "state", "postalCode", "phone", "website", "facebookUrl", "otherSocialUrl", "restockDays", "pricingSchedule"].map((field) => {
             const orig = intake.originalValues[field];
             const norm = intake.normalizedValues[field];
             if (!orig) return null;

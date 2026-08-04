@@ -81,6 +81,11 @@ function normalizedSocial(url: string): string {
   }
 }
 
+function getStoreField(record: StoreRecord, field: string): string {
+  const r = record as unknown as Record<string, string>;
+  return r[field] ?? "";
+}
+
 export class DuplicateMatcher {
   constructor(private provider: StoreProvider) {}
 
@@ -189,7 +194,7 @@ export class FixtureStoreProvider implements StoreProvider {
 
   async lookup(field: string, value: string): Promise<StoreRecord[]> {
     return this.stores.filter((s) => {
-      const normalized = (s as Record<string, string>)[field]?.toLowerCase() ?? "";
+      const normalized = getStoreField(s, field).toLowerCase();
       return normalized.includes(value.toLowerCase());
     });
   }
@@ -262,7 +267,7 @@ export class JsonStoreProvider implements StoreProvider {
     if (!this.stores) return [];
     const normalized = value.toLowerCase();
     return this.stores.filter((s) => {
-      const v = (s as Record<string, string>)[field]?.toLowerCase() ?? "";
+      const v = getStoreField(s, field).toLowerCase();
       return v.includes(normalized);
     });
   }

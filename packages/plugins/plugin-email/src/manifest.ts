@@ -124,6 +124,12 @@ const manifest: PaperclipPluginManifestV1 = {
           "Optional JSON array of additional mailbox profiles (same fields as above plus `key`). Future multi-mailbox capability; the engine and loop are identical per profile.",
         default: DEFAULTS.extraProfilesJson,
       },
+      storeExportPath: {
+        type: "string",
+        title: "Store Export Path (JSON)",
+        description:
+          "Optional path to a JSON export of canonical stores for duplicate matching. Expected format: array of objects with id, name, address, city, state, phone, website, facebookUrl fields. File access is read-only.",
+      },
     },
   },
   jobs: [

@@ -35,12 +35,14 @@ import {
   FixtureStoreProvider,
   JsonStoreProvider,
   type DuplicateQuery,
+  type StoreProvider,
 } from "./mail/duplicates.js";
 import {
   createReviewRecord,
   getLatestReview,
   getLatestOutcome,
   shouldSendIntakeNotification,
+  isPendingNotification,
   type ReviewRecord,
   type ReviewVerdict,
   type OperationalOutcome,
@@ -49,6 +51,7 @@ import {
 import {
   createAnalysisRecord,
   needsClassificationFallback,
+  validateAnalysisOutput,
   type AnalysisRecord,
 } from "./mail/analysis.js";
 
@@ -72,6 +75,7 @@ type EmailPluginConfig = {
   markSeen?: boolean;
   maxMessagesPerPoll?: number;
   extraProfilesJson?: string;
+  storeExportPath?: string;
 };
 
 type ThreadRecord = {
@@ -314,9 +318,25 @@ async function ingestMessage(
           facebookUrl: storeIntake.originalValues.facebookUrl || "",
           otherSocialUrl: storeIntake.originalValues.otherSocialUrl || "",
         };
-        const matcher = new DuplicateMatcher(new FixtureStoreProvider());
+        let storeProvider: StoreProvider;
+        let providerStatus: string;
+        if (config.storeExportPath) {
+          const jsonProvider = new JsonStoreProvider(config.storeExportPath);
+          if (jsonProvider.isAvailable()) {
+            storeProvider = jsonProvider;
+            providerStatus = "configured";
+          } else {
+            storeProvider = new FixtureStoreProvider();
+            providerStatus = "unavailable: " + (jsonProvider.getError() ?? "unknown error");
+          }
+        } else {
+          storeProvider = new FixtureStoreProvider();
+          providerStatus = "not_configured";
+        }
+        const matcher = new DuplicateMatcher(storeProvider);
         const dupes = await matcher.findDuplicates(dupQuery);
         await ctx.state.set({ scopeKind: "issue", scopeId: issue.id, namespace: STATE_NS_INTAKE, stateKey: "intake-duplicates" }, dupes);
+        await ctx.state.set({ scopeKind: "issue", scopeId: issue.id, namespace: STATE_NS_INTAKE, stateKey: "intake-provider-status" }, providerStatus);
       } catch {
         // Duplicate matching is advisory only; never blocks intake
       }
@@ -348,25 +368,53 @@ async function ingestMessage(
     analysisKeys.push(analysisKey);
     await ctx.state.set({ scopeKind: "issue", scopeId: issue.id, namespace: STATE_NS_INTAKE, stateKey: "intake-analysis-keys" }, analysisKeys);
 
-    // -- Governed intake: deduplicated notification (activity first, then state) --
+    // -- Governed intake: deduplicated notification (pending -> activity -> completed) --
     if (storeIntake && shouldSendIntakeNotification("high", "store_submission", null)) {
-      const existingNotif = await ctx.state.get({ scopeKind: "issue", scopeId: issue.id, namespace: STATE_NS_INTAKE, stateKey: "intake-notification" });
-      if (!existingNotif) {
-        await ctx.activity.log({
-          companyId,
-          message: "NEW STORE SUBMISSION REQUIRES REVIEW: " + (storeIntake.originalValues.storeName || "unknown store"),
-          entityType: "issue",
-          entityId: issue.id,
-          metadata: { priority: "high", category: "store_submission", evidenceId: msg.evidenceId },
-        });
-        const notificationRecord: IntakeNotificationRecord = {
-          sent: true,
-          sentAt: new Date().toISOString(),
+      const existingNotif = await ctx.state.get({ scopeKind: "issue", scopeId: issue.id, namespace: STATE_NS_INTAKE, stateKey: "intake-notification" }) as IntakeNotificationRecord | undefined;
+      if (!existingNotif?.sent) {
+        const pending: IntakeNotificationRecord = {
+          sent: false,
+          sentAt: null,
           issueId: issue.id,
           priority: "high",
           category: "store_submission",
+          evidenceFingerprint: msg.evidenceId,
         };
-        await ctx.state.set({ scopeKind: "issue", scopeId: issue.id, namespace: STATE_NS_INTAKE, stateKey: "intake-notification" }, notificationRecord);
+        await ctx.state.set({ scopeKind: "issue", scopeId: issue.id, namespace: STATE_NS_INTAKE, stateKey: "intake-notification" }, pending);
+        try {
+          await ctx.activity.log({
+            companyId,
+            message: "NEW STORE SUBMISSION REQUIRES REVIEW: " + (storeIntake.originalValues.storeName || "unknown store"),
+            entityType: "issue",
+            entityId: issue.id,
+            metadata: { priority: "high", category: "store_submission", evidenceFingerprint: msg.evidenceId },
+          });
+          // Activity succeeded: mark notification completed
+          pending.sent = true;
+          pending.sentAt = new Date().toISOString();
+          await ctx.state.set({ scopeKind: "issue", scopeId: issue.id, namespace: STATE_NS_INTAKE, stateKey: "intake-notification" }, pending);
+        } catch {
+          // Activity log failed; notification stays pending.
+          // On retry (re-ingestion blocked by seenKey), the pending state
+          // will be detected and only the activity will be re-attempted.
+        }
+      } else if (isPendingNotification(existingNotif)) {
+        // Retry: notification was pending from a previous partial ingestion.
+        // Re-attempt the activity log.
+        try {
+          await ctx.activity.log({
+            companyId,
+            message: "NEW STORE SUBMISSION REQUIRES REVIEW (retry): " + (storeIntake?.originalValues.storeName || "unknown store"),
+            entityType: "issue",
+            entityId: issue.id,
+            metadata: { priority: "high", category: "store_submission", evidenceFingerprint: existingNotif.evidenceFingerprint },
+          });
+          existingNotif.sent = true;
+          existingNotif.sentAt = new Date().toISOString();
+          await ctx.state.set({ scopeKind: "issue", scopeId: issue.id, namespace: STATE_NS_INTAKE, stateKey: "intake-notification" }, existingNotif);
+        } catch {
+          // Activity still failing; notification remains pending for next retry.
+        }
       }
     }
   }
