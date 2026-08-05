@@ -75,6 +75,7 @@ type EmailPluginConfig = {
   markSeen?: boolean;
   maxMessagesPerPoll?: number;
   extraProfilesJson?: string;
+  intakeSince?: string;
   storeExportPath?: string;
 };
 
@@ -145,6 +146,18 @@ function summarizeError(error: unknown): string {
   return String(error);
 }
 
+function isValidIntakeDate(s: string): boolean {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s);
+  if (!m) return false;
+  const year = Number(m[1]);
+  const month = Number(m[2]);
+  const day = Number(m[3]);
+  if (month < 1 || month > 12 || day < 1 || day > 31) return false;
+  const d = new Date(Date.UTC(year, month - 1, day));
+  if (d.getUTCFullYear() !== year || d.getUTCMonth() !== month - 1 || d.getUTCDate() !== day) return false;
+  return true;
+}
+
 function seenKey(messageId: string): string {
   return `seen:${createHash("sha1").update(messageId).digest("hex")}`;
 }
@@ -167,6 +180,7 @@ function buildProfiles(config: EmailPluginConfig): ConnectorProfile[] {
     archiveFolder: config.archiveFolder ?? DEFAULTS.archiveFolder,
     markSeen: config.markSeen ?? DEFAULTS.markSeen,
     maxMessagesPerPoll: Number(config.maxMessagesPerPoll ?? DEFAULTS.maxMessagesPerPoll),
+    ...(config.intakeSince ? { intakeSince: config.intakeSince } : {}),
   };
   const profiles: ConnectorProfile[] = [];
   if (base.username) profiles.push(base);
@@ -451,6 +465,10 @@ async function runPollForCompany(
     await ctx.state.set({ scopeKind: "company", scopeId: companyId, namespace: STATE_NS, stateKey: "mailbox-status" }, status);
     ctx.logger.info("poll skipped: scheduledPollingEnabled is false for this company", { companyId });
     return status.profiles;
+  }
+
+  if (config.intakeSince && !isValidIntakeDate(config.intakeSince)) {
+    throw configError("intakeSince is not a valid date (use YYYY-MM-DD, e.g. 2026-07-01): " + config.intakeSince);
   }
 
   const profiles = buildProfiles(config);
@@ -955,6 +973,13 @@ const plugin = definePlugin({
     if (!cfg.triageAgentId) warnings.push("triageAgentId is empty; intake issues will be unassigned.");
     if (!cfg.username) errors.push("Mailbox username is required.");
     if (!cfg.credentialSecretRef) errors.push("A credential secret binding is required.");
+    if (cfg.intakeSince) {
+      if (!isValidIntakeDate(cfg.intakeSince)) {
+        errors.push("intakeSince is not a valid date (use YYYY-MM-DD, e.g. 2026-07-01).");
+      } else {
+        warnings.push("intakeSince: " + cfg.intakeSince + " — IMAP SINCE filter active; messages with internal date before this date are skipped.");
+      }
+    }
     if (errors.length > 0) return { ok: false, warnings, errors };
 
     try {

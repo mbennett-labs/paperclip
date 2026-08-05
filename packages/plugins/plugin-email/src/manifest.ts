@@ -130,6 +130,13 @@ const manifest: PaperclipPluginManifestV1 = {
         description:
           "Optional path to a JSON export of canonical stores for duplicate matching. Expected format: array of objects with id, name, address, city, state, phone, website, facebookUrl fields. File access is read-only.",
       },
+      intakeSince: {
+        type: "string",
+        title: "Intake Since Date",
+        description:
+          "Optional. Messages with an IMAP internal date before this date (inclusive) are skipped during polling. Format: YYYY-MM-DD. Unset = process all unseen messages from cursor forward.",
+        format: "date",
+      },
     },
   },
   jobs: [
