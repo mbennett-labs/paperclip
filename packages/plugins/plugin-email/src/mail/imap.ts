@@ -13,6 +13,7 @@ export type ConnectorProfile = {
   archiveFolder: string;
   markSeen: boolean;
   maxMessagesPerPoll: number;
+  intakeSince?: string;
 };
 
 export type FetchedMessage = {
@@ -55,6 +56,9 @@ export async function fetchUnseen(
     try {
       const criteria: Record<string, unknown> = { seen: false };
       if (afterUid > 0) criteria.uid = `${afterUid + 1}:*`;
+      if (profile.intakeSince) {
+        criteria.since = new Date(profile.intakeSince);
+      }
       const uids = await client.search(criteria, { uid: true });
       const selected = (Array.isArray(uids) ? uids : []).slice(0, profile.maxMessagesPerPoll);
       for (const uid of selected) {

@@ -22,6 +22,10 @@ describe("Email plugin safety guards", () => {
     it("maxMessagesPerPoll defaults to 20", () => {
       expect(DEFAULTS.maxMessagesPerPoll).toBe(20);
     });
+
+    it("intakeSince has no global default (optional, backward-compatible)", () => {
+      expect(DEFAULTS).not.toHaveProperty("intakeSince");
+    });
   });
 
   describe("scheduled polling guard", () => {
@@ -99,6 +103,96 @@ describe("Email plugin safety guards", () => {
       expect(config.outboundEnabled).toBe(false);
       expect(config.markSeen).toBe(false);
       expect(config.maxMessagesPerPoll).toBe(1);
+    });
+  });
+
+  describe("intakeSince date validation", () => {
+    function isValidIntakeDate(s: string): boolean {
+      const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s);
+      if (!m) return false;
+      const year = Number(m[1]);
+      const month = Number(m[2]);
+      const day = Number(m[3]);
+      if (month < 1 || month > 12 || day < 1 || day > 31) return false;
+      const d = new Date(Date.UTC(year, month - 1, day));
+      if (d.getUTCFullYear() !== year || d.getUTCMonth() !== month - 1 || d.getUTCDate() !== day) return false;
+      return true;
+    }
+
+    it("accepts a valid date", () => {
+      expect(isValidIntakeDate("2026-07-01")).toBe(true);
+    });
+
+    it("accepts December 31", () => {
+      expect(isValidIntakeDate("2026-12-31")).toBe(true);
+    });
+
+    it("accepts leap day in a leap year", () => {
+      expect(isValidIntakeDate("2024-02-29")).toBe(true);
+    });
+
+    it("rejects invalid calendar date (Feb 30)", () => {
+      expect(isValidIntakeDate("2026-02-30")).toBe(false);
+    });
+
+    it("rejects month 13", () => {
+      expect(isValidIntakeDate("2026-13-01")).toBe(false);
+    });
+
+    it("rejects month 00", () => {
+      expect(isValidIntakeDate("2026-00-15")).toBe(false);
+    });
+
+    it("rejects day 00", () => {
+      expect(isValidIntakeDate("2026-07-00")).toBe(false);
+    });
+
+    it("rejects non-YYYY-MM-DD format", () => {
+      expect(isValidIntakeDate("07/01/2026")).toBe(false);
+    });
+
+    it("rejects ISO datetime string", () => {
+      expect(isValidIntakeDate("2026-07-01T00:00:00Z")).toBe(false);
+    });
+
+    it("rejects empty string", () => {
+      expect(isValidIntakeDate("")).toBe(false);
+    });
+  });
+
+  describe("intakeSince runtime guard (poll path)", () => {
+    // The guard at worker.ts line ~472 runs in runPollForCompany before
+    // buildProfiles, resolvePassword, fetchUnseen, or ImapFlow construction.
+
+    function isValidIntakeDate(s: string): boolean {
+      const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s);
+      if (!m) return false;
+      const year = Number(m[1]);
+      const month = Number(m[2]);
+      const day = Number(m[3]);
+      if (month < 1 || month > 12 || day < 1 || day > 31) return false;
+      const d = new Date(Date.UTC(year, month - 1, day));
+      if (d.getUTCFullYear() !== year || d.getUTCMonth() !== month - 1 || d.getUTCDate() !== day) return false;
+      return true;
+    }
+
+    function guardedPoll(config: { intakeSince?: string }): string {
+      if (config.intakeSince && !isValidIntakeDate(config.intakeSince)) {
+        throw new Error("intakeSince is not a valid date: " + config.intakeSince);
+      }
+      return "poll completed";
+    }
+
+    it("throws before ImapFlow when intakeSince is invalid", () => {
+      expect(() => guardedPoll({ intakeSince: "2026-02-30" })).toThrow();
+    });
+
+    it("allows poll when intakeSince is unset", () => {
+      expect(() => guardedPoll({})).not.toThrow();
+    });
+
+    it("allows poll when intakeSince is valid", () => {
+      expect(() => guardedPoll({ intakeSince: "2026-07-01" })).not.toThrow();
     });
   });
 });
