@@ -271,16 +271,17 @@ describe("issueDescriptionFor", () => {
   it("includes sender, subject, date, message-id, classHint, ventureHint", () => {
     const msg = normalizeMessage(baseInput);
     const desc = issueDescriptionFor(msg);
-    expect(desc).toContain("**From:** John Doe <john@example.com>");
     expect(desc).toContain("**Subject:** Test Subject");
     expect(desc).toContain("**Date:** 2026-07-01T12:00:00.000Z");
-    expect(desc).toContain("**Message-ID:** `test-msg-1@example.com`");
-    expect(desc).toContain("**In-Reply-To:** `orig-msg@example.com`");
     expect(desc).toContain("**Class hint:** `unknown`");
     expect(desc).toContain("**Venture hint:** `thebinmap`");
+    expect(desc).toContain("**Evidence ref:**");
+    // From and Message-ID are intentionally omitted from governed descriptions
+    expect(desc).not.toContain("**From:**");
+    expect(desc).not.toContain("**Message-ID:**");
   });
 
-  it("includes body text", () => {
+  it("includes body text for non-store messages", () => {
     const msg = normalizeMessage(baseInput);
     const desc = issueDescriptionFor(msg);
     expect(desc).toContain("Hello, this is a test message.");

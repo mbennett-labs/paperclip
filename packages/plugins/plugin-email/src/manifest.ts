@@ -28,6 +28,7 @@ const manifest: PaperclipPluginManifestV1 = {
     "secrets.read-ref",
     "ui.detailTab.register",
     "ui.dashboardWidget.register",
+    "ui.page.register",
   ],
   entrypoints: {
     worker: "./dist/worker.js",
@@ -123,6 +124,12 @@ const manifest: PaperclipPluginManifestV1 = {
           "Optional JSON array of additional mailbox profiles (same fields as above plus `key`). Future multi-mailbox capability; the engine and loop are identical per profile.",
         default: DEFAULTS.extraProfilesJson,
       },
+      storeExportPath: {
+        type: "string",
+        title: "Store Export Path (JSON)",
+        description:
+          "Optional path to a JSON export of canonical stores for duplicate matching. Expected format: array of objects with id, name, address, city, state, phone, website, facebookUrl fields. File access is read-only.",
+      },
     },
   },
   jobs: [
@@ -141,6 +148,19 @@ const manifest: PaperclipPluginManifestV1 = {
         displayName: "Email",
         exportName: EXPORT_NAMES.issueTab,
         entityTypes: ["issue"],
+      },
+      {
+        type: "detailTab",
+        id: SLOT_IDS.storeIntakeTab,
+        displayName: "Store Intake",
+        exportName: EXPORT_NAMES.storeIntakeTab,
+        entityTypes: ["issue"],
+      },
+      {
+        type: "page",
+        id: SLOT_IDS.storeIntakePage,
+        displayName: "Store Intake Review",
+        exportName: EXPORT_NAMES.storeIntakePage,
       },
       {
         type: "dashboardWidget",

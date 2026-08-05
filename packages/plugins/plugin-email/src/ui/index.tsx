@@ -6,6 +6,9 @@ import {
   type PluginWidgetProps,
 } from "@paperclipai/plugin-sdk/ui";
 
+export { StoreIntakeTab } from "./store-intake-tab.js";
+export { StoreIntakePage } from "./store-intake-page.js";
+
 type ThreadRecord = {
   messageId: string;
   profileKey: string;

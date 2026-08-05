@@ -209,26 +209,24 @@ export function detectSource(
     return detection;
   }
 
-  // Rule 3: Web3Forms sender + TheBinMap keywords in subject
-  if (isWeb3Forms) {
-    if (s.includes("store submission") || s.includes("thebinmap")) {
-      detection.sourceType = "store_submission";
-      detection.sourceForm = "thebinmap_submit";
-      detection.sourcePage = "/submit";
-      detection.confidence = 0.8;
-      detection.evidence.push("Web3Forms sender + store-submission subject pattern");
-      detection.rulesMatched.push("web3forms:thebinmap_submit_pattern");
-      return detection;
-    }
-    if (s.includes("listing claim")) {
-      detection.sourceType = "listing_claim";
-      detection.sourceForm = "unknown";
-      detection.sourcePage = "unknown";
-      detection.confidence = 0.8;
-      detection.evidence.push("Web3Forms sender + listing-claim subject pattern");
-      detection.rulesMatched.push("web3forms:thebinmap_claim_pattern");
-      return detection;
-    }
+  // Rule 3: Web3Forms sender + explicit "store submission" in subject (strong signal only)
+  if (isWeb3Forms && s.includes("store submission")) {
+    detection.sourceType = "store_submission";
+    detection.sourceForm = "thebinmap_submit";
+    detection.sourcePage = "/submit";
+    detection.confidence = 0.8;
+    detection.evidence.push("Web3Forms sender + 'store submission' in subject");
+    detection.rulesMatched.push("web3forms:store_submission_subject");
+    return detection;
+  }
+  if (isWeb3Forms && s.includes("listing claim")) {
+    detection.sourceType = "listing_claim";
+    detection.sourceForm = "unknown";
+    detection.sourcePage = "unknown";
+    detection.confidence = 0.8;
+    detection.evidence.push("Web3Forms sender + listing-claim subject pattern");
+    detection.rulesMatched.push("web3forms:thebinmap_claim_pattern");
+    return detection;
   }
 
   // Rule 4: Body contains known submit-form field names + TheBinMap footer
@@ -366,13 +364,13 @@ function classify(subject: string, fromAddress: string, body: string): MessageCl
   const f = fromAddress.toLowerCase();
 
   const isWeb3Forms = f.includes("web3forms.com");
-  if (isWeb3Forms || s.includes("store submission") || (b.includes("store name") && b.includes("address"))) {
+  if (s.includes("store submission") && (b.includes("store name") && b.includes("address"))) {
     if (s.includes("claim") || b.includes("claim this listing") || b.includes("role:")) return "listing_claim";
     return "store_submission";
   }
+  if (isWeb3Forms && (s.includes("stay in the loop") || s.includes("newsletter"))) return "newsletter_signup";
   if (s.includes("claim")) return "listing_claim";
   if (s.includes("alert") || b.includes("restock") || b.includes("notify me")) return "store_alert_signup";
-  if (isWeb3Forms && (s.includes("stay in the loop") || s.includes("newsletter"))) return "newsletter_signup";
   if (s.includes("newsletter") || s.includes("subscribe") || s.includes("stay in the loop")) return "newsletter_signup";
   if (s.includes("intelligence") || b.includes("intelligence request") || s.includes("data report")) return "intelligence_request";
   if (s.includes("affiliate") || s.includes("partner") || s.includes("wholesale") || s.includes("supplier")) return "partnership_affiliate";
@@ -468,14 +466,11 @@ export function issueDescriptionFor(msg: NormalizedMessage): string {
   const lines: (string | null)[] = [
     `## Inbound email (connector: ${msg.profileKey})`,
     "",
-    `- **From:** ${msg.from}`,
-    `- **To:** ${msg.to}`,
     `- **Date:** ${msg.date}`,
     `- **Subject:** ${msg.subject}`,
-    `- **Message-ID:** \`${msg.messageId}\``,
-    msg.inReplyTo ? `- **In-Reply-To:** \`${msg.inReplyTo}\`` : null,
     `- **Class hint:** \`${msg.classHint}\` (connector heuristic — assign the authoritative class per email-triage-sop)`,
     `- **Venture hint:** \`${msg.ventureHint}\``,
+    `- **Evidence ref:** \`${msg.evidenceId}\``,
   ];
 
   if (detection.sourceType !== "unknown") {
@@ -493,8 +488,8 @@ export function issueDescriptionFor(msg: NormalizedMessage): string {
     lines.push(`- **Priority:** \`${intake.priority}\``);
     lines.push(`- **Category:** \`${intake.category}\``);
     lines.push("", "### Extracted Fields", "");
-    const fields = STORE_INTAKE_FIELDS;
-    for (const f of fields) {
+    const safeFields = ["storeName", "address", "city", "state", "postalCode", "website", "facebookUrl", "otherSocialUrl", "restockDays", "pricingSchedule"];
+    for (const f of safeFields) {
       if (intake.originalValues[f]) {
         lines.push(`- **${f}:** ${intake.originalValues[f]}${intake.confidenceByField[f] ? ` (confidence: ${intake.confidenceByField[f]})` : ""}`);
       }
@@ -502,14 +497,16 @@ export function issueDescriptionFor(msg: NormalizedMessage): string {
     if (intake.missingFields.length > 0) {
       lines.push("", "### Missing Fields", "");
       for (const f of intake.missingFields) {
-        lines.push(`- ${f}`);
+        if (safeFields.includes(f)) {
+          lines.push(`- ${f}`);
+        }
       }
     }
-    lines.push("", "> **Next action:** Human verification required before store publication.");
+    lines.push("", "> **Operational summary:** Store submission from " + detection.sourceForm + " (" + detection.sourcePage + "). Use the governed Store Intake tab for full review, duplicate matching, and human verdict. Do not expose raw message body, submitter contact, or provider identifiers in this description.");
+  } else {
+    lines.push("", "---", "", msg.snippet + (msg.bodyText.length > msg.snippet.length ? "..." : ""), "", "---", "",
+      "Triage per **email-triage-sop**: one class label, one venture label, triage note, route or escalate. Never reply to the sender from this issue — drafts go to the Communications Drafter; only the Board sends.");
   }
-
-  lines.push("", "---", "", msg.bodyText || "_(no text body extracted)_", "", "---", "",
-    "Triage per **email-triage-sop**: one class label, one venture label, triage note, route or escalate. Never reply to the sender from this issue — drafts go to the Communications Drafter; only the Board sends.");
 
   return lines.filter((line) => line !== null).join("\n");
 }
