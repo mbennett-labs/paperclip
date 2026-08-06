@@ -3019,14 +3019,23 @@ export async function runChildProcess(
     stdin?: string;
     remoteExecution?: RemoteExecutionSpec | null;
     localProcessSandbox?: LocalProcessSandboxOptions | null;
+    /** Controls whether the child inherits the parent process environment.
+     *  "inherit" (default) merges sanitizeInheritedPaperclipEnv(process.env)
+     *  as the base layer; "replace" uses only the provided opts.env plus any
+     *  mandatory spawn-target values (e.g. SSH remote env).
+     *  Existing adapters default to "inherit". */
+    envMode?: "inherit" | "replace";
   },
 ): Promise<RunProcessResult> {
   const onLogError = opts.onLogError ?? ((err, id, msg) => console.warn({ err, runId: id }, msg));
   return new Promise<RunProcessResult>((resolve, reject) => {
-    const rawMerged: NodeJS.ProcessEnv = {
-      ...sanitizeInheritedPaperclipEnv(process.env),
-      ...opts.env,
-    };
+    const envMode = opts.envMode ?? "inherit";
+    const rawMerged: NodeJS.ProcessEnv = envMode === "replace"
+      ? { ...opts.env }
+      : {
+          ...sanitizeInheritedPaperclipEnv(process.env),
+          ...opts.env,
+        };
 
     // Strip Claude Code nesting-guard env vars so spawned `claude` processes
     // don't refuse to start with "cannot be launched inside another session".

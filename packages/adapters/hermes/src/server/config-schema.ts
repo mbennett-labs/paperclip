@@ -98,6 +98,20 @@ export function getConfigSchema(): AdapterConfigSchema {
         hint: "Optional API base override. Defaults to PAPERCLIP_API_URL.",
       },
       {
+        key: "dangerouslySkipHermesApprovals",
+        label: "Skip Hermes command approvals (--yolo)",
+        type: "toggle",
+        default: false,
+        hint: "DANGEROUS: bypasses Hermes command-approval prompts. Without this, Hermes will reject commands requiring approval (non-interactive agents have no TTY to confirm).",
+      },
+      {
+        key: "allowPaperclipApiAccess",
+        label: "Expose Paperclip API key to Hermes",
+        type: "toggle",
+        default: false,
+        hint: "DANGEROUS: Forward PAPERCLIP_API_KEY to the child process. Required only if Hermes must call back to Paperclip's REST API from within a run. The key grants bearer access scoped to this agent. Enabling this exposes the credential to the child environment — ensure the agent is properly contained.",
+      },
+      {
         key: "promptTemplate",
         label: "Prompt template",
         type: "textarea",
