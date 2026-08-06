@@ -87,6 +87,26 @@ function pageContribution(overrides: Partial<{ slots: unknown[] }> = {}) {
   };
 }
 
+function emailPluginContribution(overrides: Partial<{ slots: unknown[] }> = {}) {
+  return {
+    pluginId: "f89c6e60-6760-4e7a-8db9-5386bc0e36fe",
+    pluginKey: "qsl.email",
+    displayName: "Email Connector (QSL)",
+    version: "0.1.0",
+    uiEntryFile: "index.js",
+    slots: [
+      {
+        type: "page",
+        id: "store-intake-page",
+        displayName: "Store Intake Review",
+        exportName: "StoreIntakePage",
+      },
+    ],
+    launchers: [],
+    ...overrides,
+  };
+}
+
 async function renderPage(container: HTMLDivElement) {
   const root = createRoot(container);
   const queryClient = new QueryClient({
@@ -208,5 +228,82 @@ describe("PluginPage", () => {
     await act(async () => {
       root.unmount();
     });
+  });
+
+  it("resolves a page by pluginKey when UUID does not match (e.g., /THE/plugins/qsl.email)", async () => {
+    mockParams.pluginId = "qsl.email";
+    mockParams.pluginRoutePath = undefined;
+    mockPluginsApi.listUiContributions.mockResolvedValue([emailPluginContribution()]);
+
+    const root = await renderPage(container);
+
+    expect(mockSetBreadcrumbs).toHaveBeenCalledWith([
+      { label: "Plugins", href: "/company/settings/instance/plugins" },
+      { label: "Email Connector (QSL)" },
+    ]);
+    expect(container.querySelector('[data-testid="plugin-slot-mount"]')?.textContent).toBe("Store Intake Review");
+
+    await act(async () => { root.unmount(); });
+  });
+
+  it("resolves a page by UUID when both UUID and pluginKey match", async () => {
+    mockParams.pluginId = "f89c6e60-6760-4e7a-8db9-5386bc0e36fe";
+    mockParams.pluginRoutePath = undefined;
+    mockPluginsApi.listUiContributions.mockResolvedValue([emailPluginContribution()]);
+
+    const root = await renderPage(container);
+
+    expect(mockSetBreadcrumbs).toHaveBeenCalledWith([
+      { label: "Plugins", href: "/company/settings/instance/plugins" },
+      { label: "Email Connector (QSL)" },
+    ]);
+    expect(container.querySelector('[data-testid="plugin-slot-mount"]')?.textContent).toBe("Store Intake Review");
+
+    await act(async () => { root.unmount(); });
+  });
+
+  it("prefers UUID match over pluginKey match when both could resolve", async () => {
+    mockParams.pluginId = "f89c6e60-6760-4e7a-8db9-5386bc0e36fe";
+    mockParams.pluginRoutePath = undefined;
+    mockPluginsApi.listUiContributions.mockResolvedValue([
+      {
+        pluginId: "f89c6e60-6760-4e7a-8db9-5386bc0e36fe",
+        pluginKey: "qsl.email",
+        displayName: "Email Connector (QSL)",
+        version: "0.1.0",
+        uiEntryFile: "index.js",
+        slots: [{ type: "page", id: "email-page", displayName: "Email Page", exportName: "EmailPage" }],
+        launchers: [],
+      },
+      {
+        pluginId: "other-uuid",
+        pluginKey: "f89c6e60-6760-4e7a-8db9-5386bc0e36fe",
+        displayName: "Other Plugin",
+        version: "0.1.0",
+        uiEntryFile: "index.js",
+        slots: [{ type: "page", id: "other-page", displayName: "Other Page", exportName: "OtherPage" }],
+        launchers: [],
+      },
+    ]);
+
+    const root = await renderPage(container);
+
+    expect(mockSetBreadcrumbs).toHaveBeenCalledWith([
+      { label: "Plugins", href: "/company/settings/instance/plugins" },
+      { label: "Email Connector (QSL)" },
+    ]);
+    expect(container.querySelector('[data-testid="plugin-slot-mount"]')?.textContent).toBe("Email Page");
+
+    await act(async () => { root.unmount(); });
+  });
+
+  it("redirects to plugin settings for an unknown pluginId", async () => {
+    mockParams.pluginId = "nonexistent-id";
+    mockParams.pluginRoutePath = undefined;
+    mockPluginsApi.listUiContributions.mockResolvedValue([emailPluginContribution()]);
+
+    await renderPage(container);
+
+    expect(container.textContent).not.toContain("Store Intake Review");
   });
 });

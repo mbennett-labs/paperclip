@@ -162,6 +162,15 @@ function seenKey(messageId: string): string {
   return `seen:${createHash("sha1").update(messageId).digest("hex")}`;
 }
 
+export function resolveQueueStoreName(evidence: Record<string, unknown> | null): string | null {
+  const si = evidence?.storeIntake as Record<string, unknown> | null | undefined;
+  if (!si) return null;
+  const normalized = si.normalizedValues as Record<string, string> | undefined;
+  if (normalized?.storeName) return normalized.storeName;
+  const original = si.originalValues as Record<string, string> | undefined;
+  return original?.storeName ?? null;
+}
+
 function configError(message: string): Error {
   return new Error(`[${"qsl.email"}] ${message}`);
 }
@@ -693,9 +702,7 @@ const plugin = definePlugin({
               status: issue.status,
               priority: issue.priority,
               createdAt: issue.createdAt,
-              storeName: (evidence as Record<string, unknown> | null)?.storeIntake
-                ? ((evidence as Record<string, unknown>).storeIntake as Record<string, string>)?.storeName ?? null
-                : null,
+              storeName: resolveQueueStoreName(evidence as Record<string, unknown> | null),
               sourceForm: (evidence as Record<string, unknown> | null)?.sourceDetection
                 ? ((evidence as Record<string, unknown>).sourceDetection as Record<string, string>)?.sourceForm ?? null
                 : null,
