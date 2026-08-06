@@ -4,21 +4,23 @@ import type { ConnectorProfile } from "../src/mail/imap.js";
 let capturedSearchCriteria: Record<string, unknown> | null = null;
 
 vi.mock("imapflow", () => ({
-  ImapFlow: vi.fn().mockImplementation(() => ({
-    connect: vi.fn().mockResolvedValue(undefined),
-    logout: vi.fn().mockResolvedValue(undefined),
-    getMailboxLock: vi.fn().mockResolvedValue({
-      release: vi.fn(),
-    }),
-    search: vi.fn().mockImplementation((criteria: Record<string, unknown>) => {
-      capturedSearchCriteria = criteria;
-      return Promise.resolve([1]);
-    }),
-    fetchOne: vi.fn().mockResolvedValue({
-      envelope: { messageId: "<test@example.com>", subject: "test", date: new Date() },
-      bodyParts: new Map([["text", Buffer.from("test body")]]),
-    }),
-  })),
+  ImapFlow: vi.fn(function () {
+    return {
+      connect: vi.fn().mockResolvedValue(undefined),
+      logout: vi.fn().mockResolvedValue(undefined),
+      getMailboxLock: vi.fn().mockResolvedValue({
+        release: vi.fn(),
+      }),
+      search: vi.fn().mockImplementation((criteria: Record<string, unknown>) => {
+        capturedSearchCriteria = criteria;
+        return Promise.resolve([1]);
+      }),
+      fetchOne: vi.fn().mockResolvedValue({
+        envelope: { messageId: "<test@example.com>", subject: "test", date: new Date() },
+        bodyParts: new Map([["text", Buffer.from("test body")]]),
+      }),
+    };
+  }),
 }));
 
 async function fetchUnseenForTest(

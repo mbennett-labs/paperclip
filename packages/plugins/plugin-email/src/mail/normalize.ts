@@ -1,4 +1,11 @@
 import { createHash } from "node:crypto";
+import {
+  createIntakeMetadata,
+  computeCompleteness,
+  type IntakeMetadata,
+  type IntakeTransport,
+  type RecordCompleteness,
+} from "./intake-metadata.js";
 
 /**
  * Message normalization and heuristic classification for the QSL Email Company.
@@ -46,14 +53,36 @@ export type MessageClassHint =
 // Form-source detection types
 // ---------------------------------------------------------------------------
 
-export type SourceType = "store_submission" | "listing_claim" | "contact" | "unknown";
+export type SourceType =
+  | "store_submission"
+  | "listing_claim"
+  | "contact"
+  | "alert_signup"
+  | "newsletter_signup"
+  | "qsl_security_review"
+  | "qsl_risk_calculator"
+  | "therapist_index_message"
+  | "provider_marketing"
+  | "unknown";
 
-export type SourceForm = "thebinmap_submit" | "unknown";
+export type SourceForm =
+  | "thebinmap_submit"
+  | "thebinmap_claim"
+  | "thebinmap_contact"
+  | "thebinmap_alert"
+  | "thebinmap_newsletter"
+  | "qsl_risk_calc"
+  | "qsl_security_review_form"
+  | "therapist_index"
+  | "unknown";
+
+export type IntakeBrand = "thebinmap" | "qsl" | "therapist_index" | "unknown";
 
 export interface SourceDetection {
   sourceType: SourceType;
   sourceForm: SourceForm;
   sourcePage: string;
+  brand: IntakeBrand;
   confidence: number;
   evidence: string[];
   rulesMatched: string[];
@@ -82,6 +111,7 @@ export interface StoreIntakeRecord {
   requiresHumanReview: boolean;
   createdAt: string;
   updatedAt: string;
+  intakeMetadata: IntakeMetadata;
 }
 
 // ---------------------------------------------------------------------------
@@ -93,8 +123,310 @@ const MAX_BODY_CHARS = 20000;
 const THEBINMAP_SUBMIT_SUBJECT = "New store submission — TheBinMap";
 const THEBINMAP_CLAIM_SUBJECT = "Listing claim — TheBinMap";
 const THEBINMAP_CONTACT_SUBJECT = "Contact form — TheBinMap";
-const THEBINMAP_SUBMIT_SENDER = "TheBinMap Submit Form";
+const THEBINMAP_NEWSLETTER_SUBJECT = "Stay in the loop — TheBinMap";
+const THEBINMAP_ALERT_PREFIX = "New alert signup — TheBinMap";
 const THEBINMAP_FOOTER = "https://thebinmap.com/";
+
+const QSL_SECURITY_REVIEW_SUBJECT = "QSL Security Review Request";
+const QSL_RISK_CALC_SUBJECT = "QSL Risk Calculator - New Lead";
+
+const THERAPIST_INDEX_SUBJECT_PATTERNS = [
+  /^TherapistIndex\b/i,
+  /^\[TherapistIndex\]/i,
+  /therapistindex\.com/i,
+];
+
+const PROVIDER_MARKETING_SUBJECT_PATTERNS = [
+  /^welcome/i,
+  /^(get|getting) started/i,
+  /^(verify|confirm) your (email|account)/i,
+  /^your account/i,
+  /^account (created|activated)/i,
+  /\btips(?: and tricks)?\b/i,
+  /pro (?:plan|trial)/i,
+  /^upgrade/i,
+  /^new feature/i,
+  /announcement$/i,
+  /^webinar/i,
+  /^invitation/i,
+  /^please confirm/i,
+  /^subscription/i,
+  /^billing/i,
+];
+
+function isProviderMarketing(subject: string, fromAddress: string): boolean {
+  const f = fromAddress.toLowerCase();
+  if (!f.includes("web3forms.com") && !f.includes("formspree.io")) return false;
+  return PROVIDER_MARKETING_SUBJECT_PATTERNS.some((p) => p.test(subject));
+}
+
+function detectBrand(subject: string, fromAddress: string, body: string): IntakeBrand {
+  const s = subject.toLowerCase();
+  const b = body.slice(0, 4000).toLowerCase();
+
+  if (s.includes("thebinmap") || b.includes("thebinmap")) return "thebinmap";
+  if (s.includes("therapistindex") || b.includes("therapistindex.com")) return "therapist_index";
+  if (
+    s.includes("qsl") || s.includes("quantum shield") ||
+    b.includes("quantumshield") || b.includes("qsl risk") ||
+    b.includes("qsl security")
+  ) return "qsl";
+
+  const f = fromAddress.toLowerCase();
+  if (f.endsWith("@thebinmap.com")) return "thebinmap";
+  if (f.endsWith("@quantumshield.com") || f.includes("@qsl")) return "qsl";
+
+  return "unknown";
+}
+
+export function detectSource(
+  subject: string,
+  fromAddress: string,
+  body: string,
+): SourceDetection {
+  const s = subject.toLowerCase();
+  const b = body.slice(0, 4000).toLowerCase();
+  const f = fromAddress.toLowerCase();
+  const isWeb3Forms = f.includes("web3forms.com");
+  const isFormspree = f.includes("formspree.io");
+  const brand = detectBrand(subject, fromAddress, body);
+
+  const detection: SourceDetection = {
+    sourceType: "unknown",
+    sourceForm: "unknown",
+    sourcePage: "unknown",
+    brand,
+    confidence: 0,
+    evidence: [],
+    rulesMatched: [],
+    requiresHumanReview: true,
+  };
+
+  // --- Marketing exclusion (highest priority) ---
+  if (isProviderMarketing(subject, fromAddress)) {
+    detection.sourceType = "provider_marketing";
+    detection.sourceForm = "unknown";
+    detection.confidence = 0.85;
+    detection.requiresHumanReview = false;
+    detection.evidence.push("provider marketing detected by subject pattern");
+    detection.rulesMatched.push("provider:marketing");
+    return detection;
+  }
+
+  // --- TheBinMap: exact subject matches ---
+  if (subject === THEBINMAP_SUBMIT_SUBJECT) {
+    detection.sourceType = "store_submission";
+    detection.sourceForm = "thebinmap_submit";
+    detection.sourcePage = "/submit";
+    detection.brand = "thebinmap";
+    detection.confidence = 0.95;
+    detection.evidence.push("subject-line exact match: 'New store submission — TheBinMap'");
+    detection.rulesMatched.push("subject-exact:thebinmap_submit");
+    detection.requiresHumanReview = false;
+    return detection;
+  }
+
+  if (subject === THEBINMAP_CLAIM_SUBJECT) {
+    detection.sourceType = "listing_claim";
+    detection.sourceForm = "thebinmap_claim";
+    detection.sourcePage = "/claim";
+    detection.brand = "thebinmap";
+    detection.confidence = 0.9;
+    detection.evidence.push("subject-line exact match: 'Listing claim — TheBinMap'");
+    detection.rulesMatched.push("subject-exact:thebinmap_claim");
+    detection.requiresHumanReview = false;
+    return detection;
+  }
+
+  if (subject === THEBINMAP_CONTACT_SUBJECT) {
+    detection.sourceType = "contact";
+    detection.sourceForm = "thebinmap_contact";
+    detection.sourcePage = "/contact";
+    detection.brand = "thebinmap";
+    detection.confidence = 0.9;
+    detection.evidence.push("subject-line exact match: 'Contact form — TheBinMap'");
+    detection.rulesMatched.push("subject-exact:thebinmap_contact");
+    detection.requiresHumanReview = false;
+    return detection;
+  }
+
+  if (subject === THEBINMAP_NEWSLETTER_SUBJECT) {
+    detection.sourceType = "newsletter_signup";
+    detection.sourceForm = "thebinmap_newsletter";
+    detection.sourcePage = "/";
+    detection.brand = "thebinmap";
+    detection.confidence = 0.9;
+    detection.evidence.push("subject-line exact match: 'Stay in the loop — TheBinMap'");
+    detection.rulesMatched.push("subject-exact:thebinmap_newsletter");
+    detection.requiresHumanReview = false;
+    return detection;
+  }
+
+  // --- TheBinMap: alert signup ---
+  if (subject.startsWith(THEBINMAP_ALERT_PREFIX)) {
+    detection.sourceType = "alert_signup";
+    detection.sourceForm = "thebinmap_alert";
+    detection.sourcePage = subject.includes("— TheBinMap") ? "/" : "/store";
+    detection.brand = "thebinmap";
+    detection.confidence = 0.9;
+    detection.evidence.push("subject-line exact match: 'New alert signup — TheBinMap'");
+    detection.rulesMatched.push("subject-exact:thebinmap_alert");
+    detection.requiresHumanReview = false;
+    return detection;
+  }
+
+  if (isWeb3Forms && (s.includes("alert signup") || s.startsWith("alert signup"))) {
+    detection.sourceType = "alert_signup";
+    detection.sourceForm = "thebinmap_alert";
+    detection.sourcePage = "unknown";
+    detection.brand = "thebinmap";
+    detection.confidence = 0.8;
+    detection.evidence.push("Web3Forms sender + alert signup subject pattern");
+    detection.rulesMatched.push("web3forms:alert_signup");
+    return detection;
+  }
+
+  // --- TheBinMap: Web3Forms generic subject matches ---
+  if (isWeb3Forms && s.includes("store submission")) {
+    detection.sourceType = "store_submission";
+    detection.sourceForm = "thebinmap_submit";
+    detection.sourcePage = "/submit";
+    detection.brand = "thebinmap";
+    detection.confidence = 0.8;
+    detection.evidence.push("Web3Forms sender + 'store submission' in subject");
+    detection.rulesMatched.push("web3forms:store_submission_subject");
+    return detection;
+  }
+  if (isWeb3Forms && s.includes("listing claim")) {
+    detection.sourceType = "listing_claim";
+    detection.sourceForm = "thebinmap_claim";
+    detection.sourcePage = "unknown";
+    detection.brand = "thebinmap";
+    detection.confidence = 0.8;
+    detection.evidence.push("Web3Forms sender + listing-claim subject pattern");
+    detection.rulesMatched.push("web3forms:thebinmap_claim_pattern");
+    return detection;
+  }
+  if (isWeb3Forms && (s.includes("stay in the loop") || s.includes("newsletter"))) {
+    detection.sourceType = "newsletter_signup";
+    detection.sourceForm = "thebinmap_newsletter";
+    detection.sourcePage = "/";
+    detection.brand = "thebinmap";
+    detection.confidence = 0.8;
+    detection.evidence.push("Web3Forms sender + newsletter/loop subject");
+    detection.rulesMatched.push("web3forms:newsletter");
+    return detection;
+  }
+
+  // --- TheBinMap: body-based detection ---
+  if (b.includes("store name") && b.includes(THEBINMAP_FOOTER)) {
+    detection.sourceType = "store_submission";
+    detection.sourceForm = "thebinmap_submit";
+    detection.sourcePage = "/submit";
+    detection.brand = "thebinmap";
+    detection.confidence = 0.75;
+    detection.evidence.push("body contains store-name field + TheBinMap footer URL");
+    detection.rulesMatched.push("body-fields:thebinmap_submit_footer");
+    return detection;
+  }
+
+  if (b.includes("store name") && b.includes("city") && b.includes("restock")) {
+    detection.sourceType = "store_submission";
+    detection.sourceForm = "thebinmap_submit";
+    detection.sourcePage = "/submit";
+    detection.brand = "thebinmap";
+    detection.confidence = 0.6;
+    detection.evidence.push("body contains store-name + city + restock field combination");
+    detection.rulesMatched.push("body-fields:thebinmap_submit_combo");
+    return detection;
+  }
+
+  // --- QSL: Formspree forms ---
+  if ((isFormspree || f.includes("qsl") || b.includes("quantumshield") || b.includes("qsl ")) &&
+      subject === QSL_SECURITY_REVIEW_SUBJECT) {
+    detection.sourceType = "qsl_security_review";
+    detection.sourceForm = "qsl_security_review_form";
+    detection.sourcePage = "/security-review";
+    detection.brand = "qsl";
+    detection.confidence = 0.95;
+    detection.evidence.push("subject-line exact match: 'QSL Security Review Request'");
+    detection.rulesMatched.push("subject-exact:qsl_security_review");
+    detection.requiresHumanReview = false;
+    return detection;
+  }
+
+  if ((isFormspree || f.includes("qsl") || b.includes("quantumshield") || b.includes("qsl ")) &&
+      (subject === QSL_RISK_CALC_SUBJECT || s.includes("risk calculator"))) {
+    detection.sourceType = "qsl_risk_calculator";
+    detection.sourceForm = "qsl_risk_calc";
+    detection.sourcePage = "/risk-calculator";
+    detection.brand = "qsl";
+    detection.confidence = 0.95;
+    detection.evidence.push("subject-line match: QSL Risk Calculator lead");
+    detection.rulesMatched.push("subject-exact:qsl_risk_calc");
+    detection.requiresHumanReview = false;
+    return detection;
+  }
+
+  if (isFormspree && (s.includes("security review") || b.includes("security review"))) {
+    detection.sourceType = "qsl_security_review";
+    detection.sourceForm = "qsl_security_review_form";
+    detection.sourcePage = "/security-review";
+    detection.brand = "qsl";
+    detection.confidence = 0.7;
+    detection.evidence.push("Formspree sender + security review mention");
+    detection.rulesMatched.push("formspree:security_review");
+    return detection;
+  }
+
+  if (isFormspree && b.includes("risk_score")) {
+    detection.sourceType = "qsl_risk_calculator";
+    detection.sourceForm = "qsl_risk_calc";
+    detection.sourcePage = "/risk-calculator";
+    detection.brand = "qsl";
+    detection.confidence = 0.8;
+    detection.evidence.push("Formspree sender + risk_score field in body");
+    detection.rulesMatched.push("formspree:risk_calc_fields");
+    return detection;
+  }
+
+  // --- TherapistIndex ---
+  if (THERAPIST_INDEX_SUBJECT_PATTERNS.some((p) => p.test(subject)) ||
+      b.includes("therapistindex.com") ||
+      b.includes("therapist index")) {
+    const isModeration = s.includes("moderation") || b.includes("moderation");
+    const isAccount = s.includes("account created") || s.includes("account activated") || s.includes("activation");
+    const isSEO = s.includes("seo") || b.includes("seo") || s.includes("system notification") || b.includes("system notification");
+    const isCorrection = s.includes("correction") || s.includes("removal") || b.includes("remove listing") || b.includes("wrong information");
+
+    if (isCorrection) {
+      detection.sourceType = "correction";
+      detection.sourceForm = "therapist_index";
+      detection.sourcePage = "unknown";
+    } else if (isModeration) {
+      detection.sourceType = "contact";
+      detection.sourceForm = "therapist_index";
+      detection.sourcePage = "/moderation";
+    } else if (isAccount) {
+      detection.sourceType = "contact";
+      detection.sourceForm = "therapist_index";
+      detection.sourcePage = "/account";
+    } else if (isSEO || detection.brand === "therapist_index") {
+      detection.sourceType = "contact";
+      detection.sourceForm = "therapist_index";
+      detection.sourcePage = "unknown";
+    } else {
+    }
+    detection.brand = "therapist_index";
+    detection.confidence = detection.sourceType !== "unknown" ? 0.8 : 0.7;
+    detection.evidence.push("TherapistIndex brand + subject/body pattern match");
+    detection.rulesMatched.push("brand:therapist_index");
+    detection.requiresHumanReview = false;
+    return detection;
+  }
+
+  return detection;
+}
 
 const STORE_INTAKE_FIELDS = [
   "storeName",
@@ -151,110 +483,6 @@ export function firstAddress(input: string): string {
 }
 
 // ---------------------------------------------------------------------------
-// Deterministic form-source detection
-// ---------------------------------------------------------------------------
-
-export function detectSource(
-  subject: string,
-  fromAddress: string,
-  body: string,
-): SourceDetection {
-  const s = subject.toLowerCase();
-  const b = body.slice(0, 4000).toLowerCase();
-  const f = fromAddress.toLowerCase();
-  const isWeb3Forms = f.includes("web3forms.com");
-
-  const detection: SourceDetection = {
-    sourceType: "unknown",
-    sourceForm: "unknown",
-    sourcePage: "unknown",
-    confidence: 0,
-    evidence: [],
-    rulesMatched: [],
-    requiresHumanReview: true,
-  };
-
-  // Rule 1: Exact subject-line match (strongest signal)
-  if (subject === THEBINMAP_SUBMIT_SUBJECT) {
-    detection.sourceType = "store_submission";
-    detection.sourceForm = "thebinmap_submit";
-    detection.sourcePage = "/submit";
-    detection.confidence = 0.95;
-    detection.evidence.push("subject-line exact match: 'New store submission — TheBinMap'");
-    detection.rulesMatched.push("subject-exact:thebinmap_submit");
-    detection.requiresHumanReview = false;
-    return detection;
-  }
-
-  // Rule 2: Subject + body field-name combination
-  if (subject === THEBINMAP_CLAIM_SUBJECT) {
-    detection.sourceType = "listing_claim";
-    detection.sourceForm = "unknown";
-    detection.sourcePage = "unknown";
-    detection.confidence = 0.9;
-    detection.evidence.push("subject-line exact match: 'Listing claim — TheBinMap'");
-    detection.rulesMatched.push("subject-exact:thebinmap_claim");
-    detection.requiresHumanReview = false;
-    return detection;
-  }
-
-  if (subject === THEBINMAP_CONTACT_SUBJECT) {
-    detection.sourceType = "contact";
-    detection.sourceForm = "unknown";
-    detection.sourcePage = "unknown";
-    detection.confidence = 0.9;
-    detection.evidence.push("subject-line exact match: 'Contact form — TheBinMap'");
-    detection.rulesMatched.push("subject-exact:thebinmap_contact");
-    detection.requiresHumanReview = false;
-    return detection;
-  }
-
-  // Rule 3: Web3Forms sender + explicit "store submission" in subject (strong signal only)
-  if (isWeb3Forms && s.includes("store submission")) {
-    detection.sourceType = "store_submission";
-    detection.sourceForm = "thebinmap_submit";
-    detection.sourcePage = "/submit";
-    detection.confidence = 0.8;
-    detection.evidence.push("Web3Forms sender + 'store submission' in subject");
-    detection.rulesMatched.push("web3forms:store_submission_subject");
-    return detection;
-  }
-  if (isWeb3Forms && s.includes("listing claim")) {
-    detection.sourceType = "listing_claim";
-    detection.sourceForm = "unknown";
-    detection.sourcePage = "unknown";
-    detection.confidence = 0.8;
-    detection.evidence.push("Web3Forms sender + listing-claim subject pattern");
-    detection.rulesMatched.push("web3forms:thebinmap_claim_pattern");
-    return detection;
-  }
-
-  // Rule 4: Body contains known submit-form field names + TheBinMap footer
-  if (b.includes("store name") && b.includes(THEBINMAP_FOOTER)) {
-    detection.sourceType = "store_submission";
-    detection.sourceForm = "thebinmap_submit";
-    detection.sourcePage = "/submit";
-    detection.confidence = 0.75;
-    detection.evidence.push("body contains store-name field + TheBinMap footer URL");
-    detection.rulesMatched.push("body-fields:thebinmap_submit_footer");
-    return detection;
-  }
-
-  // Rule 5: Body contains known submit-form field combination
-  if (b.includes("store name") && b.includes("city") && b.includes("restock")) {
-    detection.sourceType = "store_submission";
-    detection.sourceForm = "thebinmap_submit";
-    detection.sourcePage = "/submit";
-    detection.confidence = 0.6;
-    detection.evidence.push("body contains store-name + city + restock field combination");
-    detection.rulesMatched.push("body-fields:thebinmap_submit_combo");
-    return detection;
-  }
-
-  return detection;
-}
-
-// ---------------------------------------------------------------------------
 // Store-intake extraction
 // ---------------------------------------------------------------------------
 
@@ -263,7 +491,7 @@ export function extractStoreIntake(
   detection: SourceDetection,
   sourceIssueId: string,
 ): StoreIntakeRecord | null {
-  if (detection.sourceType !== "store_submission" || detection.sourceForm !== "thebinmap_submit") {
+  if (detection.sourceType !== "store_submission" || !["thebinmap_submit", "unknown"].includes(detection.sourceForm)) {
     return null;
   }
 
@@ -327,6 +555,22 @@ export function extractStoreIntake(
     normalizedValues.storeType = "amazon-returns";
   }
 
+  // Compute fields present for intake metadata
+  const fieldsPresent = STORE_INTAKE_FIELDS.filter(
+    (f) => originalValues[f] && originalValues[f].trim() !== "",
+  );
+
+  const intakeMetadata = createIntakeMetadata({
+    transport: "email_notification",
+    evidenceRefId: msg.evidenceId,
+    fieldsPresent,
+    totalPossibleFields: STORE_INTAKE_FIELDS.length,
+    emailMessageId: msg.messageId,
+    providerSubmissionId: undefined,
+  });
+
+  intakeMetadata.missingFields = [...missingFields];
+
   return {
     recordType: "store_intake",
     sourceIssueId,
@@ -345,6 +589,7 @@ export function extractStoreIntake(
     requiresHumanReview: false,
     createdAt: now,
     updatedAt: now,
+    intakeMetadata,
   };
 }
 
@@ -355,9 +600,16 @@ export function extractStoreIntake(
 function classify(subject: string, fromAddress: string, body: string): MessageClassHint {
   const detection = detectSource(subject, fromAddress, body);
 
+  if (detection.sourceType === "provider_marketing") return "spam_irrelevant";
   if (detection.sourceType === "store_submission") return "store_submission";
   if (detection.sourceType === "listing_claim") return "listing_claim";
+  if (detection.sourceType === "alert_signup") return "store_alert_signup";
+  if (detection.sourceType === "newsletter_signup") return "newsletter_signup";
+  if (detection.sourceType === "qsl_security_review") return "support_request";
+  if (detection.sourceType === "qsl_risk_calculator") return "sales_opportunity";
   if (detection.sourceType === "contact") return "contact_general";
+
+  if (detection.brand === "therapist_index") return "contact_general";
 
   const s = subject.toLowerCase();
   const b = body.slice(0, 4000).toLowerCase();
@@ -389,6 +641,8 @@ function ventureOf(to: string, fromAddress: string, subject: string, body: strin
   if (fromAddress.endsWith("@thebinmap.com")) return "thebinmap";
   if (subject.toLowerCase().includes("thebinmap") || body.slice(0, 2000).toLowerCase().includes("thebinmap")) return "thebinmap";
   if (t.includes("@quantumshield") || t.includes("@qsl")) return "qsl";
+  if (subject.toLowerCase().includes("qsl") || body.slice(0, 2000).toLowerCase().includes("qsl")) return "qsl";
+  if (subject.toLowerCase().includes("therapistindex") || body.slice(0, 2000).toLowerCase().includes("therapistindex")) return "therapist_index";
   return "unknown";
 }
 
@@ -455,6 +709,12 @@ export function issueTitleFor(msg: NormalizedMessage): string {
   const who = msg.from.length > 60 ? msg.fromAddress || msg.from.slice(0, 60) : msg.from;
   const prefix = detection.sourceType === "store_submission" ? "[Store Submission]"
     : detection.sourceType === "listing_claim" ? "[Listing Claim]"
+    : detection.sourceType === "alert_signup" ? "[Alert Signup]"
+    : detection.sourceType === "newsletter_signup" ? "[Newsletter]"
+    : detection.sourceType === "qsl_security_review" ? "[QSL Security Review]"
+    : detection.sourceType === "qsl_risk_calculator" ? "[QSL Risk Lead]"
+    : detection.sourceType === "provider_marketing" ? "[Marketing]"
+    : detection.brand === "therapist_index" ? "[TherapistIndex]"
     : `[Email:${msg.ventureHint}]`;
   return `${prefix} ${msg.subject} — ${who}`;
 }
