@@ -54,6 +54,20 @@ import {
   validateAnalysisOutput,
   type AnalysisRecord,
 } from "./mail/analysis.js";
+import {
+  IntakeMetadata,
+  type IntakeTransport,
+  type RecordCompleteness,
+} from "./mail/intake-metadata.js";
+import {
+  ReconciliationIndex,
+  correlateIncomingEvidence,
+  reconcileRecord,
+  isProviderMarketing,
+  type IntakeRecord,
+  type CorrelationAttempt,
+  type IntakeRecordEntry,
+} from "./mail/reconciliation.js";
 
 type EmailPluginConfig = {
   enabled?: boolean;
@@ -328,6 +342,54 @@ async function ingestMessage(
     };
     await ctx.state.set({ scopeKind: "issue", scopeId: issue.id, namespace: STATE_NS_INTAKE, stateKey: "intake-evidence" }, evidence);
 
+    // -- Governed intake: intake metadata with durable reconciliation --
+    const existingMetadata = await ctx.state.get({ scopeKind: "issue", scopeId: issue.id, namespace: STATE_NS_INTAKE, stateKey: "intake-metadata" });
+    if (!existingMetadata && storeIntake?.intakeMetadata) {
+      await ctx.state.set({ scopeKind: "issue", scopeId: issue.id, namespace: STATE_NS_INTAKE, stateKey: "intake-metadata" }, storeIntake.intakeMetadata);
+
+      const index = await rebuildReconciliationIndex(ctx, companyId);
+      const correlation = correlateIncomingEvidence(
+        {
+          id: issue.id,
+          metadata: storeIntake.intakeMetadata,
+          fieldValues: storeIntake.normalizedValues,
+        },
+        index.listAll(),
+      );
+
+      if (correlation.unsafeCorrelation) {
+        await ctx.activity.log({
+          companyId,
+          message: `Correlation safety gate: intake record ${issue.id} cannot be deterministically merged — requires human review`,
+          entityType: "issue",
+          entityId: issue.id,
+          metadata: { action: "unsafe_correlation", reason: correlation.reason },
+        });
+      }
+    } else if (existingMetadata && storeIntake?.intakeMetadata) {
+      const existing = existingMetadata as IntakeMetadata;
+      const incoming = storeIntake.intakeMetadata;
+
+      const index = await rebuildReconciliationIndex(ctx, companyId);
+      const existingRecord = index.get(issue.id);
+
+      if (existingRecord) {
+        const hasStrongerEvidence =
+          (incoming.intakeTransport === "provider_webhook" ||
+           incoming.intakeTransport === "provider_api" ||
+           incoming.intakeTransport === "wordpress_event") &&
+          existing.intakeTransport === "email_notification";
+
+        if (hasStrongerEvidence) {
+          const reconciled = reconcileRecord(existingRecord, {
+            metadata: incoming,
+            fieldValues: storeIntake.normalizedValues,
+          });
+          await ctx.state.set({ scopeKind: "issue", scopeId: issue.id, namespace: STATE_NS_INTAKE, stateKey: "intake-metadata" }, reconciled.metadata);
+        }
+      }
+    }
+
     // -- Governed intake: duplicate matching (read-only, no write to TheBinMap) --
     if (storeIntake) {
       try {
@@ -560,6 +622,57 @@ function parseReplyDraft(body: string): { to: string | null; subject: string | n
   return { to, subject, text: lines.slice(i).join("\n").trim() };
 }
 
+async function rebuildReconciliationIndex(ctx: PluginContext, companyId: string): Promise<ReconciliationIndex> {
+  const index = new ReconciliationIndex();
+  try {
+    const issues = await ctx.issues.list({
+      companyId,
+      originKindPrefix: ORIGIN_KIND_INTAKE,
+      limit: 200,
+    });
+    for (const issue of issues) {
+      try {
+        const metadata = await ctx.state.get({
+          scopeKind: "issue",
+          scopeId: issue.id,
+          namespace: STATE_NS_INTAKE,
+          stateKey: "intake-metadata",
+        });
+        if (metadata && typeof metadata === "object") {
+          const m = metadata as IntakeMetadata;
+          const evidence = await ctx.state.get({
+            scopeKind: "issue",
+            scopeId: issue.id,
+            namespace: STATE_NS_INTAKE,
+            stateKey: "intake-evidence",
+          });
+          const fieldValues: Record<string, string> = {};
+          if (evidence && typeof evidence === "object") {
+            const ev = evidence as { normalizedFields?: Record<string, string>; storeIntake?: { normalizedValues?: Record<string, string> } };
+            if (ev.normalizedFields && typeof ev.normalizedFields === "object") {
+              Object.assign(fieldValues, ev.normalizedFields as Record<string, string>);
+            } else if (ev.storeIntake?.normalizedValues) {
+              Object.assign(fieldValues, ev.storeIntake.normalizedValues as Record<string, string>);
+            }
+          }
+          index.add({
+            id: issue.id,
+            metadata: m,
+            fieldValues,
+            createdAt: issue.createdAt ?? new Date().toISOString(),
+            updatedAt: m.lastEnrichedAt ?? issue.createdAt ?? new Date().toISOString(),
+          });
+        }
+      } catch {
+        // Skip individual issues that fail to load
+      }
+    }
+  } catch {
+    // Return empty index on failure
+  }
+  return index;
+}
+
 const plugin = definePlugin({
   async setup(ctx) {
     ctx.jobs.register(JOB_KEYS.pollInbox, async () => {
@@ -616,6 +729,7 @@ const plugin = definePlugin({
         const evidence = await ctx.state.get({ scopeKind: "issue", scopeId: issueId, namespace: STATE_NS_INTAKE, stateKey: "intake-evidence" });
         const duplicates = await ctx.state.get({ scopeKind: "issue", scopeId: issueId, namespace: STATE_NS_INTAKE, stateKey: "intake-duplicates" });
         const notification = await ctx.state.get({ scopeKind: "issue", scopeId: issueId, namespace: STATE_NS_INTAKE, stateKey: "intake-notification" });
+        const intakeMetadata = await ctx.state.get({ scopeKind: "issue", scopeId: issueId, namespace: STATE_NS_INTAKE, stateKey: "intake-metadata" });
 
         // Gather analyses from unique keys (D3: safe per-record keys)
         const analyses: AnalysisRecord[] = [];
@@ -660,6 +774,7 @@ const plugin = definePlugin({
           latestVerdict: latestReview?.verdict ?? null,
           latestOutcome: getLatestOutcome(reviews),
           notification,
+          intakeMetadata: intakeMetadata ?? null,
         };
       } catch {
         return null;
@@ -695,6 +810,7 @@ const plugin = definePlugin({
             }
             const duplicates = await ctx.state.get({ scopeKind: "issue", scopeId: issue.id, namespace: STATE_NS_INTAKE, stateKey: "intake-duplicates" });
             const dupList = Array.isArray(duplicates) ? duplicates : [];
+            const intakeMetadata = await ctx.state.get({ scopeKind: "issue", scopeId: issue.id, namespace: STATE_NS_INTAKE, stateKey: "intake-metadata" });
             items.push({
               issueId: issue.id,
               identifier: issue.identifier,
@@ -714,6 +830,10 @@ const plugin = definePlugin({
               duplicateCount: dupList.length,
               duplicateStrength: dupList.length > 0 ? (dupList.some((d: Record<string, unknown>) => d.matchStrength === "strong") ? "strong" : "possible") : null,
               hasEvidence: evidence != null,
+              intakeTransport: intakeMetadata ? (intakeMetadata as IntakeMetadata).intakeTransport : "inferred_email",
+              recordCompleteness: intakeMetadata ? (intakeMetadata as IntakeMetadata).recordCompleteness : "needs_source_verification",
+              missingFields: intakeMetadata ? (intakeMetadata as IntakeMetadata).missingFields : [],
+              conflictingFields: intakeMetadata ? (intakeMetadata as IntakeMetadata).conflictingFields : [],
             });
           } catch { /* skip problematic issues */ }
         }

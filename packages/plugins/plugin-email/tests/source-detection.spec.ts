@@ -240,6 +240,256 @@ describe("detectSource — deterministic form-source detection", () => {
     );
     expect(r.sourceType).toBe("unknown");
   });
+
+  // --- Alert signup detection ---
+
+  it("identifies alert signup by exact subject line", () => {
+    const r = detectSource(
+      "New alert signup — TheBinMap",
+      "notify@web3forms.com",
+      "notify me when restocked"
+    );
+    expect(r.sourceType).toBe("alert_signup");
+    expect(r.sourceForm).toBe("thebinmap_alert");
+    expect(r.brand).toBe("thebinmap");
+    expect(r.confidence).toBeGreaterThanOrEqual(0.9);
+  });
+
+  it("identifies alert signup with store-specific subject", () => {
+    const r = detectSource(
+      "Alert signup — Nashville Bin Store",
+      "notify@web3forms.com",
+      "I want to be notified"
+    );
+    expect(r.sourceType).toBe("alert_signup");
+    expect(r.sourceForm).toBe("thebinmap_alert");
+  });
+
+  // --- Newsletter detection ---
+
+  it("identifies newsletter signup by exact subject line", () => {
+    const r = detectSource(
+      "Stay in the loop — TheBinMap",
+      "notify@web3forms.com",
+      "subscribe me to the newsletter"
+    );
+    expect(r.sourceType).toBe("newsletter_signup");
+    expect(r.brand).toBe("thebinmap");
+  });
+
+  // --- Marketing exclusion ---
+
+  it("classifies Web3Forms 'Welcome' as provider_marketing", () => {
+    const r = detectSource(
+      "Welcome to Web3Forms",
+      "noreply@web3forms.com",
+      "Thanks for signing up for Web3Forms"
+    );
+    expect(r.sourceType).toBe("provider_marketing");
+  });
+
+  it("classifies Formspree 'Get Started' as provider_marketing", () => {
+    const r = detectSource(
+      "Getting started with Formspree",
+      "noreply@formspree.io",
+      "Here are some tips for using Formspree"
+    );
+    expect(r.sourceType).toBe("provider_marketing");
+  });
+
+  it("classifies Web3Forms 'Verify Email' as provider_marketing", () => {
+    const r = detectSource(
+      "Verify your email",
+      "no-reply@web3forms.com",
+      "Please confirm your email address"
+    );
+    expect(r.sourceType).toBe("provider_marketing");
+  });
+
+  it("classifies Web3Forms 'Upgrade' as provider_marketing", () => {
+    const r = detectSource(
+      "Upgrade to Pro",
+      "noreply@web3forms.com",
+      "Upgrade your Web3Forms account"
+    );
+    expect(r.sourceType).toBe("provider_marketing");
+  });
+
+  it("Web3Forms non-marketing email without form-submission signals stays unknown", () => {
+    const r = detectSource(
+      "Some alert",
+      "notify+xxx@web3forms.com",
+      "restock alert for some site"
+    );
+    expect(r.sourceType).toBe("unknown");
+    expect(r.sourceType).not.toBe("store_submission");
+    expect(r.sourceType).not.toBe("provider_marketing");
+  });
+
+  // --- QSL Security Review Request ---
+
+  it("identifies QSL Security Review Request", () => {
+    const r = detectSource(
+      "QSL Security Review Request",
+      "submissions@formspree.io",
+      "name: John Doe\ncompany: Acme Inc\nmessage: Please review our security posture"
+    );
+    expect(r.sourceType).toBe("qsl_security_review");
+    expect(r.sourceForm).toBe("qsl_security_review_form");
+    expect(r.brand).toBe("qsl");
+    expect(r.confidence).toBeGreaterThanOrEqual(0.9);
+  });
+
+  it("identifies QSL Security Review from body mention with Formspree sender", () => {
+    const r = detectSource(
+      "New submission",
+      "noreply@formspree.io",
+      "security review requested for company XYZ"
+    );
+    expect(r.sourceType).toBe("qsl_security_review");
+  });
+
+  // --- QSL Risk Calculator ---
+
+  it("identifies QSL Risk Calculator Lead by exact subject", () => {
+    const r = detectSource(
+      "QSL Risk Calculator - New Lead",
+      "submissions@formspree.io",
+      "risk_score: 78\nrisk_level: high\nname: Jane Smith\nemail: jane@example.com\ncompany: Corp Inc\ntitle: CTO\norg_type: enterprise"
+    );
+    expect(r.sourceType).toBe("qsl_risk_calculator");
+    expect(r.sourceForm).toBe("qsl_risk_calc");
+    expect(r.brand).toBe("qsl");
+    expect(r.confidence).toBeGreaterThanOrEqual(0.9);
+  });
+
+  it("identifies QSL Risk Calculator from body risk_score field", () => {
+    const r = detectSource(
+      "New Lead Notification",
+      "noreply@formspree.io",
+      "risk_score: 45\nassessment_answers: [yes, no, yes]\nname: Test User"
+    );
+    expect(r.sourceType).toBe("qsl_risk_calculator");
+  });
+
+  // --- Formspree marketing exclusion ---
+
+  it("Formspree 'Tips' email is provider_marketing not QSL lead", () => {
+    const r = detectSource(
+      "Tips and tricks for your forms",
+      "noreply@formspree.io",
+      "Learn how to make the most of your Formspree forms"
+    );
+    expect(r.sourceType).toBe("provider_marketing");
+    expect(r.sourceType).not.toBe("qsl_risk_calculator");
+  });
+
+  it("Formspree 'Account Created' is provider_marketing not a lead", () => {
+    const r = detectSource(
+      "Your account has been created",
+      "noreply@formspree.io",
+      "Welcome to Formspree"
+    );
+    expect(r.sourceType).toBe("provider_marketing");
+  });
+
+  // --- TherapistIndex ---
+
+  it("identifies TherapistIndex brand from subject prefix", () => {
+    const r = detectSource(
+      "TherapistIndex: New contact form submission",
+      "notify@therapistindex.com",
+      "A user has submitted a contact request"
+    );
+    expect(r.brand).toBe("therapist_index");
+    expect(r.sourceForm).toBe("therapist_index");
+  });
+
+  it("identifies TherapistIndex correction/removal request", () => {
+    const r = detectSource(
+      "TherapistIndex - Correction request",
+      "provider@therapistindex.com",
+      "Please remove my listing, the information is wrong"
+    );
+    expect(r.brand).toBe("therapist_index");
+    expect(r.sourceForm).toBe("therapist_index");
+  });
+
+  it("identifies TherapistIndex account activation", () => {
+    const r = detectSource(
+      "TherapistIndex - Account activated",
+      "noreply@therapistindex.com",
+      "Your account has been activated"
+    );
+    expect(r.brand).toBe("therapist_index");
+  });
+
+  it("identifies TherapistIndex moderation notification", () => {
+    const r = detectSource(
+      "TherapistIndex moderation notification",
+      "noreply@therapistindex.com",
+      "A new listing requires moderation"
+    );
+    expect(r.brand).toBe("therapist_index");
+  });
+
+  it("identifies TherapistIndex SEO notification", () => {
+    const r = detectSource(
+      "TherapistIndex SEO update",
+      "noreply@therapistindex.com",
+      "Your SEO settings have been updated"
+    );
+    expect(r.brand).toBe("therapist_index");
+  });
+
+  it("TherapistIndex is not classified as Formspree or Web3Forms", () => {
+    const r = detectSource(
+      "TherapistIndex - New message",
+      "notify@wordpress.com",
+      "A therapist has sent you a message"
+    );
+    expect(r.brand).toBe("therapist_index");
+    expect(r.sourceForm).not.toBe("qsl_risk_calc");
+    expect(r.sourceForm).not.toBe("qsl_security_review_form");
+  });
+
+  // --- Brand detection ---
+
+  it("brand is correctly assigned for TheBinMap", () => {
+    const r = detectSource(
+      "New store submission — TheBinMap",
+      "notify@web3forms.com",
+      "store name: Test\ncity: Nashville"
+    );
+    expect(r.brand).toBe("thebinmap");
+  });
+
+  it("brand is correctly assigned for QSL", () => {
+    const r = detectSource(
+      "QSL Risk Calculator - New Lead",
+      "submissions@formspree.io",
+      "risk_score: 50"
+    );
+    expect(r.brand).toBe("qsl");
+  });
+
+  it("brand is correctly assigned for TherapistIndex", () => {
+    const r = detectSource(
+      "[TherapistIndex] Account notification",
+      "noreply@therapistindex.com",
+      "Your account settings have changed"
+    );
+    expect(r.brand).toBe("therapist_index");
+  });
+
+  it("brand is unknown for ordinary email without brand signals", () => {
+    const r = detectSource(
+      "Hello",
+      "someone@gmail.com",
+      "Just saying hello"
+    );
+    expect(r.brand).toBe("unknown");
+  });
 });
 
 // ---------------------------------------------------------------------------

@@ -50,6 +50,30 @@ type AnalysisRecord = {
   sourceKind: string;
 };
 
+type IntakeMetadataType = {
+  intakeTransport: string;
+  recordCompleteness: string;
+  evidenceSources: Array<{
+    transport: string;
+    referenceId: string;
+    receivedAt: string;
+    providerSubmissionId?: string;
+    emailMessageId?: string;
+    payloadHash: string;
+    fieldCount: number;
+    fieldsPresent: string[];
+  }>;
+  providerSubmissionId: string | null;
+  emailMessageId: string | null;
+  correlationFingerprint: string;
+  missingFields: string[];
+  conflictingFields: Array<{
+    field: string;
+    values: Array<{ value: string; source: string; precedence: number }>;
+  }>;
+  lastEnrichedAt: string | null;
+};
+
 type StoreIntakeData = {
   evidence: {
     sourceDetection: {
@@ -89,6 +113,7 @@ type StoreIntakeData = {
   latestReview: ReviewRecord | null;
   latestVerdict: string | null;
   latestOutcome: string | null;
+  intakeMetadata: IntakeMetadataType | null;
 } | null;
 
 const VERDICT_LABELS: Record<string, string> = {
@@ -106,6 +131,33 @@ const OUTCOME_LABELS: Record<string, string> = {
   rejected: "Rejected",
   closed: "Closed",
 };
+
+const TRANSPORT_LABELS: Record<string, string> = {
+  provider_webhook: "Webhook",
+  provider_api: "Provider API",
+  wordpress_event: "WordPress",
+  email_notification: "Email Notification",
+  inferred_email: "Inferred Email",
+};
+
+const COMPLETENESS_LABELS: Record<string, string> = {
+  complete: "Complete",
+  partial: "Partial",
+  needs_source_verification: "Needs Source Verification",
+};
+
+function completenessColor(c: string): string {
+  if (c === "complete") return "#27ae60";
+  if (c === "partial") return "#e67e22";
+  return "#e74c3c";
+}
+
+function transportColor(t: string): string {
+  if (t === "provider_webhook" || t === "provider_api") return "#2980b9";
+  if (t === "wordpress_event") return "#8e44ad";
+  if (t === "email_notification") return "#7f8c8d";
+  return "#bdc3c7";
+}
 
 const box = (gap: number, pad: number) => ({ display: "grid", gap, padding: pad, fontSize: 13 } as const);
 const row = () => ({ display: "flex", gap: 8, alignItems: "baseline", flexWrap: "wrap" } as const);
@@ -134,7 +186,7 @@ export function StoreIntakeTab({ context }: PluginDetailTabProps) {
     return <div style={box(10, 12)}><span style={{ opacity: 0.7 }}>No store intake record linked to this issue.</span></div>;
   }
 
-  const { evidence, duplicates, analyses, reviews, latestAnalysis, latestReview } = data;
+  const { evidence, duplicates, analyses, reviews, latestAnalysis, latestReview, intakeMetadata } = data;
   const intake = evidence.storeIntake;
 
   async function handleReview() {
@@ -183,6 +235,108 @@ export function StoreIntakeTab({ context }: PluginDetailTabProps) {
         </div>
       )}
 
+      {intakeMetadata && (
+        <div style={cardStyle()}>
+          <div style={{ fontWeight: 700 }}>Source Data Quality</div>
+          <div style={row()}>
+            <span style={labelStyle()}>Completeness</span>
+            <span style={{
+              display: "inline-block",
+              padding: "2px 8px",
+              borderRadius: 4,
+              fontSize: 11,
+              fontWeight: 600,
+              color: completenessColor(intakeMetadata.recordCompleteness),
+              background: completenessColor(intakeMetadata.recordCompleteness) + "22",
+            }}>
+              {COMPLETENESS_LABELS[intakeMetadata.recordCompleteness] || intakeMetadata.recordCompleteness}
+            </span>
+          </div>
+          <div style={row()}>
+            <span style={labelStyle()}>Transport</span>
+            <span style={{
+              display: "inline-block",
+              padding: "2px 8px",
+              borderRadius: 4,
+              fontSize: 11,
+              fontWeight: 600,
+              color: transportColor(intakeMetadata.intakeTransport),
+              background: transportColor(intakeMetadata.intakeTransport) + "22",
+            }}>
+              {TRANSPORT_LABELS[intakeMetadata.intakeTransport] || intakeMetadata.intakeTransport}
+            </span>
+          </div>
+          {intakeMetadata.providerSubmissionId && (
+            <div style={row()}>
+              <span style={labelStyle()}>Submission ID</span>
+              <span style={{ fontFamily: "monospace", fontSize: 12 }}>{intakeMetadata.providerSubmissionId}</span>
+            </div>
+          )}
+          {intakeMetadata.emailMessageId && (
+            <div style={row()}>
+              <span style={labelStyle()}>Message ID</span>
+              <span style={{ fontFamily: "monospace", fontSize: 12, opacity: 0.8 }}>{intakeMetadata.emailMessageId.slice(0, 24)}...</span>
+            </div>
+          )}
+          {intakeMetadata.lastEnrichedAt && (
+            <div style={row()}>
+              <span style={labelStyle()}>Last enriched</span>
+              <span>{new Date(intakeMetadata.lastEnrichedAt).toLocaleString()}</span>
+            </div>
+          )}
+          {intakeMetadata.evidenceSources.length > 0 && (
+            <div style={{ marginTop: 4 }}>
+              <div style={{ fontWeight: 600, marginBottom: 4 }}>Evidence sources ({intakeMetadata.evidenceSources.length})</div>
+              {intakeMetadata.evidenceSources.map((src, i) => (
+                <div key={i} style={{ fontSize: 11, opacity: 0.8, padding: "2px 0" }}>
+                  <span style={{
+                    display: "inline-block",
+                    padding: "1px 6px",
+                    borderRadius: 3,
+                    fontWeight: 600,
+                    color: transportColor(src.transport),
+                    background: transportColor(src.transport) + "22",
+                  }}>
+                    {TRANSPORT_LABELS[src.transport] || src.transport}
+                  </span>
+                  {" "}{src.fieldCount} fields · {new Date(src.receivedAt).toLocaleDateString()}
+                </div>
+              ))}
+            </div>
+          )}
+          {intakeMetadata.missingFields.length > 0 && (
+            <div style={row()}>
+              <span style={labelStyle()}>Missing fields</span>
+              <span style={{ opacity: 0.75, fontSize: 12 }}>{intakeMetadata.missingFields.join(", ")}</span>
+            </div>
+          )}
+        </div>
+      )}
+
+      {intakeMetadata && intakeMetadata.conflictingFields.length > 0 && (
+        <div style={cardStyle()}>
+          <div style={{ fontWeight: 700, color: "#e74c3c" }}>Conflicting field values</div>
+          {intakeMetadata.conflictingFields.map((conflict, i) => (
+            <div key={i} style={{ padding: "4px 0", borderBottom: i < intakeMetadata.conflictingFields.length - 1 ? "1px solid rgba(127,127,127,0.2)" : "none" }}>
+              <div style={{ fontWeight: 600, fontSize: 12 }}>{conflict.field}</div>
+              <div style={{ fontSize: 11, opacity: 0.8 }}>
+                {conflict.values.map((v, j) => (
+                  <span key={j} style={{
+                    display: "inline-block",
+                    marginRight: 8,
+                    padding: "1px 6px",
+                    borderRadius: 3,
+                    background: v.precedence <= 2 ? "rgba(39,174,96,0.1)" : "rgba(127,127,127,0.08)",
+                  }}>
+                    "{v.value}" <span style={{ opacity: 0.6 }}>({TRANSPORT_LABELS[v.source] || v.source})</span>
+                  </span>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
       {intake && (
         <div style={cardStyle()}>
           <div style={{ fontWeight: 700 }}>Store information</div>
@@ -190,12 +344,16 @@ export function StoreIntakeTab({ context }: PluginDetailTabProps) {
             const orig = intake.originalValues[field];
             const norm = intake.normalizedValues[field];
             if (!orig) return null;
+            const isInferred = intakeMetadata?.intakeTransport === "inferred_email" || intakeMetadata?.intakeTransport === "email_notification";
             return (
               <div key={field} style={row()}>
                 <span style={labelStyle()}>{field}</span>
                 <span>{norm || orig}</span>
                 {intake.confidenceByField[field] && (
                   <span style={{ fontSize: 11, opacity: 0.6 }}>({Math.round(intake.confidenceByField[field] * 100)}%)</span>
+                )}
+                {isInferred && (
+                  <span style={{ fontSize: 10, color: "#e67e22", fontWeight: 600 }}>unconfirmed</span>
                 )}
               </div>
             );
