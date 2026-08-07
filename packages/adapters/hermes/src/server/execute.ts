@@ -37,6 +37,7 @@ import {
   renderPaperclipWakePrompt,
   stringifyPaperclipWakePayload,
   isPaperclipRecoveryWakePayload,
+  redactEnvForLogs,
 } from "@paperclipai/adapter-utils/server-utils";
 
 import {
@@ -51,6 +52,8 @@ import {
   detectModel,
   resolveProvider,
 } from "./detect-model.js";
+
+import { buildHermesChildEnv } from "./child-env.js";
 
 // ---------------------------------------------------------------------------
 // Config helpers
@@ -440,12 +443,15 @@ export async function execute(
   // Requires hermes-agent >= PR #3255 (feat/session-source-tag).
   args.push("--source", "tool");
 
-  // Bypass Hermes dangerous-command approval prompts.
-  // Paperclip agents run as non-interactive subprocesses with no TTY,
-  // so approval prompts would always timeout and deny legitimate commands
-  // (curl, python3 -c, etc.). Agents operate in a sandbox — the approval
-  // system is designed for human-attended interactive sessions.
-  args.push("--yolo");
+  // --yolo is NOT passed by default.
+  // Paperclip agents run as non-interactive subprocesses with no TTY;
+  // Hermes's approval prompts will cause commands that require approval
+  // to fail.  Operators who need the old behaviour must explicitly enable
+  // dangerouslySkipHermesApprovals.
+  const dangerousYolo = cfgBoolean(config.dangerouslySkipHermesApprovals) === true;
+  if (dangerousYolo) {
+    args.push("--yolo");
+  }
 
   if (persistSession && prevSessionId) {
     args.push("--resume", prevSessionId);
@@ -456,28 +462,33 @@ export async function execute(
   }
 
   // ── Build environment ──────────────────────────────────────────────────
-  const userEnv = config.env as Record<string, string> | undefined;
-  const env: Record<string, string> = {
-    ...(process.env as Record<string, string>),
-    ...(userEnv && typeof userEnv === "object" ? userEnv : {}),
-    ...buildPaperclipEnv(ctx.agent),
-  };
-
-  if (ctx.runId) env.PAPERCLIP_RUN_ID = ctx.runId;
-
-  // BUG FIX: Inject authToken as PAPERCLIP_API_KEY (matches adapter-claude-local behavior)
-  if ((ctx as any).authToken) env.PAPERCLIP_API_KEY = (ctx as any).authToken;
-
-  // BUG FIX: Read task context from ctx.context (wake context), not ctx.config (adapter config)
+  // envMode: "replace" — the child process does NOT inherit any parent
+  // process.env keys.  Only the explicitly-constructed env dict reaches
+  // child_process.spawn().
   const ctxContext = (ctx as any).context || {};
-  const envTaskId = cfgString(ctxContext.taskId) || cfgString(ctxContext.issueId) || cfgString(ctx.config?.taskId);
-  if (envTaskId) env.PAPERCLIP_TASK_ID = envTaskId;
-  const envWakeReason = cfgString(ctxContext.wakeReason) || cfgString(ctx.config?.wakeReason);
-  if (envWakeReason) env.PAPERCLIP_WAKE_REASON = envWakeReason;
-  const envCommentId = cfgString(ctxContext.commentId) || cfgString(ctxContext.wakeCommentId) || cfgString(ctx.config?.commentId);
-  if (envCommentId) env.PAPERCLIP_WAKE_COMMENT_ID = envCommentId;
-  const wakePayloadJson = stringifyPaperclipWakePayload(ctxContext.paperclipWake);
-  if (wakePayloadJson) env.PAPERCLIP_WAKE_PAYLOAD_JSON = wakePayloadJson;
+  const allowApiAccess = cfgBoolean(config.allowPaperclipApiAccess) === true;
+  const { env, blockedKeys: _blockedKeys, rejectedConfigSecrets, resolvedSecretKeysUsed } = buildHermesChildEnv({
+    parentEnv: process.env,
+    configEnv: (config.env as Record<string, string> | undefined) ?? undefined,
+    paperclipEnv: buildPaperclipEnv(ctx.agent),
+    taskEnv: {
+      runId: ctx.runId,
+      taskId: cfgString(ctxContext.taskId) || cfgString(ctxContext.issueId) || cfgString(ctx.config?.taskId),
+      wakeReason: cfgString(ctxContext.wakeReason) || cfgString(ctx.config?.wakeReason),
+      commentId: cfgString(ctxContext.commentId) || cfgString(ctxContext.wakeCommentId) || cfgString(ctx.config?.commentId),
+      wakePayloadJson: stringifyPaperclipWakePayload(ctxContext.paperclipWake) ?? undefined,
+    },
+    authToken: allowApiAccess ? ((ctx as any).authToken as string | undefined) : undefined,
+    isolation: Object.fromEntries(
+      Object.entries(config).filter(([k]) => k.startsWith("isolation.")).map(([k, v]) => [k.slice("isolation.".length), String(v ?? "")]),
+    ),
+    resolvedSecretKeys: (config.__resolvedEnvKeys as string[] | undefined) ?? null,
+  });
+
+  if (rejectedConfigSecrets.length > 0) {
+    const blocked = rejectedConfigSecrets.map((k) => `${k}`).join(", ");
+    await ctx.onLog("stderr", `[hermes] Rejected plaintext secret-shaped config.env keys: ${blocked}\n`);
+  }
 
   // ── Resolve working directory ──────────────────────────────────────────
   const cwd =
@@ -489,9 +500,10 @@ export async function execute(
   }
 
   // ── Log start ──────────────────────────────────────────────────────────
+  const redactedEnv = redactEnvForLogs(env);
   await ctx.onLog(
     "stdout",
-    `[hermes] Starting Hermes Agent (model=${model}, provider=${resolvedProvider} [${resolvedFrom}], timeout=${timeoutSec}s${maxTurns ? `, max_turns=${maxTurns}` : ""})\n`,
+    `[hermes] Starting Hermes Agent (model=${model}, provider=${resolvedProvider} [${resolvedFrom}], timeout=${timeoutSec}s${maxTurns ? `, max_turns=${maxTurns}` : ""}, agent=${redactedEnv.PAPERCLIP_AGENT_ID ?? "?"}, company=${redactedEnv.PAPERCLIP_COMPANY_ID ?? "?"})\n`,
   );
   if (prevSessionId) {
     await ctx.onLog(
@@ -529,6 +541,7 @@ export async function execute(
     env,
     timeoutSec,
     graceSec,
+    envMode: "replace",
     onLog: wrappedOnLog,
     onSpawn: ctx.onSpawn,
   });

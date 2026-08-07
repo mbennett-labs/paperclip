@@ -12286,6 +12286,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       ...effectiveResolvedConfig,
       paperclipRuntimeSkills: runtimeSkillEntries,
     };
+    if (secretKeys.size > 0) {
+      runtimeConfig.__resolvedEnvKeys = [...secretKeys];
+    }
     const latestAgentConfigRevision = await getLatestAgentConfigRevision(agent.companyId, agent.id);
     const sessionConfigMetadata = await buildEffectiveRunSessionConfigMetadata({
       adapterType: agent.adapterType,
