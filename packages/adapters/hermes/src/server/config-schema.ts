@@ -148,6 +148,23 @@ export function getConfigSchema(): AdapterConfigSchema {
         type: "number",
         hint: "Non-root GID for Hermes inside the sandbox. Defaults to the containment UID.",
       },
+      {
+        key: "containment.networkMode",
+        label: "Containment network mode",
+        type: "select",
+        default: "deny",
+        options: [
+          { value: "deny", label: "Deny all" },
+          { value: "provider_allowlist", label: "Provider allowlist" },
+        ],
+        hint: "deny = no network egress (default). provider_allowlist = proxy-restricted egress to allowed provider hosts only.",
+      },
+      {
+        key: "containment.allowedProviderHosts",
+        label: "Allowed provider hosts",
+        type: "text",
+        hint: "Comma-separated hostnames permitted through the proxy when networkMode is provider_allowlist. Defaults to openrouter.ai for V0 POC.",
+      },
     ],
   };
 }
