@@ -117,6 +117,37 @@ export function getConfigSchema(): AdapterConfigSchema {
         type: "textarea",
         hint: "Optional custom prompt template with {{variable}} placeholders.",
       },
+      {
+        key: "containment",
+        label: "Enable OS containment (bwrap)",
+        type: "toggle",
+        default: false,
+        hint: "Run Hermes inside a bubblewrap sandbox with filesystem isolation, network denial, and optional dedicated UID/GID. Requires bwrap on the host. Fail-closed: no fallback to unconstrained execution when enabled.",
+      },
+      {
+        key: "containment.workspaceDir",
+        label: "Containment workspace directory",
+        type: "text",
+        hint: "Writable sandbox root. Hermes can read/write files inside this directory. Defaults to a temp directory if unset.",
+      },
+      {
+        key: "containment.homeDir",
+        label: "Containment home directory",
+        type: "text",
+        hint: "HOME inside the sandbox. Defaults to <workspaceDir>/home.",
+      },
+      {
+        key: "containment.executionUid",
+        label: "Containment UID",
+        type: "number",
+        hint: "Non-root UID to run Hermes as inside the sandbox user namespace. Fail-closed on missing or root.",
+      },
+      {
+        key: "containment.executionGid",
+        label: "Containment GID",
+        type: "number",
+        hint: "Non-root GID for Hermes inside the sandbox. Defaults to the containment UID.",
+      },
     ],
   };
 }

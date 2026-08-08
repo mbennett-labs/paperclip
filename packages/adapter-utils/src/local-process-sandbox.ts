@@ -21,6 +21,9 @@ export interface LocalProcessSandboxOptions {
   networkScope?: LocalProcessNetworkScope | null;
   networkAllowlist?: string[];
   command?: string;
+  executionUid?: number | null;
+  executionGid?: number | null;
+  containmentRequired?: boolean;
 }
 
 export interface LocalProcessSandboxSpawnTarget {
@@ -358,6 +361,19 @@ export async function buildLocalProcessSandboxSpawnTarget(input: {
     env.HTTPS_PROXY = proxyUrl;
     env.http_proxy = proxyUrl;
     env.https_proxy = proxyUrl;
+  }
+
+  if (input.options.executionUid != null) {
+    if (input.options.executionUid === 0) {
+      throw new Error("Root executionUid is rejected for OS containment. Configure a non-zero UID.");
+    }
+    const gid = input.options.executionGid ?? input.options.executionUid;
+    if (gid === 0) {
+      throw new Error("Root executionGid is rejected for OS containment. Configure a non-zero GID.");
+    }
+    args.push("--unshare-user", "--uid", String(input.options.executionUid), "--gid", String(gid));
+  } else if (input.options.containmentRequired && input.options.executionGid != null) {
+    throw new Error("executionGid was configured without executionUid. Set executionUid explicitly.");
   }
 
   args.push("--chdir", cwd, "--", executable, ...executableArgs);
