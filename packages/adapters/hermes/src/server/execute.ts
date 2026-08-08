@@ -522,6 +522,9 @@ export async function execute(
     if (instructionsFilePath) {
       extraPaths.push({ path: path.dirname(instructionsFilePath), access: "ro" });
     }
+    if (sandboxHomeDir) {
+      extraPaths.push({ path: sandboxHomeDir, access: "rw" });
+    }
 
     sandboxOpts = {
       workspaceDir: sandboxWorkspaceDir,
