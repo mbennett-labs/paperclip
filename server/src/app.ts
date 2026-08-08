@@ -61,6 +61,7 @@ import { mcpGatewayProtocolRoutes, toolGatewayRoutes } from "./routes/tool-gatew
 import { adapterRoutes } from "./routes/adapters.js";
 import { pluginUiStaticRoutes } from "./routes/plugin-ui-static.js";
 import { qslBridgeRoutes } from "./routes/qsl-bridge.js";
+import { missionRoutes } from "./routes/mission.js";
 import { readBrandedStaticIndexHtml } from "./static-index-html.js";
 import { applyUiBranding } from "./ui-branding.js";
 import { logger } from "./middleware/logger.js";
@@ -269,6 +270,7 @@ export async function createApp(
   api.use(activityRoutes(db));
   api.use(dashboardRoutes(db));
   api.use(attentionRoutes(db));
+  api.use(missionRoutes(db));
   api.use(decisionTrainingRoutes(db));
   api.use(userProfileRoutes(db));
   api.use(sidebarBadgeRoutes(db));
