@@ -116,13 +116,20 @@ function parseNetworkAllowlistEntry(entry: string, index: number): NetworkAllowl
   if (!trimmed) throw new Error(`networkAllowlist[${index}] must not be empty.`);
   let hostname: string;
   let port: string | null;
+  // Extract the raw host:port portion (strip scheme prefix for port detection).
+  const hostPortPart = trimmed.includes("://") ? trimmed.slice(trimmed.indexOf("://") + 3) : trimmed;
+  // If the raw entry had an explicit :NNN port suffix, extract it.
+  // This matters for default ports (e.g. :443 on HTTPS) which the URL
+  // parser strips, losing the operator's intent to restrict to that port.
+  const explicitPortMatch = hostPortPart.match(/^([^:]+):(\d+)$/);
+  const explicitPort: string | null = (explicitPortMatch?.[2]) ?? null;
   try {
     const parsed = new URL(trimmed.includes("://") ? trimmed : `https://${trimmed}`);
     if (parsed.username || parsed.password || parsed.pathname !== "/" || parsed.search || parsed.hash) {
       throw new Error("path");
     }
     hostname = parsed.hostname.toLowerCase();
-    port = parsed.port || null;
+    port = explicitPort || parsed.port || null;
   } catch {
     throw new Error(`networkAllowlist[${index}] must be a hostname, hostname:port, or origin URL.`);
   }

@@ -515,46 +515,17 @@ export async function execute(
     const sandboxExecUid = cfgNumber(config["containment.executionUid"]);
     const sandboxExecGid = cfgNumber(config["containment.executionGid"]);
 
-    const networkMode = cfgString(config["containment.networkMode"]) || "deny";
-    if (networkMode !== "deny" && networkMode !== "provider_allowlist") {
+    const providerPreset = cfgString(config["containment.providerPreset"]) || "none";
+    if (providerPreset !== "none" && providerPreset !== "openrouter") {
       throw new Error(
-        `Invalid containment.networkMode "${networkMode}". Must be "deny" or "provider_allowlist".`,
+        `Invalid containment.providerPreset "${providerPreset}". Must be "none" or "openrouter".`,
       );
     }
     let networkScope: LocalProcessSandboxOptions["networkScope"] = "deny";
     let networkAllowlist: string[] = [];
-    if (networkMode === "provider_allowlist") {
-      const rawHosts = cfgString(config["containment.allowedProviderHosts"]);
-      if (!rawHosts) {
-        throw new Error(
-          'containment.allowedProviderHosts is required when containment.networkMode is "provider_allowlist".',
-        );
-      }
+    if (providerPreset === "openrouter") {
       networkScope = "allowlist";
-      networkAllowlist = rawHosts.split(",").map((h) => h.trim()).filter(Boolean);
-      if (networkAllowlist.length === 0) {
-        throw new Error(
-          'containment.allowedProviderHosts must contain at least one hostname when containment.networkMode is "provider_allowlist".',
-        );
-      }
-      for (const host of networkAllowlist) {
-        const hostname = host.split(":")[0];
-        if (host.includes("*")) {
-          throw new Error(
-            `containment.allowedProviderHosts "${host}" must not use wildcards.`,
-          );
-        }
-        if (/^\d+$/.test(hostname.split(".")[0])) {
-          throw new Error(
-            `containment.allowedProviderHosts "${host}" appears to be an IP address. Use a DNS hostname.`,
-          );
-        }
-        if (!/^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$/.test(hostname.split(".")[0])) {
-          throw new Error(
-            `containment.allowedProviderHosts "${host}" is not a valid hostname. Use a DNS hostname, not an IP address or wildcard.`,
-          );
-        }
-      }
+      networkAllowlist = ["openrouter.ai:443"];
     }
 
     await fs.mkdir(sandboxWorkspaceDir, { recursive: true });
