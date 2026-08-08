@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from "vitest";
+import { describe, it, expect } from "vitest";
 import { deriveMissionState } from "@paperclipai/shared";
 import { classifyMissionAttention } from "@paperclipai/shared";
 
@@ -95,30 +95,45 @@ describe("mission API - mission service logic (pure function tests)", () => {
       expect(result.blocked[0].kind).toBe("blocker");
     });
 
-    it("verification failure is not shown as success", () => {
+    it("unverified done work is not presented as verified success", () => {
       const root = makeFakeIssue("root", "todo");
       const done = makeFakeIssue("done", "done");
-      done.identifier = null;
       const result = classifyMissionAttention({
         rootIssue: root,
         descendants: [{ issue: done, blockedBy: [] }],
         pendingQuestions: [],
         pendingApprovals: [],
       });
-      expect(result.verificationFailures.length).toBe(1);
+      expect(result.verificationFailures).toEqual([]);
     });
 
-    it("completed prose without evidence does not prove completion", () => {
+    it("done tasks with identifiers are still not verification evidence", () => {
       const root = makeFakeIssue("root", "todo");
       const done = makeFakeIssue("done", "done");
-      done.identifier = null;
+      done.identifier = "DONE-99";
       const result = classifyMissionAttention({
         rootIssue: root,
         descendants: [{ issue: done, blockedBy: [] }],
         pendingQuestions: [],
         pendingApprovals: [],
       });
-      expect(result.verificationFailures.some((f) => f.title.includes("completed without evidence"))).toBe(true);
+      expect(result.verificationFailures.length).toBe(0);
+      expect(result.informational.some(
+        (i: { description?: string | null }) => i.description?.includes("Verification evidence is not yet inspected"),
+      )).toBe(true);
+    });
+
+    it("completed prose without evidence does not prove verification", () => {
+      const root = makeFakeIssue("root", "todo");
+      const done = makeFakeIssue("done", "done");
+      done.title = "Everything is perfect, trust me";
+      const result = classifyMissionAttention({
+        rootIssue: root,
+        descendants: [{ issue: done, blockedBy: [] }],
+        pendingQuestions: [],
+        pendingApprovals: [],
+      });
+      expect(result.verificationFailures).toEqual([]);
     });
 
     it("informational activity does not produce an unnecessary alert", () => {

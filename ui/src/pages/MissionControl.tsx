@@ -497,37 +497,25 @@ export function MissionControl() {
       <Card className="p-4 space-y-3">
         <h2 className="text-sm font-semibold text-foreground">Verification</h2>
         {mission.verification.overallStatus === "unknown" && (
-          <div className="flex items-center gap-2 text-sm text-muted-foreground">
-            <Clock className="h-4 w-4" />
-            No verification data yet
+          <div className="flex items-start gap-2">
+            <Clock className="h-4 w-4 mt-0.5 flex-shrink-0 text-muted-foreground" />
+            <div>
+              <div className="text-sm text-muted-foreground">Not yet verified</div>
+              {mission.verification.note && (
+                <div className="text-xs text-muted-foreground/70 mt-0.5">{mission.verification.note}</div>
+              )}
+            </div>
           </div>
         )}
         {mission.verification.overallStatus === "in_progress" && (
-          <div className="flex items-center gap-2 text-sm" style={{ color: "var(--status-task-in_review)" }}>
-            <ShieldCheck className="h-4 w-4" />
-            Verification in progress
-          </div>
-        )}
-        {mission.verification.overallStatus === "passed" && (
-          <div className="flex items-center gap-2 text-sm" style={{ color: "var(--status-task-done)" }}>
-            <CheckCircle2 className="h-4 w-4" />
-            All completed tasks have evidence
-          </div>
-        )}
-        {mission.verification.overallStatus === "failed" && (
-          <div className="space-y-2">
-            <div className="flex items-center gap-2 text-sm" style={{ color: "var(--status-task-blocked)" }}>
-              <AlertTriangle className="h-4 w-4" />
-              Verification issues found
+          <div className="flex items-start gap-2">
+            <ShieldCheck className="h-4 w-4 mt-0.5 flex-shrink-0" style={{ color: "var(--status-task-in_review)" }} />
+            <div>
+              <div className="text-sm" style={{ color: "var(--status-task-in_review)" }}>Verification in progress</div>
+              {mission.verification.note && (
+                <div className="text-xs text-muted-foreground/70 mt-0.5">{mission.verification.note}</div>
+              )}
             </div>
-            {mission.verification.failures.map((f) => (
-              <div key={f.issue.id} className="text-xs text-muted-foreground pl-6">
-                <Link to={`/issues/${f.issue.id}`} className="hover:underline font-medium text-foreground">
-                  {f.issue.title}
-                </Link>
-                : {f.reason}
-              </div>
-            ))}
           </div>
         )}
       </Card>

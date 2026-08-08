@@ -184,12 +184,11 @@ describe("classifyMissionAttention", () => {
     expect(result.blocked[0].title).toBe("Blocked task");
   });
 
-  it("produces verification failures for done tasks without evidence", () => {
+  it("unverified completed work is not presented as verified success", () => {
     const root = makeIssue({ id: "root" });
     const done = makeIssue({
       id: "done-1",
       status: "done",
-      identifier: null,
       completedAt: new Date(),
     });
     const result = classifyMissionAttention({
@@ -198,11 +197,13 @@ describe("classifyMissionAttention", () => {
       pendingQuestions: [],
       pendingApprovals: [],
     });
-    expect(result.verificationFailures.length).toBe(1);
-    expect(result.verificationFailures[0].kind).toBe("verification_failure");
+    expect(result.verificationFailures.length).toBe(0);
+    expect(result.informational.length).toBe(1);
+    expect(result.informational[0].kind).toBe("info");
+    expect(result.informational[0].priority).toBe("low");
   });
 
-  it("does not produce verification failures for done tasks with evidence", () => {
+  it("done tasks with identifiers are still unverified—identifier is not evidence", () => {
     const root = makeIssue({ id: "root" });
     const done = makeIssue({
       id: "done-1",
@@ -217,6 +218,27 @@ describe("classifyMissionAttention", () => {
       pendingApprovals: [],
     });
     expect(result.verificationFailures.length).toBe(0);
+    expect(result.informational.some(
+      (i) => i.description?.includes("Verification evidence is not yet inspected"),
+    )).toBe(true);
+  });
+
+  it("completed prose without verification evidence does not prove completion", () => {
+    const root = makeIssue({ id: "root" });
+    const done = makeIssue({
+      id: "done-1",
+      status: "done",
+      title: "All work finished",
+      completedAt: new Date(),
+    });
+    const result = classifyMissionAttention({
+      rootIssue: root,
+      descendants: [makeDescendant(done)],
+      pendingQuestions: [],
+      pendingApprovals: [],
+    });
+    expect(result.verificationFailures).toEqual([]);
+    expect(result.informational.length).toBeGreaterThanOrEqual(1);
   });
 
   it("produces informational for in-progress tasks without assignee", () => {

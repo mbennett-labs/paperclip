@@ -340,26 +340,27 @@ export function missionService(db: Db) {
 }
 
 function deriveVerification(descendants: CompactIssue[]): MissionVerification {
-  const doneTasks = descendants.filter((i) => i.status === "done");
   const inReviewTasks = descendants.filter((i) => i.status === "in_review");
 
-  if (doneTasks.length === 0 && inReviewTasks.length === 0) {
-    return { overallStatus: "unknown", failures: [] };
-  }
-
   if (inReviewTasks.length > 0) {
-    return { overallStatus: "in_progress", failures: [] };
+    return {
+      overallStatus: "in_progress",
+      note: `${inReviewTasks.length} task(s) in review. Awaiting review disposition.`,
+    };
   }
 
-  const failures = doneTasks
-    .filter((i) => !i.identifier)
-    .map((i) => ({ issue: i, reason: "Completed without evidence" }));
-
-  if (failures.length > 0) {
-    return { overallStatus: "failed", failures };
+  const doneTasks = descendants.filter((i) => i.status === "done");
+  if (doneTasks.length > 0) {
+    return {
+      overallStatus: "unknown",
+      note: `${doneTasks.length} task(s) completed. Inspectable evidence (work products, verified runs) is not yet available for automated verification.`,
+    };
   }
 
-  return { overallStatus: "passed", failures: [] };
+  return {
+    overallStatus: "unknown",
+    note: "No completed or in-review tasks exist yet.",
+  };
 }
 
 function derivePhase(

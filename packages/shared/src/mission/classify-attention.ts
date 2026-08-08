@@ -96,27 +96,6 @@ export function classifyMissionAttention(
     );
   }
 
-  const verificationFailures: MissionAttentionEntry[] = [];
-  for (const d of descendants) {
-    if (d.issue.status === "done") {
-      const hasEvidence = d.issue.identifier != null;
-      if (!hasEvidence) {
-        verificationFailures.push(
-          toAttentionItem({
-            kind: "verification_failure",
-            title: `${d.issue.title} completed without evidence`,
-            description: "No artifacts or work products attached to this completed task.",
-            sourceId: d.issue.id,
-            sourceType: "issue",
-            priority: "medium",
-            ageMs: ageMs(d.issue.completedAt ?? d.issue.updatedAt ?? d.issue.createdAt),
-            route: `/issues/${d.issue.id}`,
-          }),
-        );
-      }
-    }
-  }
-
   const informational: MissionAttentionEntry[] = [];
   for (const d of descendants) {
     if (d.issue.status === "in_progress" && !d.issue.assigneeAgentId) {
@@ -135,12 +114,28 @@ export function classifyMissionAttention(
     }
   }
 
+  const doneTasks = descendants.filter((d) => d.issue.status === "done");
+  if (doneTasks.length > 0) {
+    informational.push(
+      toAttentionItem({
+        kind: "info",
+        title: `${doneTasks.length} task(s) completed`,
+        description: "Verification evidence is not yet inspected. Review work products and run logs to confirm completion.",
+        sourceId: rootIssue.id,
+        sourceType: "issue",
+        priority: "low",
+        ageMs: ageMs(doneTasks[0].issue.completedAt ?? doneTasks[0].issue.updatedAt),
+        route: null,
+      }),
+    );
+  }
+
   return {
     actionRequired,
     questionsWaiting,
     approvalsPending,
     blocked,
-    verificationFailures,
+    verificationFailures: [],
     informational,
   };
 }

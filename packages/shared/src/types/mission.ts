@@ -51,11 +51,8 @@ export interface MissionBudget {
 }
 
 export interface MissionVerification {
-  overallStatus: "passed" | "failed" | "in_progress" | "unknown";
-  failures: Array<{
-    issue: CompactIssue;
-    reason: string;
-  }>;
+  overallStatus: "in_progress" | "unknown";
+  note: string | null;
 }
 
 export type AttentionItemKind =
