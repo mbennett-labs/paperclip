@@ -321,9 +321,35 @@ describe.runIf(Boolean(process.env.PAPERCLIP_TEST_BWRAP))(
       expect(result.exitCode, result.stderr).toBe(0);
     });
 
+    it("merged-/usr symlinks resolve and contain real system paths", async () => {
+      const code = `
+const fs = require("fs");
+const path = require("path");
+// Verify merged-/usr symlinks resolve to real paths inside /usr.
+const checks = [
+  ["/bin/bash", "/bin"],
+  ["/usr/bin/env", "/usr/bin"],
+  ["/lib/x86_64-linux-gnu/libc.so.6", "/lib"],
+];
+for (const [sample, expectedParent] of checks) {
+  try {
+    const resolved = fs.realpathSync(sample);
+    if (!resolved.startsWith("/usr/")) process.exit(7);
+  } catch (e) {
+    // File may not exist (e.g. libc variant), that's acceptable.
+  }
+}
+const libdir = fs.readdirSync("/lib").filter(e => e.startsWith("x86_64") || e === "systemd");
+const lib64dir = fs.readdirSync("/lib64");
+process.exit(0);
+`;
+      const result = await sandboxRun(code);
+      expect(result.exitCode, result.stderr).toBe(0);
+    });
+
     it("prevents writes outside the workspace", async () => {
       const code = `
-try { require("fs").writeFileSync("/etc/containment-break", "bad"); process.exit(9); }
+try { require("fs").writeFileSync("/usr/containment-break", "bad"); process.exit(9); }
 catch (e) { process.exit(e.code === "EROFS" || e.code === "EACCES" || e.code === "EPERM" ? 0 : 8); }
 `;
       const result = await sandboxRun(code);

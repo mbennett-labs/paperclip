@@ -44,9 +44,9 @@ interface NetworkAllowlistProxy {
 }
 
 const SYSTEM_READ_PATHS = [
+  "/usr",
   "/bin",
   "/sbin",
-  "/usr",
   "/lib",
   "/lib64",
   "/etc/ca-certificates",
@@ -300,7 +300,8 @@ export async function buildLocalProcessSandboxSpawnTarget(input: {
       "--symlink", "usr/lib", "/lib",
       "--symlink", "usr/lib64", "/lib64",
     );
-    const created = new Set<string>(["/", "/proc", "/dev", "/tmp"]);
+    args.push("--dir", "/usr");
+    const created = new Set<string>(["/", "/proc", "/dev", "/tmp", "/usr"]);
     const mounted = new Set<string>();
     const mount = async (source: string, access: LocalProcessSandboxAccess) => {
       const normalized = normalizeAbsolutePath(source, "Sandbox path");
