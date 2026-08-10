@@ -869,3 +869,17 @@ export type {
   PluginDatabaseNamespaceMode,
   PluginDatabaseNamespaceStatus,
 } from "./plugin.js";
+export type {
+  MissionAttentionEntry,
+  MissionActiveWork,
+  MissionApprovalItem,
+  MissionAttention,
+  MissionBlocker,
+  MissionBudget,
+  MissionDescendant,
+  MissionProgress,
+  MissionQuestion,
+  MissionState,
+  MissionVerification,
+  MissionView,
+} from "./mission.js";

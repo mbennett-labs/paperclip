@@ -2208,3 +2208,22 @@ export {
   type EnvironmentCustomImageTerminalSessionToken,
 } from "./validators/environment-custom-images.js";
 export * from "./validators/skill-policy.js";
+export { deriveMissionState } from "./mission/derive-state.js";
+export type { DeriveMissionStateInput } from "./mission/derive-state.js";
+export { classifyMissionAttention } from "./mission/classify-attention.js";
+export type { ClassifyAttentionInput } from "./mission/classify-attention.js";
+export type {
+  AttentionItemKind as MissionAttentionItemKind,
+  MissionActiveWork,
+  MissionApprovalItem,
+  MissionAttention,
+  MissionAttentionEntry,
+  MissionBlocker,
+  MissionBudget,
+  MissionDescendant,
+  MissionProgress,
+  MissionQuestion,
+  MissionState,
+  MissionVerification,
+  MissionView,
+} from "./types/mission.js";
