@@ -67,6 +67,32 @@ describe("local process sandbox", () => {
     expect(target.args.slice(-3)).toEqual([process.execPath, "-e", "console.log('ok')"]);
   });
 
+  it("orders system mounts so merged-/usr symlink targets exist before their bind operations", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-fs-mount-order-"));
+    cleanup.push(root);
+    const workspace = path.join(root, "workspace");
+    await fs.mkdir(workspace);
+    const target = await buildLocalProcessSandboxSpawnTarget({
+      executable: process.execPath,
+      args: ["-e", "console.log('ok')"],
+      cwd: workspace,
+      options: { workspaceDir: workspace, filesystemScope: "workspace" },
+    });
+    const args = target.args;
+    const symlinkIndices = ["--symlink", "usr/bin", "/bin"].map((v) => args.indexOf(v));
+    const usrDirIdx = args.indexOf("--dir");
+    const bindIndices = args.map((a, i) => (a === "--bind" || a === "--ro-bind") ? i : -1).filter((i) => i !== -1);
+    // /usr mount must appear before any /bin, /sbin, /lib, or /lib64 bind mount.
+    const mergedUsrTargets = ["/bin", "/sbin", "/lib", "/lib64"];
+    for (const bindIdx of bindIndices) {
+      const pathArg = args[bindIdx + 1];
+      if (mergedUsrTargets.includes(pathArg)) {
+        const usrBindIdx = bindIndices.find((i) => args[i + 1] === "/usr");
+        expect(usrBindIdx).toBeLessThan(bindIdx);
+      }
+    }
+  });
+
   it("builds a network-only namespace without changing filesystem visibility", async () => {
     const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-network-sandbox-"));
     cleanup.push(workspace);

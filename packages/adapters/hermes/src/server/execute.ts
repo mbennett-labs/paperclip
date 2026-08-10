@@ -19,6 +19,7 @@
  */
 
 import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 
 import type {
@@ -39,6 +40,8 @@ import {
   isPaperclipRecoveryWakePayload,
   redactEnvForLogs,
 } from "@paperclipai/adapter-utils/server-utils";
+
+import type { LocalProcessSandboxOptions } from "@paperclipai/adapter-utils/local-process-sandbox";
 
 import {
   HERMES_CLI,
@@ -499,6 +502,58 @@ export async function execute(
     // Non-fatal
   }
 
+  // ── Build OS containment options ──────────────────────────────────────
+  const containmentEnabled = cfgBoolean(config.containment) === true;
+  let sandboxOpts: LocalProcessSandboxOptions | null = null;
+  if (containmentEnabled) {
+    const sandboxWorkspaceDir =
+      cfgString(config["containment.workspaceDir"]) ||
+      path.join(os.tmpdir(), `paperclip-hermes-sandbox-${ctx.runId}`);
+    const sandboxHomeDir =
+      cfgString(config["containment.homeDir"]) ||
+      path.join(sandboxWorkspaceDir, "home");
+    const sandboxExecUid = cfgNumber(config["containment.executionUid"]);
+    const sandboxExecGid = cfgNumber(config["containment.executionGid"]);
+
+    const providerPreset = cfgString(config["containment.providerPreset"]) || "none";
+    if (providerPreset !== "none" && providerPreset !== "openrouter") {
+      throw new Error(
+        `Invalid containment.providerPreset "${providerPreset}". Must be "none" or "openrouter".`,
+      );
+    }
+    let networkScope: LocalProcessSandboxOptions["networkScope"] = "deny";
+    let networkAllowlist: string[] = [];
+    if (providerPreset === "openrouter") {
+      networkScope = "allowlist";
+      networkAllowlist = ["openrouter.ai:443"];
+    }
+
+    await fs.mkdir(sandboxWorkspaceDir, { recursive: true });
+    await fs.mkdir(sandboxHomeDir, { recursive: true });
+
+    const extraPaths: { path: string; access: "ro" | "rw" }[] = [{ path: cwd, access: "ro" }];
+    if (instructionsFilePath) {
+      extraPaths.push({ path: path.dirname(instructionsFilePath), access: "ro" });
+    }
+    if (sandboxHomeDir) {
+      extraPaths.push({ path: sandboxHomeDir, access: "rw" });
+    }
+
+    sandboxOpts = {
+      workspaceDir: sandboxWorkspaceDir,
+      filesystemScope: "workspace",
+      networkScope,
+      homeDir: sandboxHomeDir ?? undefined,
+      executionUid: sandboxExecUid ?? undefined,
+      executionGid: sandboxExecGid ?? undefined,
+      containmentRequired: true,
+      extraPaths,
+    };
+    if (networkAllowlist.length > 0) {
+      sandboxOpts.networkAllowlist = networkAllowlist;
+    }
+  }
+
   // ── Log start ──────────────────────────────────────────────────────────
   const redactedEnv = redactEnvForLogs(env);
   await ctx.onLog(
@@ -537,13 +592,14 @@ export async function execute(
   };
 
   const result = await runChildProcess(ctx.runId, hermesCmd, args, {
-    cwd,
+    cwd: containmentEnabled ? sandboxOpts!.workspaceDir : cwd,
     env,
     timeoutSec,
     graceSec,
     envMode: "replace",
     onLog: wrappedOnLog,
     onSpawn: ctx.onSpawn,
+    localProcessSandbox: sandboxOpts,
   });
 
   // ── Parse output ───────────────────────────────────────────────────────

@@ -21,6 +21,9 @@ export interface LocalProcessSandboxOptions {
   networkScope?: LocalProcessNetworkScope | null;
   networkAllowlist?: string[];
   command?: string;
+  executionUid?: number | null;
+  executionGid?: number | null;
+  containmentRequired?: boolean;
 }
 
 export interface LocalProcessSandboxSpawnTarget {
@@ -41,9 +44,9 @@ interface NetworkAllowlistProxy {
 }
 
 const SYSTEM_READ_PATHS = [
+  "/usr",
   "/bin",
   "/sbin",
-  "/usr",
   "/lib",
   "/lib64",
   "/etc/ca-certificates",
@@ -113,13 +116,20 @@ function parseNetworkAllowlistEntry(entry: string, index: number): NetworkAllowl
   if (!trimmed) throw new Error(`networkAllowlist[${index}] must not be empty.`);
   let hostname: string;
   let port: string | null;
+  // Extract the raw host:port portion (strip scheme prefix for port detection).
+  const hostPortPart = trimmed.includes("://") ? trimmed.slice(trimmed.indexOf("://") + 3) : trimmed;
+  // If the raw entry had an explicit :NNN port suffix, extract it.
+  // This matters for default ports (e.g. :443 on HTTPS) which the URL
+  // parser strips, losing the operator's intent to restrict to that port.
+  const explicitPortMatch = hostPortPart.match(/^([^:]+):(\d+)$/);
+  const explicitPort: string | null = (explicitPortMatch?.[2]) ?? null;
   try {
     const parsed = new URL(trimmed.includes("://") ? trimmed : `https://${trimmed}`);
     if (parsed.username || parsed.password || parsed.pathname !== "/" || parsed.search || parsed.hash) {
       throw new Error("path");
     }
     hostname = parsed.hostname.toLowerCase();
-    port = parsed.port || null;
+    port = explicitPort || parsed.port || null;
   } catch {
     throw new Error(`networkAllowlist[${index}] must be a hostname, hostname:port, or origin URL.`);
   }
@@ -290,7 +300,8 @@ export async function buildLocalProcessSandboxSpawnTarget(input: {
       "--symlink", "usr/lib", "/lib",
       "--symlink", "usr/lib64", "/lib64",
     );
-    const created = new Set<string>(["/", "/proc", "/dev", "/tmp"]);
+    args.push("--dir", "/usr");
+    const created = new Set<string>(["/", "/proc", "/dev", "/tmp", "/usr"]);
     const mounted = new Set<string>();
     const mount = async (source: string, access: LocalProcessSandboxAccess) => {
       const normalized = normalizeAbsolutePath(source, "Sandbox path");
@@ -358,6 +369,19 @@ export async function buildLocalProcessSandboxSpawnTarget(input: {
     env.HTTPS_PROXY = proxyUrl;
     env.http_proxy = proxyUrl;
     env.https_proxy = proxyUrl;
+  }
+
+  if (input.options.executionUid != null) {
+    if (input.options.executionUid === 0) {
+      throw new Error("Root executionUid is rejected for OS containment. Configure a non-zero UID.");
+    }
+    const gid = input.options.executionGid ?? input.options.executionUid;
+    if (gid === 0) {
+      throw new Error("Root executionGid is rejected for OS containment. Configure a non-zero GID.");
+    }
+    args.push("--unshare-user", "--uid", String(input.options.executionUid), "--gid", String(gid));
+  } else if (input.options.containmentRequired && input.options.executionGid != null) {
+    throw new Error("executionGid was configured without executionUid. Set executionUid explicitly.");
   }
 
   args.push("--chdir", cwd, "--", executable, ...executableArgs);
