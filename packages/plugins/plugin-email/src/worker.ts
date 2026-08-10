@@ -68,6 +68,16 @@ import {
   type CorrelationAttempt,
   type IntakeRecordEntry,
 } from "./mail/reconciliation.js";
+import {
+  sortIntakeRecord,
+  CATEGORY_LABELS,
+  type IntakeSortResult,
+} from "./mail/sorter.js";
+import {
+  decideDraft,
+  formatDraftDocument,
+  type DraftCandidate,
+} from "./mail/drafts.js";
 
 type EmailPluginConfig = {
   enabled?: boolean;
@@ -183,6 +193,69 @@ export function resolveQueueStoreName(evidence: Record<string, unknown> | null):
   if (normalized?.storeName) return normalized.storeName;
   const original = si.originalValues as Record<string, string> | undefined;
   return original?.storeName ?? null;
+}
+
+export interface SortAndDraftResult {
+  sortResult: IntakeSortResult;
+  draftCandidate: {
+    candidate: DraftCandidate;
+    formatted: string;
+    generatedAt: string;
+    reason: string;
+  } | null;
+}
+
+/**
+ * Deterministic intake sorting and draft-candidate generation.
+ *
+ * Called by ingestMessage during the ingestion pipeline.
+ * Exported so that integration tests can exercise the exact same
+ * production path without a live PluginContext.
+ *
+ * This function:
+ * - classifies every intake record into exactly one sort category
+ * - decides whether a draft candidate is appropriate
+ * - NEVER sends, NEVER contacts SMTP, NEVER enables outbound
+ * - drafts are formatted documents only
+ */
+export function computeSortAndDraft(
+  detection: ReturnType<typeof detectSource>,
+  classHint: NormalizedMessage["classHint"],
+  intakeMetadata: IntakeMetadata | null,
+  inReplyTo: string | null,
+  references: string[],
+  fromAddress: string,
+  fromDisplay: string,
+  subject: string,
+): SortAndDraftResult {
+  const sortResult = sortIntakeRecord({
+    sourceDetection: detection,
+    classHint,
+    intakeMetadata,
+    duplicateMatchStrength: null,
+    latestVerdict: null,
+    hasReplyDraft: false,
+    inReplyTo,
+    hasReferences: references.length > 0,
+  });
+
+  const draftDecision = decideDraft(sortResult.category, {
+    fromAddress,
+    from: fromDisplay,
+    subject,
+  });
+
+  const draftCandidate =
+    draftDecision.shouldDraft && draftDecision.candidate
+      ? {
+          candidate: draftDecision.candidate,
+          formatted: formatDraftDocument(draftDecision.candidate),
+          generatedAt: new Date().toISOString(),
+          reason: draftDecision.reason,
+        }
+      : null;
+
+  return { sortResult, draftCandidate };
 }
 
 function configError(message: string): Error {
@@ -453,6 +526,28 @@ async function ingestMessage(
     analysisKeys.push(analysisKey);
     await ctx.state.set({ scopeKind: "issue", scopeId: issue.id, namespace: STATE_NS_INTAKE, stateKey: "intake-analysis-keys" }, analysisKeys);
 
+    // -- Governed intake: deterministic sorter and draft candidate --
+    const { sortResult, draftCandidate } = computeSortAndDraft(
+      detection,
+      msg.classHint,
+      storeIntake?.intakeMetadata ?? null,
+      msg.inReplyTo,
+      msg.references,
+      msg.fromAddress,
+      msg.from,
+      msg.subject,
+    );
+    await ctx.state.set({ scopeKind: "issue", scopeId: issue.id, namespace: STATE_NS_INTAKE, stateKey: "intake-sort-result" }, sortResult);
+
+    if (draftCandidate) {
+      await ctx.state.set({
+        scopeKind: "issue",
+        scopeId: issue.id,
+        namespace: STATE_NS_INTAKE,
+        stateKey: "intake-draft-candidate",
+      }, draftCandidate);
+    }
+
     // -- Governed intake: deduplicated notification (pending -> activity -> completed) --
     if (storeIntake && shouldSendIntakeNotification("high", "store_submission", null)) {
       const existingNotif = await ctx.state.get({ scopeKind: "issue", scopeId: issue.id, namespace: STATE_NS_INTAKE, stateKey: "intake-notification" }) as IntakeNotificationRecord | undefined;
@@ -622,6 +717,16 @@ function parseReplyDraft(body: string): { to: string | null; subject: string | n
   return { to, subject, text: lines.slice(i).join("\n").trim() };
 }
 
+function toIsoString(v: Date | string | undefined): string {
+  if (typeof v === "string") return v;
+  if (v instanceof Date) return v.toISOString();
+  return new Date().toISOString();
+}
+
+function issueCreatedAt(issue: { createdAt?: Date | string | null }): string {
+  return toIsoString(issue.createdAt ?? undefined);
+}
+
 async function rebuildReconciliationIndex(ctx: PluginContext, companyId: string): Promise<ReconciliationIndex> {
   const index = new ReconciliationIndex();
   try {
@@ -659,8 +764,8 @@ async function rebuildReconciliationIndex(ctx: PluginContext, companyId: string)
             id: issue.id,
             metadata: m,
             fieldValues,
-            createdAt: issue.createdAt ?? new Date().toISOString(),
-            updatedAt: m.lastEnrichedAt ?? issue.createdAt ?? new Date().toISOString(),
+            createdAt: issueCreatedAt(issue),
+            updatedAt: m.lastEnrichedAt ?? issueCreatedAt(issue),
           });
         }
       } catch {
@@ -718,7 +823,8 @@ const plugin = definePlugin({
         const doc = await ctx.issues.documents.get(issueId, "reply-draft", companyId).catch(() => null);
         if (doc?.body) draft = parseReplyDraft(doc.body);
       }
-      return { thread: thread ?? null, sent: sent ?? null, draft };
+      const draftCandidate = await ctx.state.get({ scopeKind: "issue", scopeId: issueId, namespace: STATE_NS_INTAKE, stateKey: "intake-draft-candidate" });
+      return { thread: thread ?? null, sent: sent ?? null, draft, draftCandidate: draftCandidate ?? null };
     });
 
     // -- Store intake data provider --
@@ -764,6 +870,8 @@ const plugin = definePlugin({
 
         const latestAnalysis = analyses.length > 0 ? analyses[analyses.length - 1].analysis : null;
         const latestReview = getLatestReview(reviews);
+        const sortResult = await ctx.state.get({ scopeKind: "issue", scopeId: issueId, namespace: STATE_NS_INTAKE, stateKey: "intake-sort-result" });
+        const draftCandidate = await ctx.state.get({ scopeKind: "issue", scopeId: issueId, namespace: STATE_NS_INTAKE, stateKey: "intake-draft-candidate" });
         return {
           evidence: evidence ?? null,
           duplicates: duplicates ?? [],
@@ -775,6 +883,8 @@ const plugin = definePlugin({
           latestOutcome: getLatestOutcome(reviews),
           notification,
           intakeMetadata: intakeMetadata ?? null,
+          sortResult: sortResult ?? null,
+          draftCandidate: draftCandidate ?? null,
         };
       } catch {
         return null;
@@ -811,6 +921,8 @@ const plugin = definePlugin({
             const duplicates = await ctx.state.get({ scopeKind: "issue", scopeId: issue.id, namespace: STATE_NS_INTAKE, stateKey: "intake-duplicates" });
             const dupList = Array.isArray(duplicates) ? duplicates : [];
             const intakeMetadata = await ctx.state.get({ scopeKind: "issue", scopeId: issue.id, namespace: STATE_NS_INTAKE, stateKey: "intake-metadata" });
+            const sortData = await ctx.state.get({ scopeKind: "issue", scopeId: issue.id, namespace: STATE_NS_INTAKE, stateKey: "intake-sort-result" }) as IntakeSortResult | undefined;
+            const draftData = await ctx.state.get({ scopeKind: "issue", scopeId: issue.id, namespace: STATE_NS_INTAKE, stateKey: "intake-draft-candidate" }) as Record<string, unknown> | undefined;
             items.push({
               issueId: issue.id,
               identifier: issue.identifier,
@@ -834,6 +946,10 @@ const plugin = definePlugin({
               recordCompleteness: intakeMetadata ? (intakeMetadata as IntakeMetadata).recordCompleteness : "needs_source_verification",
               missingFields: intakeMetadata ? (intakeMetadata as IntakeMetadata).missingFields : [],
               conflictingFields: intakeMetadata ? (intakeMetadata as IntakeMetadata).conflictingFields : [],
+              sortCategory: sortData?.category ?? null,
+              sortLabel: sortData ? CATEGORY_LABELS[sortData.category] : null,
+              replyActionStatus: sortData?.replyActionStatus ?? null,
+              draftCandidateKind: draftData?.candidate ? (draftData.candidate as DraftCandidate).kind : null,
             });
           } catch { /* skip problematic issues */ }
         }

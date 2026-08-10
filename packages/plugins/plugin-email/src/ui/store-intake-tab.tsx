@@ -74,6 +74,19 @@ type IntakeMetadataType = {
   lastEnrichedAt: string | null;
 };
 
+type DraftCandidateData = {
+  candidate: {
+    kind: string;
+    to: string;
+    subject: string;
+    body: string;
+    reason: string;
+  };
+  formatted: string;
+  generatedAt: string;
+  reason: string;
+} | null;
+
 type StoreIntakeData = {
   evidence: {
     sourceDetection: {
@@ -114,6 +127,17 @@ type StoreIntakeData = {
   latestVerdict: string | null;
   latestOutcome: string | null;
   intakeMetadata: IntakeMetadataType | null;
+  sortResult: {
+    category: string;
+    sourceType: string;
+    sourceForm: string;
+    classificationConfidence: number;
+    formCompleteness: string | null;
+    replyActionStatus: string;
+    reason: string;
+    rulesMatched: string[];
+  } | null;
+  draftCandidate: DraftCandidateData;
 } | null;
 
 const VERDICT_LABELS: Record<string, string> = {
@@ -186,7 +210,7 @@ export function StoreIntakeTab({ context }: PluginDetailTabProps) {
     return <div style={box(10, 12)}><span style={{ opacity: 0.7 }}>No store intake record linked to this issue.</span></div>;
   }
 
-  const { evidence, duplicates, analyses, reviews, latestAnalysis, latestReview, intakeMetadata } = data;
+  const { evidence, duplicates, analyses, reviews, latestAnalysis, latestReview, intakeMetadata, sortResult, draftCandidate } = data;
   const intake = evidence.storeIntake;
 
   async function handleReview() {
@@ -375,6 +399,38 @@ export function StoreIntakeTab({ context }: PluginDetailTabProps) {
         <div style={row()}><span style={labelStyle()}>Received</span><span>{new Date(evidence.date).toLocaleString()}</span></div>
         <div style={row()}><span style={labelStyle()}>Evidence ID</span><span style={{ fontFamily: "monospace", fontSize: 12 }}>{evidence.evidenceId.slice(0, 16)}</span></div>
       </div>
+
+      {draftCandidate && (
+        <div style={{ ...cardStyle(), borderLeft: "3px solid #e67e22" }}>
+          <div style={{ fontWeight: 700, color: "#e67e22", display: "flex", gap: 8, alignItems: "center" }}>
+            Draft Candidate — Not Approved
+            <span style={{ fontSize: 10, opacity: 0.6, fontWeight: 400 }}>
+              Board approval required to promote to a sendable reply draft
+            </span>
+          </div>
+          <div style={row()}><span style={labelStyle()}>Kind</span><span>{draftCandidate.candidate.kind}</span></div>
+          <div style={row()}><span style={labelStyle()}>Recipient</span><span>{draftCandidate.candidate.to}</span></div>
+          <div style={row()}><span style={labelStyle()}>Subject</span><span>{draftCandidate.candidate.subject}</span></div>
+          <div style={{ marginTop: 4 }}>
+            <div style={{ fontWeight: 600, marginBottom: 4, opacity: 0.7 }}>Body</div>
+            <pre style={{
+              whiteSpace: "pre-wrap",
+              fontSize: 12,
+              opacity: 0.85,
+              margin: 0,
+              padding: "8px 10px",
+              background: "rgba(127,127,127,0.06)",
+              borderRadius: 6,
+              border: "1px solid rgba(127,127,127,0.15)",
+              maxHeight: 200,
+              overflowY: "auto",
+            }}>{draftCandidate.candidate.body}</pre>
+          </div>
+          <div style={{ fontSize: 11, opacity: 0.5 }}>
+            Generated {new Date(draftCandidate.generatedAt).toLocaleString()} — {draftCandidate.reason}
+          </div>
+        </div>
+      )}
 
       {latestAnalysis && (
         <div style={cardStyle()}>

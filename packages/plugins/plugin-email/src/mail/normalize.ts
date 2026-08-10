@@ -63,6 +63,7 @@ export type SourceType =
   | "qsl_risk_calculator"
   | "therapist_index_message"
   | "provider_marketing"
+  | "correction"
   | "unknown";
 
 export type SourceForm =

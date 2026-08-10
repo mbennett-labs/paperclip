@@ -4,6 +4,7 @@ import {
   type EvidenceSource,
   type IntakeMetadata,
   type IntakeTransport,
+  type RecordCompleteness,
 } from "./intake-metadata.js";
 
 export interface CorrelationAttempt {
@@ -370,7 +371,7 @@ export function reconcileRecord(
 function computeReconciledCompleteness(
   fieldsPresent: string[],
   transport: IntakeTransport,
-): string {
+): RecordCompleteness {
   const ESSENTIAL_STORE_FIELDS = ["storeName", "address", "city", "state"];
   const hasEssential = ESSENTIAL_STORE_FIELDS.every((f) => fieldsPresent.includes(f));
 
