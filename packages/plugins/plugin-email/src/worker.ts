@@ -195,6 +195,69 @@ export function resolveQueueStoreName(evidence: Record<string, unknown> | null):
   return original?.storeName ?? null;
 }
 
+export interface SortAndDraftResult {
+  sortResult: IntakeSortResult;
+  draftCandidate: {
+    candidate: DraftCandidate;
+    formatted: string;
+    generatedAt: string;
+    reason: string;
+  } | null;
+}
+
+/**
+ * Deterministic intake sorting and draft-candidate generation.
+ *
+ * Called by ingestMessage during the ingestion pipeline.
+ * Exported so that integration tests can exercise the exact same
+ * production path without a live PluginContext.
+ *
+ * This function:
+ * - classifies every intake record into exactly one sort category
+ * - decides whether a draft candidate is appropriate
+ * - NEVER sends, NEVER contacts SMTP, NEVER enables outbound
+ * - drafts are formatted documents only
+ */
+export function computeSortAndDraft(
+  detection: ReturnType<typeof detectSource>,
+  classHint: NormalizedMessage["classHint"],
+  intakeMetadata: IntakeMetadata | null,
+  inReplyTo: string | null,
+  references: string[],
+  fromAddress: string,
+  fromDisplay: string,
+  subject: string,
+): SortAndDraftResult {
+  const sortResult = sortIntakeRecord({
+    sourceDetection: detection,
+    classHint,
+    intakeMetadata,
+    duplicateMatchStrength: null,
+    latestVerdict: null,
+    hasReplyDraft: false,
+    inReplyTo,
+    hasReferences: references.length > 0,
+  });
+
+  const draftDecision = decideDraft(sortResult.category, {
+    fromAddress,
+    from: fromDisplay,
+    subject,
+  });
+
+  const draftCandidate =
+    draftDecision.shouldDraft && draftDecision.candidate
+      ? {
+          candidate: draftDecision.candidate,
+          formatted: formatDraftDocument(draftDecision.candidate),
+          generatedAt: new Date().toISOString(),
+          reason: draftDecision.reason,
+        }
+      : null;
+
+  return { sortResult, draftCandidate };
+}
+
 function configError(message: string): Error {
   return new Error(`[${"qsl.email"}] ${message}`);
 }
@@ -463,37 +526,26 @@ async function ingestMessage(
     analysisKeys.push(analysisKey);
     await ctx.state.set({ scopeKind: "issue", scopeId: issue.id, namespace: STATE_NS_INTAKE, stateKey: "intake-analysis-keys" }, analysisKeys);
 
-    // -- Governed intake: deterministic sorter --
-    const sortResult = sortIntakeRecord({
-      sourceDetection: detection,
-      classHint: msg.classHint,
-      intakeMetadata: storeIntake?.intakeMetadata ?? null,
-      duplicateMatchStrength: null,
-      latestVerdict: null,
-      hasReplyDraft: false,
-      inReplyTo: msg.inReplyTo,
-      hasReferences: msg.references.length > 0,
-    });
+    // -- Governed intake: deterministic sorter and draft candidate --
+    const { sortResult, draftCandidate } = computeSortAndDraft(
+      detection,
+      msg.classHint,
+      storeIntake?.intakeMetadata ?? null,
+      msg.inReplyTo,
+      msg.references,
+      msg.fromAddress,
+      msg.from,
+      msg.subject,
+    );
     await ctx.state.set({ scopeKind: "issue", scopeId: issue.id, namespace: STATE_NS_INTAKE, stateKey: "intake-sort-result" }, sortResult);
 
-    // -- Governed intake: deterministic draft candidate (never sends, never SMTP) --
-    const draftDecision = decideDraft(sortResult.category, {
-      fromAddress: msg.fromAddress,
-      from: msg.from,
-      subject: msg.subject,
-    });
-    if (draftDecision.shouldDraft && draftDecision.candidate) {
+    if (draftCandidate) {
       await ctx.state.set({
         scopeKind: "issue",
         scopeId: issue.id,
         namespace: STATE_NS_INTAKE,
         stateKey: "intake-draft-candidate",
-      }, {
-        candidate: draftDecision.candidate,
-        formatted: formatDraftDocument(draftDecision.candidate),
-        generatedAt: new Date().toISOString(),
-        reason: draftDecision.reason,
-      });
+      }, draftCandidate);
     }
 
     // -- Governed intake: deduplicated notification (pending -> activity -> completed) --
