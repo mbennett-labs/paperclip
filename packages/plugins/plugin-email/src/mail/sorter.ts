@@ -134,13 +134,23 @@ export function sortIntakeRecord(input: SortInput): IntakeSortResult {
     return result;
   }
 
-  // 4. Store submission — recognized form with essential fields present
+  // 4. Store submission — recognized form with essential fields present.
+  //    A store submission is "incomplete" only if the expected form fields
+  //    are actually missing from the message; "partial" completeness from
+  //    email_notification transport does not by itself indicate an incomplete
+  //    form — it means the source is less authoritative than a webhook.
   if (
     sourceDetection?.sourceType === "store_submission" &&
     sourceDetection.sourceForm !== "unknown"
   ) {
+    const essentialMissing =
+      intakeMetadata?.missingFields &&
+      ["storeName", "address", "city", "state"].some(
+        (f) => intakeMetadata.missingFields.includes(f),
+      );
+
     if (
-      intakeMetadata?.recordCompleteness === "partial" ||
+      essentialMissing ||
       intakeMetadata?.recordCompleteness === "needs_source_verification"
     ) {
       result.category = "incomplete";
@@ -159,14 +169,18 @@ export function sortIntakeRecord(input: SortInput): IntakeSortResult {
     return result;
   }
 
-  // 5. General email — contact, inquiry, support, etc.
+  // 5. General email — contact, inquiry, support, claim, alert, newsletter, etc.
   if (
     classHint === "contact_general" ||
     classHint === "customer_inquiry" ||
     classHint === "support_request" ||
     classHint === "sales_opportunity" ||
     classHint === "partnership_affiliate" ||
-    classHint === "correction"
+    classHint === "correction" ||
+    classHint === "listing_claim" ||
+    classHint === "intelligence_request" ||
+    classHint === "store_alert_signup" ||
+    classHint === "newsletter_signup"
   ) {
     result.category = "general_email";
     result.replyActionStatus = hasReplyDraft ? "draft_ready" : "draft_needed";

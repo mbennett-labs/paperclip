@@ -248,7 +248,7 @@ export const SORTER_FIXTURES: SorterFixture[] = [
     expectedDraftShouldGenerate: true,
   },
 
-  // 2. Incomplete store submission
+  // 2. Incomplete store submission (missing essential fields)
   {
     id: "fixture-02",
     description: "incomplete store submission",
@@ -264,7 +264,7 @@ export const SORTER_FIXTURES: SorterFixture[] = [
       classHint: "store_submission",
     }),
     detection: storeSubmitDetection(),
-    metadata: partialMetadata(),
+    metadata: needsSourceVerificationMetadata(),
     duplicateMatchStrength: null,
     latestVerdict: null,
     hasReplyDraft: false,
