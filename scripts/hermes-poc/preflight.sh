@@ -209,13 +209,33 @@ else
   FAILED=$((FAILED + 1))
 fi
 
-# ── 10. Provider key check (never print or expose) ──────────────────────────
+# ── 10. Provider key check — credential-validity prerequisite ONLY ──────────
+#
+# WARNING: OPENROUTER_API_KEY set in the shell is NOT the delivery mechanism
+# to the Hermes child process. The governed delivery path is:
+#
+#   Company secret → agent secret binding (secret_ref)
+#     → resolveAdapterConfigForRuntime (resolves plaintext)
+#       → config.__resolvedEnvKeys (governed provenance stamp)
+#         → buildHermesChildEnv (governedKeys gate)
+#           → child_process.spawn({ env, envMode: "replace" })
+#
+# Plaintext config.env.* values that match secret-shaped keys are REJECTED
+# unless they appear in __resolvedEnvKeys (governed secret pathway).
+#
+# This check ONLY verifies the credential is available for Paperclip config.
+# IT DOES NOT DELIVER THE KEY TO HERMES.
 
 if [[ -n "${OPENROUTER_API_KEY:-}" ]]; then
-  echo "PASS: OPENROUTER_API_KEY is set (value not inspected)"
+  echo "PASS: OPENROUTER_API_KEY is set in environment (credential available for Paperclip config; key value not inspected)"
   PASSED=$((PASSED + 1))
+  echo "  NOTE: This check verifies the credential EXISTS. The actual delivery to"
+  echo "  Hermes requires the governed secret pathway: company secret → agent"
+  echo "  secret_ref binding → __resolvedEnvKeys → child environment."
 else
   echo "FAIL: OPENROUTER_API_KEY is not set" >&2
+  echo "  BLOCKED: The OpenRouter API key must be available as a company secret" >&2
+  echo "  in Paperclip and bound to the agent via a secret_ref config binding." >&2
   FAILED=$((FAILED + 1))
 fi
 
@@ -259,7 +279,66 @@ for script in preflight.sh verify-evidence.sh cleanup.sh; do
   fi
 done
 
-# ── Summary ─────────────────────────────────────────────────────────────────
+# ── 15. Hermes executable check (fail-closed) ───────────────────────────────
+#
+# Resolves the configured Hermes command exactly as execute.ts does:
+#   resolveHermesCommand: config.hermesCommand → config.command → "hermes"
+#   resolveCommandPath: absolute path or PATH walk with X_OK check
+#
+# Does NOT start an agent, call a provider, or execute Hermes.
+
+HERMES_CMD="${HERMES_COMMAND:-hermes}"
+HERMES_PATH="$(command -v "$HERMES_CMD" 2>/dev/null || true)"
+
+if [[ -z "$HERMES_PATH" ]]; then
+  echo "FAIL: Hermes CLI '$HERMES_CMD' not found in PATH" >&2
+  echo "  BLOCKED: Hermes must be installed before POC execution." >&2
+  echo "  Install: pip install hermes-agent" >&2
+  echo "  Or configure the path via HERMES_COMMAND= env var" >&2
+  echo "  Or use the full path in Paperclip agent config: containment.command" >&2
+  FAILED=$((FAILED + 1))
+else
+  check "Hermes CLI found and executable" "$HERMES_PATH" \
+    test -x "$HERMES_PATH"
+
+  if "$HERMES_PATH" --version >/dev/null 2>&1; then
+    HERMES_VERSION="$("$HERMES_PATH" --version 2>&1 | head -1 || true)"
+    echo "  Hermes version: $HERMES_VERSION"
+  else
+    echo "  WARN: $HERMES_CMD --version failed (binary exists at $HERMES_PATH but may need Python or configuration)"
+    echo "  This is non-fatal for preflight but may indicate an incomplete Hermes installation."
+  fi
+fi
+
+# ── 16. UID/GID contract ─────────────────────────────────────────────────────
+
+CURRENT_UID="$(id -u 2>/dev/null || echo 0)"
+CURRENT_GID="$(id -g 2>/dev/null || echo 0)"
+
+echo "  Current UID: $CURRENT_UID, GID: $CURRENT_GID"
+
+if [[ "$CURRENT_UID" == "0" ]]; then
+  echo "WARN: Running as root (UID 0)"
+  echo "  Bubblewrap containment REJECTS executionUid=0."
+  echo "  REQUIRED OPERATOR ACTION: Configure a non-zero containment.executionUid"
+  echo "  (e.g., 1000 or 1001) in the Hermes agent config."
+  echo "  Without --unshare-user, bwrap runs the child as the invoking UID."
+  echo "  With --unshare-user (non-zero UID), bwrap creates a new user namespace"
+  echo "  and the child runs as the configured UID/GID."
+  echo "  The workspace (/tmp/paperclip-hermes-sandbox-<runId>) is mounted with"
+  echo "  --bind inside the sandbox, which maps the host directory to the"
+  echo "  configured UID inside the sandbox's tmpfs root."
+fi
+
+# Check available UIDs for the operator
+if command -v getent >/dev/null 2>&1; then
+  FIRST_USER="$(getent passwd 1000 2>/dev/null | cut -d: -f1 || true)"
+  if [[ -n "$FIRST_USER" ]]; then
+    echo "  Detected user: $FIRST_USER (UID 1000) — suitable for containment.executionUid"
+  else
+    echo "  No user at UID 1000. Suggested: containment.executionUid=1000 (numeric only)"
+  fi
+fi
 
 echo ""
 echo "=============================================="

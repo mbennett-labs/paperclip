@@ -339,6 +339,51 @@ describe("preflight.sh", () => {
     expect(typeof r.status).toBe("number");
   });
 
+  // OpenRouter credential contract message
+  it("reports governed secret delivery note when OPENROUTER_API_KEY is set", () => {
+    const r = runScript(PREFLIGHT, ["--run-id", "poc-cred-contract"], {
+      OPENROUTER_API_KEY: "sk-or-v1-fake-test-key",
+    });
+    expect(r.stdout).toContain("governed secret pathway");
+    expect(r.stdout).toContain("secret_ref binding");
+    expect(r.stdout).toContain("__resolvedEnvKeys");
+  });
+
+  // Hermes CLI not found
+  it("reports blocked when Hermes CLI is not installed", () => {
+    const r = runScript(PREFLIGHT, ["--run-id", "no-hermes"], {
+      PATH: "/nonexistent:/usr/bin:/bin",
+    });
+    expect(r.status).not.toBe(0);
+    const combined = `${r.stdout}\n${r.stderr}`;
+    expect(combined).toContain("Hermes CLI");
+    expect(combined).toContain("not found");
+    expect(combined).toContain("BLOCKED");
+  });
+
+  // Hermes found and executable
+  it("passes when Hermes CLI is found", () => {
+    // Test with a fake Hermes command (echo)
+    const r = runScript(PREFLIGHT, ["--run-id", "has-hermes"], {
+      HERMES_COMMAND: "echo",
+    });
+    // Should at least find the executable
+    const combined = `${r.stdout}\n${r.stderr}`;
+    expect(combined).toMatch(/Hermes CLI found/);
+  });
+
+  // Root UID detection
+  it("warns when running as root", () => {
+    const r = runScript(PREFLIGHT, ["--run-id", "root-check"]);
+    // If running as root (which we are), should warn
+    if (process.getuid?.() === 0) {
+      const combined = `${r.stdout}\n${r.stderr}`;
+      expect(combined).toContain("Running as root");
+      expect(combined).toContain("REQUIRED OPERATOR ACTION");
+      expect(combined).toContain("containment.executionUid");
+    }
+  });
+
   // PAPERCLIP_API_KEY warning when set
   it("warns when PAPERCLIP_API_KEY is set", () => {
     const r = runScript(PREFLIGHT, ["--run-id", "poc-ppk-set"], {

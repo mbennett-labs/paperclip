@@ -3,7 +3,20 @@
 **Date:** 2026-08-11
 **Branch:** `feat/hermes-synthetic-poc-v0`
 **Base:** `origin/feat/qsl-current-upstream-integration`
-**Status:** Ready for human-approved execution
+**Status:** Ready for human-approved execution (blocked: Hermes not installed on this host)
+
+---
+
+## 0. Runtime Deployment Gate
+
+**CRITICAL:** This branch is a worktree. The live POC **cannot** begin until:
+
+1. This branch is reviewed, approved, and merged into `feat/qsl-current-upstream-integration`.
+2. The merged code is deployed to staging (where the Paperclip service runs).
+3. The restarted Paperclip service is proven to contain the required containment implementation (PR #22, `feat/hermes-containment-v0`, merged at `dc9905e5`).
+4. The service's Hermes adapter loads the containment code from the deployed build, not the worktree.
+
+The preflight script checks that the worktree branch and commit match expectations, but the running Paperclip service **must** be independently verified to include the containment implementation. Do **not** restart or deploy services in this mission.
 
 ---
 
@@ -28,20 +41,53 @@ This is a **synthetic** POC: Hermes is instructed to write `3` to `./hermes-poc.
 | Condition | How to verify |
 |---|---|
 | Linux host | `uname -s` outputs `Linux` |
+| Hermes CLI installed | `hermes --version` succeeds |
 | Bubblewrap >= 0.4.0 | `bwrap --version` |
-| User namespaces enabled | `unshare --user true` succeeds |
+| User namespaces enabled | `bwrap --unshare-user --ro-bind / / /bin/true` |
+| Non-root UID for containment | `id -u` is not 0, OR configure `containment.executionUid` to a non-zero value |
 | Branch `feat/hermes-synthetic-poc-v0` | `git branch --show-current` |
 | Base `feat/qsl-current-upstream-integration` reachable | `git merge-base HEAD origin/feat/qsl-current-upstream-integration` succeeds |
-| OPENROUTER_API_KEY set (but never printed) | `$OPENROUTER_API_KEY` is non-empty, has a **$1 hard account/key limit** |
+| OPENROUTER_API_KEY available as Paperclip company secret | Key exists in Paperclip secrets with a **$1 hard account/key limit** |
+| Agent config binds secret via `secret_ref` | `config.env.OPENROUTER_API_KEY` uses `type: "secret_ref"`, not plaintext |
 | PAPERCLIP_API_KEY NOT forwarded to Hermes | `allowPaperclipApiAccess: false` in agent config |
 | `--yolo` disabled | The Hermes adapter config has `dangerouslySkipHermesApprovals: false` |
-| Paperclip service running | `curl http://localhost:3100/api/health` returns 200 |
+| Paperclip service running and deployed from merged branch | `curl http://localhost:3100/api/health` returns 200; service built from merged containment branch |
 
-### 2.2 Cost Safety
+### 2.1a UID/GID Contract
 
-- **Hard loss boundary:** The $1 limit on the OpenRouter API key. This is the external enforce.
-- **Observed cost:** Post-run, check the OpenRouter dashboard. Not guaranteed by POC code.
-- **Paperclip budget:** Advisory only. Mission Control exposes company-level cost, not issue-scoped.
+The Paperclip server on this host runs as **root (UID 0)**. Bubblewrap containment **rejects** `executionUid=0`. The operator MUST:
+
+- Configure `containment.executionUid` to a non-zero value (e.g., `1000` — user `ubuntu`)
+- Optionally configure `containment.executionGid` (defaults to `executionUid` if unset)
+- The workspace directory (`/tmp/paperclip-hermes-sandbox-<runId>`) is mounted via `--bind` inside the sandbox; ownership inside the tmpfs root maps to the configured UID
+
+Without `--unshare-user`, bwrap runs the child as the invoking UID (root). With `--unshare-user` and a non-zero UID, bwrap creates a new user namespace where the child runs as the configured UID/GID.
+
+The preflight script detects the current UID and reports the required operator action.
+
+### 2.2 Governed Secret Delivery
+
+The **shell** `OPENROUTER_API_KEY` used by preflight is a credential-validity prerequisite only. It proves the key exists. It does **NOT** deliver the key to the Hermes child process.
+
+The actual governed delivery path (all verified in existing code):
+
+```
+Company secret (Paperclip DB)
+  ↓
+Agent config binding: config.env.OPENROUTER_API_KEY = { type: "secret_ref", secretId: "sec_..." }
+  ↓
+resolveAdapterConfigForRuntime (secrets.ts)
+  → resolves plaintext value, stamps __resolvedEnvKeys = ["OPENROUTER_API_KEY"]
+  ↓
+buildHermesChildEnv (child-env.ts)
+  → blocked key check: isBlocked("OPENROUTER_API_KEY") → true
+  → governed gate: governedKeys.has("OPENROUTER_API_KEY") → true → ALLOWED
+  ↓
+child_process.spawn("hermes", ..., { env, envMode: "replace" })
+  → only the constructed env dict is passed (no process.env inheritance)
+```
+
+**Plaintext config.env secrets are REJECTED.** If `OPENROUTER_API_KEY` is set as a plain string (not via `secret_ref`), `buildHermesChildEnv` pushes it to `rejectedConfigSecrets` and does NOT forward it to the child.
 
 ### 2.3 Key Handling
 
@@ -49,7 +95,7 @@ This is a **synthetic** POC: Hermes is instructed to write `3` to `./hermes-poc.
 NEVER PRINT, LOG, HASH, PARTIALLY DISPLAY, OR INSPECT THE REAL OPENROUTER_API_KEY.
 ```
 
-The preflight script checks that the key is *present* but never reveals its value.
+The preflight script checks that the key is *present* but never reveals its value. The governed path in section 2.2 ensures the key reaches Hermes without appearing in logs.
 
 ---
 
