@@ -3,7 +3,7 @@
 **Date:** 2026-08-11
 **Branch:** `feat/qsl-current-upstream-integration` (post-merge staging) or `feat/hermes-synthetic-poc-v0` (pre-merge worktree)
 **Base:** `origin/feat/qsl-current-upstream-integration`
-**Status:** Ready for human-approved execution (blocked: Hermes not installed on this host)
+**Status:** Ready for human-approved execution (blocked: containment.executionUid must be configured; see section 2.1a)
 
 ---
 
@@ -41,10 +41,10 @@ This is a **synthetic** POC: Hermes is instructed to write `3` to `./hermes-poc.
 | Condition | How to verify |
 |---|---|
 | Linux host | `uname -s` outputs `Linux` |
-| Hermes CLI installed | `hermes --version` succeeds |
+| Hermes/OpenClaw CLI installed | `HERMES_COMMAND=/home/openclaw/.local/bin/openclaw bash scripts/hermes-poc/preflight.sh --run-id poc-001` finds the binary |
 | Bubblewrap >= 0.4.0 | `bwrap --version` |
 | User namespaces enabled | `bwrap --unshare-user --ro-bind / / /bin/true` |
-| Non-root UID for containment | `id -u` is not 0, OR configure `containment.executionUid` to a non-zero value |
+| Non-root UID for containment | Operator must configure `containment.executionUid` to a non-zero value (e.g., `1000`) in the Hermes agent config; preflight FAILS when run as root to enforce this |
 | Branch `feat/qsl-current-upstream-integration` or `feat/hermes-synthetic-poc-v0` | `git branch --show-current` |
 | Base `feat/qsl-current-upstream-integration` reachable | `git merge-base HEAD origin/feat/qsl-current-upstream-integration` succeeds |
 | OPENROUTER_API_KEY available as Paperclip company secret | Key exists in Paperclip secrets with a **$1 hard account/key limit** |
@@ -52,6 +52,8 @@ This is a **synthetic** POC: Hermes is instructed to write `3` to `./hermes-poc.
 | PAPERCLIP_API_KEY NOT forwarded to Hermes | `allowPaperclipApiAccess: false` in agent config |
 | `--yolo` disabled | The Hermes adapter config has `dangerouslySkipHermesApprovals: false` |
 | Paperclip service running and deployed from merged branch | `curl http://localhost:3100/api/health` returns 200; service built from merged containment branch |
+
+**Note:** This host uses OpenClaw (not the Python `hermes` CLI). The `hermes_local` adapter works with OpenClaw by setting `config.hermesCommand` to `/home/openclaw/.local/bin/openclaw` in the agent config. The preflight accepts any executable via the `HERMES_COMMAND` env var.
 
 ### 2.1a UID/GID Contract
 
@@ -113,12 +115,15 @@ All scripts are in `scripts/hermes-poc/`:
 
 ## 4. Execution Procedure
 
-### 4.1 Preflight (offline, no Hermes)
+### 4.1 Preflight (offline, no Hermes/OpenClaw execution)
 
 ```bash
 export OPENROUTER_API_KEY="<your-key>"
-./scripts/hermes-poc/preflight.sh --run-id poc-001
+HERMES_COMMAND=/home/openclaw/.local/bin/openclaw \
+  bash scripts/hermes-poc/preflight.sh --run-id poc-001
 ```
+
+The `HERMES_COMMAND` env var points to the actual OpenClaw binary on this host. The preflight will probe `--version` using the openclaw user's environment (which has the required Node >=22.12.0).
 
 Expected: `VERDICT: PREFLIGHT PASSED` with zero failures. If any check fails, resolve before proceeding.
 
@@ -130,12 +135,15 @@ Create or use a Hermes agent in Paperclip with these settings:
 
 | Config key | Value |
 |---|---|
+| `hermesCommand` | `/home/openclaw/.local/bin/openclaw` |
 | `allowPaperclipApiAccess` | `false` |
 | `dangerouslySkipHermesApprovals` | `false` |
 | `containment` | `true` |
 | `containment.providerPreset` | `openrouter` |
 | `containment.workspaceDir` | `/tmp/paperclip-hermes-sandbox-poc-001` |
-| `containment.executionUid` | A non-root UID (e.g., 1000) |
+| `containment.executionUid` | A non-root UID (e.g., `1000`) |
+
+The `hermesCommand` field tells the hermes_local adapter to use OpenClaw instead of the default `hermes` CLI. The preflight's `HERMES_COMMAND` env var mirrors this config key.
 
 ### 4.3 Execute Synthetic Task
 

@@ -279,34 +279,67 @@ for script in preflight.sh verify-evidence.sh cleanup.sh; do
   fi
 done
 
-# ── 15. Hermes executable check (fail-closed) ───────────────────────────────
+# ── 15. Hermes/OpenClaw executable check (fail-closed) ─────────────────────
 #
-# Resolves the configured Hermes command exactly as execute.ts does:
+# Resolves the configured command exactly as execute.ts does:
 #   resolveHermesCommand: config.hermesCommand → config.command → "hermes"
 #   resolveCommandPath: absolute path or PATH walk with X_OK check
 #
-# Does NOT start an agent, call a provider, or execute Hermes.
+# Does NOT start an agent, call a provider, or execute Hermes/OpenClaw.
+#
+# When the binary is under /home/openclaw (OpenClaw installation), the
+# version probe runs as the openclaw user because the binary requires
+# Node >=22.12.0 which is only available in the openclaw user's PATH.
 
 HERMES_CMD="${HERMES_COMMAND:-hermes}"
 HERMES_PATH="$(command -v "$HERMES_CMD" 2>/dev/null || true)"
 
 if [[ -z "$HERMES_PATH" ]]; then
-  echo "FAIL: Hermes CLI '$HERMES_CMD' not found in PATH" >&2
-  echo "  BLOCKED: Hermes must be installed before POC execution." >&2
-  echo "  Install: pip install hermes-agent" >&2
-  echo "  Or configure the path via HERMES_COMMAND= env var" >&2
-  echo "  Or use the full path in Paperclip agent config: containment.command" >&2
+  echo "FAIL: Hermes/OpenClaw CLI '$HERMES_CMD' not found in PATH" >&2
+  echo "  BLOCKED: The Hermes/OpenClaw CLI must be installed before POC execution." >&2
+  echo "  If using OpenClaw: set HERMES_COMMAND=/home/openclaw/.local/bin/openclaw" >&2
+  echo "  Or configure the path in Paperclip agent config: config.hermesCommand" >&2
   FAILED=$((FAILED + 1))
 else
-  check "Hermes CLI found and executable" "$HERMES_PATH" \
+  check "Hermes/OpenClaw CLI found and executable" "$HERMES_PATH" \
     test -x "$HERMES_PATH"
 
-  if "$HERMES_PATH" --version >/dev/null 2>&1; then
-    HERMES_VERSION="$("$HERMES_PATH" --version 2>&1 | head -1 || true)"
-    echo "  Hermes version: $HERMES_VERSION"
+  # Probe --version in the intended execution context.
+  # If the binary is under /home/openclaw, run as the openclaw user
+  # because that user's environment has the correct Node runtime.
+  HERMES_VERSION=""
+  VERSION_OK=0
+
+  if [[ "$HERMES_PATH" = /home/openclaw/* ]] && command -v sudo >/dev/null 2>&1; then
+    if sudo -u openclaw env \
+      HOME=/home/openclaw \
+      PATH="/home/openclaw/.local/bin:/usr/local/bin:/usr/bin:/bin" \
+      "$HERMES_PATH" --version >/dev/null 2>&1; then
+      HERMES_VERSION="$(sudo -u openclaw env \
+        HOME=/home/openclaw \
+        PATH="/home/openclaw/.local/bin:/usr/local/bin:/usr/bin:/bin" \
+        "$HERMES_PATH" --version 2>&1 | head -1 || true)"
+      VERSION_OK=1
+    fi
   else
-    echo "  WARN: $HERMES_CMD --version failed (binary exists at $HERMES_PATH but may need Python or configuration)"
-    echo "  This is non-fatal for preflight but may indicate an incomplete Hermes installation."
+    if "$HERMES_PATH" --version >/dev/null 2>&1; then
+      HERMES_VERSION="$("$HERMES_PATH" --version 2>&1 | head -1 || true)"
+      VERSION_OK=1
+    fi
+  fi
+
+  if [[ $VERSION_OK -eq 1 ]]; then
+    echo "PASS: $HERMES_CMD --version succeeded"
+    echo "  Version: $HERMES_VERSION"
+    PASSED=$((PASSED + 1))
+  else
+    echo "  WARN: $HERMES_CMD --version failed (binary exists at $HERMES_PATH but may need runtime dependencies)"
+    if [[ "$HERMES_PATH" = /home/openclaw/* ]]; then
+      echo "  The OpenClaw binary requires Node >=22.12.0, available in the"
+      echo "  openclaw user's environment. Paperclip will execute through bwrap"
+      echo "  with the configured containment.executionUid and HOME."
+    fi
+    echo "  This is non-fatal for preflight but should be verified before POC execution."
   fi
 fi
 
@@ -317,27 +350,35 @@ CURRENT_GID="$(id -g 2>/dev/null || echo 0)"
 
 echo "  Current UID: $CURRENT_UID, GID: $CURRENT_GID"
 
+# Detect a suitable containment UID on this host.
+# This must exist as a real system user because the workspace is mounted
+# via --bind inside the bwrap sandbox and filesystem ownership maps to this UID.
+CONTAINMENT_UID_CANDIDATE=""
+if command -v getent >/dev/null 2>&1; then
+  CONTAINMENT_UID_CANDIDATE="$(getent passwd 1000 2>/dev/null | cut -d: -f1 || true)"
+fi
+
 if [[ "$CURRENT_UID" == "0" ]]; then
-  echo "WARN: Running as root (UID 0)"
+  echo "FAIL: Running as root (UID 0)" >&2
+  FAILED=$((FAILED + 1))
   echo "  Bubblewrap containment REJECTS executionUid=0."
-  echo "  REQUIRED OPERATOR ACTION: Configure a non-zero containment.executionUid"
-  echo "  (e.g., 1000 or 1001) in the Hermes agent config."
+  if [[ -n "$CONTAINMENT_UID_CANDIDATE" ]]; then
+    echo "  Detected user: $CONTAINMENT_UID_CANDIDATE (UID 1000) — configure this as containment.executionUid"
+  else
+    echo "  No user at UID 1000 found — a suitable non-root UID must exist on the system."
+  fi
+  echo "  REQUIRED OPERATOR ACTION: Set containment.executionUid to a non-zero UID"
+  echo "  (e.g., 1000) in the Hermes agent config in Paperclip before attempting"
+  echo "  the synthetic POC run."
   echo "  Without --unshare-user, bwrap runs the child as the invoking UID."
   echo "  With --unshare-user (non-zero UID), bwrap creates a new user namespace"
   echo "  and the child runs as the configured UID/GID."
-  echo "  The workspace (/tmp/paperclip-hermes-sandbox-<runId>) is mounted with"
-  echo "  --bind inside the sandbox, which maps the host directory to the"
-  echo "  configured UID inside the sandbox's tmpfs root."
-fi
-
-# Check available UIDs for the operator
-if command -v getent >/dev/null 2>&1; then
-  FIRST_USER="$(getent passwd 1000 2>/dev/null | cut -d: -f1 || true)"
-  if [[ -n "$FIRST_USER" ]]; then
-    echo "  Detected user: $FIRST_USER (UID 1000) — suitable for containment.executionUid"
-  else
-    echo "  No user at UID 1000. Suggested: containment.executionUid=1000 (numeric only)"
-  fi
+elif [[ -z "$CONTAINMENT_UID_CANDIDATE" ]]; then
+  echo "WARN: No user at UID 1000 detected on this system."
+  echo "  Ensure a non-root user exists for containment.executionUid configuration."
+else
+  check "suitable containment UID available" "$CONTAINMENT_UID_CANDIDATE (UID 1000)" \
+    test -n "$CONTAINMENT_UID_CANDIDATE"
 fi
 
 echo ""

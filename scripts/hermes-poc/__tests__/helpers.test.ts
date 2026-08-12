@@ -356,7 +356,7 @@ describe("preflight.sh", () => {
     });
     expect(r.status).not.toBe(0);
     const combined = `${r.stdout}\n${r.stderr}`;
-    expect(combined).toContain("Hermes CLI");
+    expect(combined).toContain("Hermes/OpenClaw CLI");
     expect(combined).toContain("not found");
     expect(combined).toContain("BLOCKED");
   });
@@ -369,7 +369,7 @@ describe("preflight.sh", () => {
     });
     // Should at least find the executable
     const combined = `${r.stdout}\n${r.stderr}`;
-    expect(combined).toMatch(/Hermes CLI found/);
+    expect(combined).toMatch(/Hermes\/OpenClaw CLI found/);
   });
 
   // Root UID detection
