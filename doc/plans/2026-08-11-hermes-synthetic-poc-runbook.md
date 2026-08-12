@@ -1,7 +1,7 @@
 # Hermes Synthetic POC Runbook
 
 **Date:** 2026-08-11
-**Branch:** `feat/hermes-synthetic-poc-v0`
+**Branch:** `feat/qsl-current-upstream-integration` (post-merge staging) or `feat/hermes-synthetic-poc-v0` (pre-merge worktree)
 **Base:** `origin/feat/qsl-current-upstream-integration`
 **Status:** Ready for human-approved execution (blocked: Hermes not installed on this host)
 
@@ -45,7 +45,7 @@ This is a **synthetic** POC: Hermes is instructed to write `3` to `./hermes-poc.
 | Bubblewrap >= 0.4.0 | `bwrap --version` |
 | User namespaces enabled | `bwrap --unshare-user --ro-bind / / /bin/true` |
 | Non-root UID for containment | `id -u` is not 0, OR configure `containment.executionUid` to a non-zero value |
-| Branch `feat/hermes-synthetic-poc-v0` | `git branch --show-current` |
+| Branch `feat/qsl-current-upstream-integration` or `feat/hermes-synthetic-poc-v0` | `git branch --show-current` |
 | Base `feat/qsl-current-upstream-integration` reachable | `git merge-base HEAD origin/feat/qsl-current-upstream-integration` succeeds |
 | OPENROUTER_API_KEY available as Paperclip company secret | Key exists in Paperclip secrets with a **$1 hard account/key limit** |
 | Agent config binds secret via `secret_ref` | `config.env.OPENROUTER_API_KEY` uses `type: "secret_ref"`, not plaintext |

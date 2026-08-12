@@ -140,9 +140,9 @@ fi
 
 # ── 5. Required branch and commit ──────────────────────────────────────────
 
-check "on required branch (feat/hermes-synthetic-poc-v0)" \
+check "on required branch (feat/hermes-synthetic-poc-v0 or feat/qsl-current-upstream-integration)" \
   "$(git branch --show-current 2>/dev/null || echo "unknown")" \
-  test "$(git branch --show-current 2>/dev/null)" = "feat/hermes-synthetic-poc-v0"
+  bash -c 'b="$(git branch --show-current 2>/dev/null)"; test "$b" = "feat/hermes-synthetic-poc-v0" -o "$b" = "feat/qsl-current-upstream-integration"'
 
 HEAD_COMMIT="$(git rev-parse HEAD 2>/dev/null || echo "unknown")"
 echo "  HEAD: $HEAD_COMMIT"
