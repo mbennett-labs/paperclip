@@ -23,6 +23,7 @@ import {
   parseLocalProcessNetworkAllowlist,
 } from "@paperclipai/adapter-utils/local-process-sandbox";
 import { buildHermesChildEnv } from "./child-env.js";
+import { applyContainedExecutionIdentity } from "./execute.js";
 
 const cleanup: string[] = [];
 
@@ -642,6 +643,58 @@ setTimeout(() => process.exit(42), 500);
     });
   },
 );
+
+// ── Contained execution identity (PATH + HOME) ───────────────────────────
+
+describe("applyContainedExecutionIdentity", () => {
+  it("prepends the command directory to PATH for an absolute command", () => {
+    const result = applyContainedExecutionIdentity(
+      { PATH: "/usr/local/bin:/usr/bin:/bin" },
+      "/home/openclaw/.local/bin/openclaw",
+      undefined,
+    );
+    expect(result.PATH).toBe("/home/openclaw/.local/bin:/usr/local/bin:/usr/bin:/bin");
+  });
+
+  it("preserves an empty inherited PATH without a leading delimiter", () => {
+    const result = applyContainedExecutionIdentity({}, "/home/openclaw/.local/bin/openclaw", undefined);
+    expect(result.PATH).toBe("/home/openclaw/.local/bin");
+  });
+
+  it("does not modify PATH for a relative command", () => {
+    const result = applyContainedExecutionIdentity(
+      { PATH: "/usr/bin:/bin" },
+      "openclaw",
+      undefined,
+    );
+    expect(result.PATH).toBe("/usr/bin:/bin");
+  });
+
+  it("points HOME at the contained sandbox home", () => {
+    const result = applyContainedExecutionIdentity(
+      { PATH: "/usr/bin:/bin", HOME: "/home/hermes-agent" },
+      "/home/openclaw/.local/bin/openclaw",
+      "/tmp/paperclip-hermes-sandbox-poc-001/home",
+    );
+    expect(result.HOME).toBe("/tmp/paperclip-hermes-sandbox-poc-001/home");
+  });
+
+  it("leaves HOME untouched when no sandbox home is provided", () => {
+    const result = applyContainedExecutionIdentity(
+      { PATH: "/usr/bin:/bin", HOME: "/home/hermes-agent" },
+      "/home/openclaw/.local/bin/openclaw",
+      null,
+    );
+    expect(result.HOME).toBe("/home/hermes-agent");
+  });
+
+  it("does not mutate the input env object", () => {
+    const input = { PATH: "/usr/bin:/bin", HOME: "/home/hermes-agent" };
+    applyContainedExecutionIdentity(input, "/home/openclaw/.local/bin/openclaw", "/tmp/home");
+    expect(input.PATH).toBe("/usr/bin:/bin");
+    expect(input.HOME).toBe("/home/hermes-agent");
+  });
+});
 
 // ── Fail-closed tests ────────────────────────────────────────────────────
 

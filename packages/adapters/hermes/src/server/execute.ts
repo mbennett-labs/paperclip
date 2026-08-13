@@ -81,6 +81,42 @@ export function resolveHermesCommand(config: Record<string, unknown>): string {
   return cfgString(config.hermesCommand) || cfgString(config.command) || HERMES_CLI;
 }
 
+/**
+ * Apply the contained execution identity to the child environment.
+ *
+ * The Hermes/OpenClaw CLI is an .mjs file with a `#!/usr/bin/env node` shebang,
+ * so `node` must resolve from the child PATH.  On hosts where OpenClaw ships
+ * its own Node >=22.12 runtime in the same bin directory (e.g.
+ * /home/openclaw/.local/bin/node -> /usr/local/bin/node22), that directory
+ * must precede the inherited system PATH or the shebang resolves the wrong
+ * (too-old) node.  We prepend the command's own directory rather than the
+ * inherited PATH.
+ *
+ * HOME is pointed at the contained (rw) sandbox home so the child writes
+ * config/cache inside the workspace instead of a non-existent default.
+ */
+export function applyContainedExecutionIdentity(
+  env: Record<string, string>,
+  hermesCommand: string,
+  sandboxHomeDir: string | null | undefined,
+): Record<string, string> {
+  const next: Record<string, string> = { ...env };
+
+  if (path.isAbsolute(hermesCommand)) {
+    const commandDir = path.dirname(hermesCommand);
+    const inheritedPath = next.PATH ?? "";
+    next.PATH = inheritedPath
+      ? `${commandDir}${path.delimiter}${inheritedPath}`
+      : commandDir;
+  }
+
+  if (sandboxHomeDir) {
+    next.HOME = sandboxHomeDir;
+  }
+
+  return next;
+}
+
 // ---------------------------------------------------------------------------
 // Wake-up prompt builder
 // ---------------------------------------------------------------------------
@@ -552,6 +588,12 @@ export async function execute(
     if (networkAllowlist.length > 0) {
       sandboxOpts.networkAllowlist = networkAllowlist;
     }
+
+    // ── Contained execution identity: PATH + HOME ──────────────────────
+    Object.assign(
+      env,
+      applyContainedExecutionIdentity(env, hermesCmd, sandboxOpts?.homeDir),
+    );
   }
 
   // ── Log start ──────────────────────────────────────────────────────────
