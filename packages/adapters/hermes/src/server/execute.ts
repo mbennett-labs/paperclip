@@ -83,6 +83,85 @@ export function resolveHermesCommand(config: Record<string, unknown>): string {
   return cfgString(config.hermesCommand) || cfgString(config.command) || HERMES_CLI;
 }
 
+export type HermesCommandDialect = "hermes" | "openclaw";
+
+/**
+ * Resolve the CLI dialect used to build the child argv.
+ *
+ * The adapter historically only spoke the Python `hermes` CLI (`chat -q ...`).
+ * When `hermesCommand` points at an OpenClaw binary (which has no `chat`
+ * subcommand), operators opt in via `commandDialect: "openclaw"` so the adapter
+ * emits OpenClaw's embedded/headless `agent --local` invocation instead.
+ *
+ * This is explicit configuration, not a basename heuristic, so a Hermes-compatible
+ * wrapper named `openclaw` (or vice-versa) never changes behavior implicitly.
+ */
+export function resolveHermesCommandDialect(
+  config: Record<string, unknown>,
+): HermesCommandDialect {
+  return cfgString(config.commandDialect) === "openclaw" ? "openclaw" : "hermes";
+}
+
+export interface HermesCommandArgsInput {
+  dialect: HermesCommandDialect;
+  prompt: string;
+  runId: string;
+  model: string;
+  resolvedProvider: string;
+  timeoutSec: number;
+  useQuiet: boolean;
+  toolsets: string | undefined;
+  maxTurns: number | undefined;
+  worktreeMode: boolean;
+  checkpoints: boolean;
+  verbose: boolean;
+  dangerousYolo: boolean;
+  persistSession: boolean;
+  prevSessionId: string | undefined;
+  extraArgs: string[] | undefined;
+}
+
+/**
+ * Build the child argv for the configured dialect.
+ *
+ * Hermes dialect (default) preserves the historical `chat -q` argv.
+ * OpenClaw dialect emits OpenClaw 2026.2.17's embedded, non-interactive
+ * `agent --local --session-id <runId> --message <prompt> --json --timeout <sec>`.
+ * Model/provider are not passed as flags for OpenClaw — they are resolved from
+ * the governed environment (e.g. OPENROUTER_API_KEY) plus OpenClaw's config.
+ */
+export function buildHermesCommandArgs(input: HermesCommandArgsInput): string[] {
+  if (input.dialect === "openclaw") {
+    const args: string[] = [
+      "agent",
+      "--local",
+      "--session-id",
+      input.runId,
+      "--message",
+      input.prompt,
+      "--json",
+      "--timeout",
+      String(Math.max(1, Math.floor(input.timeoutSec))),
+    ];
+    return args;
+  }
+
+  const args: string[] = ["chat", "-q", input.prompt];
+  if (input.useQuiet) args.push("-Q");
+  if (input.model) args.push("-m", input.model);
+  if (input.resolvedProvider !== "auto") args.push("--provider", input.resolvedProvider);
+  if (input.toolsets) args.push("-t", input.toolsets);
+  if (input.maxTurns && input.maxTurns > 0) args.push("--max-turns", String(input.maxTurns));
+  if (input.worktreeMode) args.push("-w");
+  if (input.checkpoints) args.push("--checkpoints");
+  if (input.verbose) args.push("-v");
+  args.push("--source", "tool");
+  if (input.dangerousYolo) args.push("--yolo");
+  if (input.persistSession && input.prevSessionId) args.push("--resume", input.prevSessionId);
+  if (input.extraArgs?.length) args.push(...input.extraArgs);
+  return args;
+}
+
 /**
  * Resolve the Hermes child working directory using the canonical Paperclip
  * workspace model (shared with the other local adapters).
@@ -411,6 +490,89 @@ function parseHermesOutput(stdout: string, stderr: string): ParsedOutput {
   return result;
 }
 
+/**
+ * Parse OpenClaw `agent --json` output.
+ *
+ * OpenClaw 2026.2.17 `agent --local --json` prints a JSON object of the shape
+ * `{ payloads: [...], meta: { agentMeta: { sessionId, provider, model, ... } } }`
+ * on stdout, possibly interleaved with ANSI banner/logger lines. We scan for the
+ * last JSON object carrying a `meta` key and extract the assistant text from
+ * `payloads[].text`. There is no `session_id:`/`tokens:`/`cost:` Hermes markup.
+ */
+function parseOpenClawOutput(stdout: string, stderr: string): ParsedOutput {
+  const result: ParsedOutput = {};
+  const combined = stdout + "\n" + stderr;
+
+  let parsed: Record<string, unknown> | null = null;
+  const candidates = stdout.match(/\{[\s\S]*\}/g) ?? [];
+  for (let i = candidates.length - 1; i >= 0; i--) {
+    try {
+      const value = JSON.parse(candidates[i]);
+      if (value && typeof value === "object" && "meta" in value) {
+        parsed = value as Record<string, unknown>;
+        break;
+      }
+    } catch {
+      // skip non-JSON fragments
+    }
+  }
+
+  if (parsed) {
+    const meta = parseObject(parsed.meta);
+    const agentMeta = parseObject(meta.agentMeta);
+    result.sessionId = asString(agentMeta.sessionId, "") || undefined;
+
+    const payloads = Array.isArray(parsed.payloads) ? parsed.payloads : [];
+    const texts: string[] = [];
+    for (const payload of payloads) {
+      if (!payload || typeof payload !== "object") continue;
+      const text = asString((payload as Record<string, unknown>).text, "");
+      if (text.trim()) texts.push(text);
+    }
+    if (texts.length > 0) {
+      result.response = texts.join("\n");
+    }
+  }
+
+  const usageMatch = combined.match(TOKEN_USAGE_REGEX);
+  if (usageMatch) {
+    result.usage = {
+      inputTokens: parseInt(usageMatch[1], 10) || 0,
+      outputTokens: parseInt(usageMatch[2], 10) || 0,
+    };
+  }
+
+  const costMatch = combined.match(COST_REGEX);
+  if (costMatch?.[1]) {
+    result.costUsd = parseFloat(costMatch[1]);
+  }
+
+  if (stderr.trim()) {
+    const errorLines = stderr
+      .split("\n")
+      .filter((line) => /error|exception|traceback|failed/i.test(line))
+      .filter((line) => !/INFO|DEBUG|warn/i.test(line));
+    if (errorLines.length > 0) {
+      result.errorMessage = errorLines.slice(0, 5).join("\n");
+    }
+  }
+
+  return result;
+}
+
+/**
+ * Parse adapter stdout/stderr into a structured result for the given dialect.
+ */
+export function parseCommandOutput(
+  stdout: string,
+  stderr: string,
+  dialect: HermesCommandDialect,
+): ParsedOutput {
+  return dialect === "openclaw"
+    ? parseOpenClawOutput(stdout, stderr)
+    : parseHermesOutput(stdout, stderr);
+}
+
 // ---------------------------------------------------------------------------
 // Main execute
 // ---------------------------------------------------------------------------
@@ -502,34 +664,6 @@ export async function execute(
   // ── Build command args ─────────────────────────────────────────────────
   // Use -Q (quiet) to get clean output: just response + session_id line
   const useQuiet = cfgBoolean(config.quiet) === true; // default false
-  const args: string[] = ["chat", "-q", prompt];
-  if (useQuiet) args.push("-Q");
-
-  if (model) {
-    args.push("-m", model);
-  }
-
-  // Always pass --provider when we have a resolved one (not "auto").
-  // "auto" means Hermes will decide on its own — no need to pass it.
-  if (resolvedProvider !== "auto") {
-    args.push("--provider", resolvedProvider);
-  }
-
-  if (toolsets) {
-    args.push("-t", toolsets);
-  }
-
-  if (maxTurns && maxTurns > 0) {
-    args.push("--max-turns", String(maxTurns));
-  }
-
-  if (worktreeMode) args.push("-w");
-  if (checkpoints) args.push("--checkpoints");
-  if (cfgBoolean(config.verbose) === true) args.push("-v");
-
-  // Tag sessions as "tool" source so they don't clutter the user's session history.
-  // Requires hermes-agent >= PR #3255 (feat/session-source-tag).
-  args.push("--source", "tool");
 
   // --yolo is NOT passed by default.
   // Paperclip agents run as non-interactive subprocesses with no TTY;
@@ -537,17 +671,26 @@ export async function execute(
   // to fail.  Operators who need the old behaviour must explicitly enable
   // dangerouslySkipHermesApprovals.
   const dangerousYolo = cfgBoolean(config.dangerouslySkipHermesApprovals) === true;
-  if (dangerousYolo) {
-    args.push("--yolo");
-  }
 
-  if (persistSession && prevSessionId) {
-    args.push("--resume", prevSessionId);
-  }
-
-  if (extraArgs?.length) {
-    args.push(...extraArgs);
-  }
+  const dialect = resolveHermesCommandDialect(config);
+  const args = buildHermesCommandArgs({
+    dialect,
+    prompt,
+    runId: ctx.runId,
+    model,
+    resolvedProvider,
+    timeoutSec,
+    useQuiet,
+    toolsets,
+    maxTurns,
+    worktreeMode,
+    checkpoints,
+    verbose: cfgBoolean(config.verbose) === true,
+    dangerousYolo,
+    persistSession,
+    prevSessionId,
+    extraArgs,
+  });
 
   // ── Build environment ──────────────────────────────────────────────────
   // envMode: "replace" — the child process does NOT inherit any parent
@@ -694,7 +837,7 @@ export async function execute(
   });
 
   // ── Parse output ───────────────────────────────────────────────────────
-  const parsed = parseHermesOutput(result.stdout || "", result.stderr || "");
+  const parsed = parseCommandOutput(result.stdout || "", result.stderr || "", dialect);
 
   await ctx.onLog(
     "stdout",

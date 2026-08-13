@@ -32,6 +32,17 @@ export function getConfigSchema(): AdapterConfigSchema {
         hint: "Usually auto. Set this only when Hermes cannot infer the provider from the model or ~/.hermes/config.yaml.",
       },
       {
+        key: "commandDialect",
+        label: "Command dialect",
+        type: "select",
+        default: "hermes",
+        options: [
+          { value: "hermes", label: "Hermes CLI (chat -q)" },
+          { value: "openclaw", label: "OpenClaw CLI (agent --local)" },
+        ],
+        hint: "CLI dialect used to build the child argv. \"hermes\" emits the Python hermes CLI syntax (chat -q). \"openclaw\" emits OpenClaw's embedded headless syntax (agent --local --session-id --message --json) and resolves model/provider from the governed environment.",
+      },
+      {
         key: "timeoutSec",
         label: "Timeout seconds",
         type: "number",
