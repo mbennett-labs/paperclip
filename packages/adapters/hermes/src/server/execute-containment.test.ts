@@ -16,7 +16,7 @@ import fs from "node:fs/promises";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { runChildProcess, buildPaperclipEnv } from "@paperclipai/adapter-utils/server-utils";
 import {
   buildLocalProcessSandboxSpawnTarget,
@@ -191,6 +191,125 @@ describe("Hermes containment identity validation", () => {
     expect(uidIdx).not.toBe(-1);
     expect(gidIdx).not.toBe(-1);
     expect(target.args[gidIdx - 1]).toBe("--gid");
+  });
+});
+
+// ── Root host + missing executionUid fail-closed ─────────────────────────
+
+describe("Hermes containment root-host missing executionUid", () => {
+  let originalGetuid: (() => number) | undefined;
+
+  beforeEach(() => {
+    originalGetuid = process.getuid;
+  });
+
+  afterEach(() => {
+    if (originalGetuid) {
+      Object.defineProperty(process, "getuid", { value: originalGetuid, configurable: true, writable: true });
+    }
+  });
+
+  function mockUid(uid: number) {
+    Object.defineProperty(process, "getuid", { value: () => uid, configurable: true, writable: true });
+  }
+
+  it("rejects containmentRequired=true + root host + missing executionUid", async () => {
+    mockUid(0);
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-ctn-rootmiss-"));
+    cleanup.push(root);
+    await expect(
+      buildLocalProcessSandboxSpawnTarget({
+        executable: process.execPath,
+        args: ["-e", "process.exit(0)"],
+        cwd: root,
+        options: {
+          workspaceDir: root,
+          filesystemScope: "workspace",
+          networkScope: "deny",
+          containmentRequired: true,
+        },
+      }),
+    ).rejects.toThrow("Host process is running as root but no executionUid was configured");
+  });
+
+  it("rejects containmentRequired=true + root host + executionUid=0", async () => {
+    mockUid(0);
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-ctn-rootzero-"));
+    cleanup.push(root);
+    await expect(
+      buildLocalProcessSandboxSpawnTarget({
+        executable: process.execPath,
+        args: ["-e", "process.exit(0)"],
+        cwd: root,
+        options: {
+          workspaceDir: root,
+          filesystemScope: "workspace",
+          networkScope: "deny",
+          containmentRequired: true,
+          executionUid: 0,
+        },
+      }),
+    ).rejects.toThrow("Root executionUid is rejected");
+  });
+
+  it("permits containmentRequired=true + root host + non-zero executionUid", async () => {
+    mockUid(0);
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-ctn-rootok-"));
+    cleanup.push(root);
+    const target = await buildLocalProcessSandboxSpawnTarget({
+      executable: process.execPath,
+      args: ["-e", "process.exit(0)"],
+      cwd: root,
+      options: {
+        workspaceDir: root,
+        filesystemScope: "workspace",
+        networkScope: "deny",
+        containmentRequired: true,
+        executionUid: 1000,
+      },
+    });
+    expect(target.args).toContain("--unshare-user");
+    expect(target.args).toContain("--uid");
+    expect(target.args).toContain("1000");
+  });
+
+  it("permits containmentRequired=true + non-root host + missing executionUid", async () => {
+    mockUid(1000);
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-ctn-nonroot-"));
+    cleanup.push(root);
+    await expect(
+      buildLocalProcessSandboxSpawnTarget({
+        executable: process.execPath,
+        args: ["-e", "process.exit(0)"],
+        cwd: root,
+        options: {
+          workspaceDir: root,
+          filesystemScope: "workspace",
+          networkScope: "deny",
+          containmentRequired: true,
+        },
+      }),
+    ).resolves.toBeDefined();
+  });
+
+  it("non-zero executionUid produces --unshare-user --uid --gid", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-ctn-uidargs-"));
+    cleanup.push(root);
+    const target = await buildLocalProcessSandboxSpawnTarget({
+      executable: process.execPath,
+      args: ["-e", "process.exit(0)"],
+      cwd: root,
+      options: {
+        workspaceDir: root,
+        filesystemScope: "workspace",
+        networkScope: "deny",
+        executionUid: 1000,
+      },
+    });
+    expect(target.args).toContain("--unshare-user");
+    expect(target.args).toContain("--uid");
+    expect(target.args).toContain("1000");
+    expect(target.args).toContain("--gid");
   });
 });
 

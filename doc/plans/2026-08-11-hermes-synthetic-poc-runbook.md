@@ -44,7 +44,7 @@ This is a **synthetic** POC: Hermes is instructed to write `3` to `./hermes-poc.
 | Hermes/OpenClaw CLI installed | `HERMES_COMMAND=/home/openclaw/.local/bin/openclaw bash scripts/hermes-poc/preflight.sh --run-id poc-001` finds the binary |
 | Bubblewrap >= 0.4.0 | `bwrap --version` |
 | User namespaces enabled | `bwrap --unshare-user --ro-bind / / /bin/true` |
-| Non-root UID for containment | Operator must configure `containment.executionUid` to a non-zero value (e.g., `1000`) in the Hermes agent config; preflight FAILS when run as root to enforce this |
+| Non-root UID for containment | When the Paperclip host process is root, `containment.executionUid` must be set to a non-zero value (e.g., `1000`) in the Hermes agent config. Runtime enforcement in `local-process-sandbox.ts` REJECTS containmentRequired=true without executionUid when host UID is 0. Preflight does NOT fail simply because it runs as root. |
 | Branch `feat/qsl-current-upstream-integration` or `feat/hermes-synthetic-poc-v0` | `git branch --show-current` |
 | Base `feat/qsl-current-upstream-integration` reachable | `git merge-base HEAD origin/feat/qsl-current-upstream-integration` succeeds |
 | OPENROUTER_API_KEY available as Paperclip company secret | Key exists in Paperclip secrets with a **$1 hard account/key limit** |
@@ -57,15 +57,20 @@ This is a **synthetic** POC: Hermes is instructed to write `3` to `./hermes-poc.
 
 ### 2.1a UID/GID Contract
 
-The Paperclip server on this host runs as **root (UID 0)**. Bubblewrap containment **rejects** `executionUid=0`. The operator MUST:
+**Paperclip/server MAY run as root. Preflight MAY run as root.**
+**A contained Hermes/OpenClaw child MUST NEVER execute as root (UID 0).**
+
+When the Paperclip host process is UID 0, `containment.executionUid` is **mandatory** — the runtime (`local-process-sandbox.ts`) will REJECT `containmentRequired=true` without a non-zero `executionUid`.
+
+The operator MUST:
 
 - Configure `containment.executionUid` to a non-zero value (e.g., `1000` — user `ubuntu`)
 - Optionally configure `containment.executionGid` (defaults to `executionUid` if unset)
 - The workspace directory (`/tmp/paperclip-hermes-sandbox-<runId>`) is mounted via `--bind` inside the sandbox; ownership inside the tmpfs root maps to the configured UID
 
-Without `--unshare-user`, bwrap runs the child as the invoking UID (root). With `--unshare-user` and a non-zero UID, bwrap creates a new user namespace where the child runs as the configured UID/GID.
+With `--unshare-user` and a non-zero UID, bwrap creates a new user namespace where the child runs as the configured UID/GID. Runtime enforcement (not merely preflight prose) prevents unsafe execution — the sandbox fails closed before spawning the child if the configuration would result in root-contained execution.
 
-The preflight script detects the current UID and reports the required operator action.
+The preflight script detects the host environment and reports whether a suitable non-root UID exists, but cannot mechanically inspect the Paperclip agent config. Final verification that `containment.executionUid` is actually set belongs to the runtime/API/operator step.
 
 ### 2.2 Governed Secret Delivery
 

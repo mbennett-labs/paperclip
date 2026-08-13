@@ -384,6 +384,15 @@ export async function buildLocalProcessSandboxSpawnTarget(input: {
     throw new Error("executionGid was configured without executionUid. Set executionUid explicitly.");
   }
 
+  if (input.options.containmentRequired && input.options.executionUid == null) {
+    if (process.getuid?.() === 0) {
+      throw new Error(
+        "Host process is running as root but no executionUid was configured. " +
+        "OS containment requires an explicit non-zero executionUid when the host process is UID 0.",
+      );
+    }
+  }
+
   args.push("--chdir", cwd, "--", executable, ...executableArgs);
   return { command: bwrapCommand, args, cwd: "/", env, cleanup };
 }

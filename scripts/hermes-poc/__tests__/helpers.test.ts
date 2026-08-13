@@ -372,15 +372,17 @@ describe("preflight.sh", () => {
     expect(combined).toMatch(/Hermes\/OpenClaw CLI found/);
   });
 
-  // Root UID detection
-  it("warns when running as root", () => {
-    const r = runScript(PREFLIGHT, ["--run-id", "root-check"]);
-    // If running as root (which we are), should warn
+  // Root UID advisory (not failure)
+  it("reports root advisory without failing preflight", () => {
+    const r = runScript(PREFLIGHT, ["--run-id", "root-advisory"]);
+    // If running as root (which we are), should report advisory but not FAIL
     if (process.getuid?.() === 0) {
       const combined = `${r.stdout}\n${r.stderr}`;
-      expect(combined).toContain("Running as root");
+      expect(combined).toContain("Preflight shell is running as root");
+      expect(combined).toContain("preflight as root is permitted");
       expect(combined).toContain("REQUIRED OPERATOR ACTION");
       expect(combined).toContain("containment.executionUid");
+      expect(combined).not.toContain("FAIL: Running as root");
     }
   });
 

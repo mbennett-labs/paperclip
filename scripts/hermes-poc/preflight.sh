@@ -344,11 +344,28 @@ else
 fi
 
 # ── 16. UID/GID contract ─────────────────────────────────────────────────────
+#
+# The UID of the preflight shell is NOT the same thing as:
+#   - the Paperclip server UID
+#   - the contained Hermes/OpenClaw child UID
+#
+# Invariant:
+#   Paperclip/preflight MAY run as root.
+#   A contained Hermes/OpenClaw child MUST NEVER execute as root (UID 0).
+#
+# Runtime enforcement (local-process-sandbox.ts):
+#   containmentRequired=true + no executionUid + host UID 0 → REJECT
+#
+# This preflight cannot mechanically inspect the Paperclip agent config
+# (containment.executionUid is set there). It detects the host environment
+# and reports whether a suitable non-root UID exists for configuration.
+# Final verification that containment.executionUid is actually set in the
+# agent config belongs to the runtime/API/operator step.
 
 CURRENT_UID="$(id -u 2>/dev/null || echo 0)"
 CURRENT_GID="$(id -g 2>/dev/null || echo 0)"
 
-echo "  Current UID: $CURRENT_UID, GID: $CURRENT_GID"
+echo "  Preflight shell UID: $CURRENT_UID, GID: $CURRENT_GID"
 
 # Detect a suitable containment UID on this host.
 # This must exist as a real system user because the workspace is mounted
@@ -359,23 +376,28 @@ if command -v getent >/dev/null 2>&1; then
 fi
 
 if [[ "$CURRENT_UID" == "0" ]]; then
-  echo "FAIL: Running as root (UID 0)" >&2
-  FAILED=$((FAILED + 1))
-  echo "  Bubblewrap containment REJECTS executionUid=0."
+  # Paperclip/preflight running as root is permitted.
+  # But the contained child must never be root — containment.executionUid is mandatory.
+  echo "INFO: Preflight shell is running as root (UID 0)."
+  echo "  Running Paperclip or preflight as root is permitted."
+  echo "  A contained Hermes/OpenClaw child MUST NEVER execute as root."
+  echo "  When the host process is root, containment.executionUid is MANDATORY."
+  echo "  Runtime enforcement REJECTS containmentRequired=true without executionUid."
   if [[ -n "$CONTAINMENT_UID_CANDIDATE" ]]; then
-    echo "  Detected user: $CONTAINMENT_UID_CANDIDATE (UID 1000) — configure this as containment.executionUid"
+    check "suitable containment UID available" "$CONTAINMENT_UID_CANDIDATE (UID 1000)" \
+      test -n "$CONTAINMENT_UID_CANDIDATE"
+    echo "  REQUIRED OPERATOR ACTION: Set containment.executionUid=1000"
+    echo "  in the Hermes agent config in Paperclip. This value is NOT inspected"
+    echo "  by this offline preflight — final verification is at runtime."
   else
-    echo "  No user at UID 1000 found — a suitable non-root UID must exist on the system."
+    echo "FAIL: No non-root system user detected on this host." >&2
+    echo "  A non-root user must exist before containment.executionUid can be configured." >&2
+    FAILED=$((FAILED + 1))
   fi
-  echo "  REQUIRED OPERATOR ACTION: Set containment.executionUid to a non-zero UID"
-  echo "  (e.g., 1000) in the Hermes agent config in Paperclip before attempting"
-  echo "  the synthetic POC run."
-  echo "  Without --unshare-user, bwrap runs the child as the invoking UID."
-  echo "  With --unshare-user (non-zero UID), bwrap creates a new user namespace"
-  echo "  and the child runs as the configured UID/GID."
 elif [[ -z "$CONTAINMENT_UID_CANDIDATE" ]]; then
   echo "WARN: No user at UID 1000 detected on this system."
-  echo "  Ensure a non-root user exists for containment.executionUid configuration."
+  echo "  When the host process is non-root (UID $CURRENT_UID), the child inherits that UID."
+  echo "  An explicit containment.executionUid is still recommended for defense-in-depth."
 else
   check "suitable containment UID available" "$CONTAINMENT_UID_CANDIDATE (UID 1000)" \
     test -n "$CONTAINMENT_UID_CANDIDATE"
