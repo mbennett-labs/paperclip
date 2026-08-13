@@ -376,12 +376,27 @@ CURRENT_GID="$(id -g 2>/dev/null || echo 0)"
 
 echo "  Preflight shell UID: $CURRENT_UID, GID: $CURRENT_GID"
 
-# Detect a suitable containment UID on this host.
-# This must exist as a real system user because the workspace is mounted
-# via --bind inside the bwrap sandbox and filesystem ownership maps to this UID.
+# Detect the OpenClaw execution identity on this host.
+# This must be a real, non-root system user because the workspace is mounted
+# via --bind inside the bwrap sandbox and filesystem ownership maps to that UID.
+# Prefer the owner of the resolved OpenClaw binary (the identity that actually
+# executes Hermes/OpenClaw), falling back to the `openclaw` system account.
+CONTAINMENT_UID_NUM=""
+CONTAINMENT_GID_NUM=""
 CONTAINMENT_UID_CANDIDATE=""
-if command -v getent >/dev/null 2>&1; then
-  CONTAINMENT_UID_CANDIDATE="$(getent passwd 1000 2>/dev/null | cut -d: -f1 || true)"
+if [[ -n "$HERMES_PATH" && -f "$HERMES_PATH" ]]; then
+  CONTAINMENT_UID_NUM="$(stat -c '%u' "$HERMES_PATH" 2>/dev/null || true)"
+  CONTAINMENT_GID_NUM="$(stat -c '%g' "$HERMES_PATH" 2>/dev/null || true)"
+fi
+if [[ -z "$CONTAINMENT_UID_NUM" || "$CONTAINMENT_UID_NUM" == "0" ]]; then
+  CONTAINMENT_UID_NUM="$(getent passwd openclaw 2>/dev/null | cut -d: -f3 || true)"
+  CONTAINMENT_GID_NUM="$(getent passwd openclaw 2>/dev/null | cut -d: -f4 || true)"
+fi
+if [[ -n "$CONTAINMENT_UID_NUM" && "$CONTAINMENT_UID_NUM" != "0" ]]; then
+  CONTAINMENT_UID_CANDIDATE="$(getent passwd "$CONTAINMENT_UID_NUM" 2>/dev/null | cut -d: -f1 || true)"
+  if [[ -z "$CONTAINMENT_GID_NUM" ]]; then
+    CONTAINMENT_GID_NUM="$CONTAINMENT_UID_NUM"
+  fi
 fi
 
 if [[ "$CURRENT_UID" == "0" ]]; then
@@ -393,22 +408,26 @@ if [[ "$CURRENT_UID" == "0" ]]; then
   echo "  When the host process is root, containment.executionUid is MANDATORY."
   echo "  Runtime enforcement REJECTS containmentRequired=true without executionUid."
   if [[ -n "$CONTAINMENT_UID_CANDIDATE" ]]; then
-    check "suitable containment UID available" "$CONTAINMENT_UID_CANDIDATE (UID 1000)" \
+    check "suitable containment UID available" \
+      "$CONTAINMENT_UID_CANDIDATE (UID $CONTAINMENT_UID_NUM, GID $CONTAINMENT_GID_NUM)" \
       test -n "$CONTAINMENT_UID_CANDIDATE"
-    echo "  REQUIRED OPERATOR ACTION: Set containment.executionUid=1000"
-    echo "  in the Hermes agent config in Paperclip. This value is NOT inspected"
-    echo "  by this offline preflight — final verification is at runtime."
+    echo "  REQUIRED OPERATOR ACTION: Set containment.executionUid=$CONTAINMENT_UID_NUM"
+    echo "  and containment.executionGid=$CONTAINMENT_GID_NUM in the Hermes agent config."
+    echo "  This offline preflight detects the OpenClaw identity from the host; it"
+    echo "  does NOT inspect the live Paperclip agent config — final verification"
+    echo "  that the value is actually set belongs to runtime/API/operator."
   else
     echo "FAIL: No non-root system user detected on this host." >&2
     echo "  A non-root user must exist before containment.executionUid can be configured." >&2
     FAILED=$((FAILED + 1))
   fi
 elif [[ -z "$CONTAINMENT_UID_CANDIDATE" ]]; then
-  echo "WARN: No user at UID 1000 detected on this system."
+  echo "WARN: No non-root OpenClaw/system user detected on this host."
   echo "  When the host process is non-root (UID $CURRENT_UID), the child inherits that UID."
   echo "  An explicit containment.executionUid is still recommended for defense-in-depth."
 else
-  check "suitable containment UID available" "$CONTAINMENT_UID_CANDIDATE (UID 1000)" \
+  check "suitable containment UID available" \
+    "$CONTAINMENT_UID_CANDIDATE (UID $CONTAINMENT_UID_NUM, GID $CONTAINMENT_GID_NUM)" \
     test -n "$CONTAINMENT_UID_CANDIDATE"
 fi
 
