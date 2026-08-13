@@ -1,0 +1,190 @@
+{
+  "version": 1,
+  "description": "V0 Operator Authority Policy — classifies actions for the autonomous engineering operator loop. Reuses existing Paperclip authorization + trust-preset infrastructure for boundary enforcement.",
+  "preauthorized": [
+    {
+      "action": "repo:read_source",
+      "class": "autonomous",
+      "description": "Read repository source files within authorized staging repo",
+      "examples": ["cat src/foo.ts", "reading any file under workspace"],
+      "audit": true
+    },
+    {
+      "action": "repo:grep_search",
+      "class": "autonomous",
+      "description": "Search/grep/find within authorized staging repo",
+      "examples": ["rg pattern", "find . -name '*.ts'", "glob patterns"]
+    },
+    {
+      "action": "git:status_log_diff",
+      "class": "autonomous",
+      "description": "Inspect git status, log, and diff",
+      "examples": ["git status", "git log", "git diff", "git diff --check"]
+    },
+    {
+      "action": "git:create_branch",
+      "class": "autonomous",
+      "description": "Create bounded working branch for mission scope",
+      "examples": ["git checkout -b feat/operator-mission-001"]
+    },
+    {
+      "action": "repo:edit_files",
+      "class": "autonomous",
+      "description": "Edit files inside authorized staging repo",
+      "examples": ["write/edit files under workspace"]
+    },
+    {
+      "action": "test:run_unit_integration",
+      "class": "autonomous",
+      "description": "Run unit/integration tests in staging repo",
+      "examples": ["pnpm test:run", "npx vitest run"],
+      "audit": true
+    },
+    {
+      "action": "build:typecheck",
+      "class": "autonomous",
+      "description": "Run typecheck and build on staging repo",
+      "examples": ["pnpm -r typecheck", "pnpm build"],
+      "audit": true
+    },
+    {
+      "action": "git:commit",
+      "class": "autonomous",
+      "description": "Commit mission-scoped changes with bounded scope",
+      "examples": ["git add -A && git commit -m 'operator: ...'"],
+      "audit": true
+    },
+    {
+      "action": "staging:inspect_logs",
+      "class": "autonomous",
+      "description": "Inspect staging service status and logs",
+      "examples": ["curl staging/health", "check PID", "read logs"]
+    },
+    {
+      "action": "staging:restart",
+      "class": "autonomous",
+      "description": "Restart approved STAGING service (port 3101)",
+      "examples": ["pkill paperclip staging", "start staging"],
+      "audit": true
+    },
+    {
+      "action": "staging:health_check",
+      "class": "autonomous",
+      "description": "Staging health checks post-restart",
+      "examples": ["curl staging/health endpoint"]
+    },
+    {
+      "action": "evidence:collect",
+      "class": "autonomous",
+      "description": "Collect and package canonical evidence",
+      "examples": ["generate mission receipt", "capture HEAD/proof"],
+      "audit": true
+    },
+    {
+      "action": "workspace:cleanup_temp",
+      "class": "autonomous",
+      "description": "Clean up mission temp workspaces",
+      "examples": ["rm -rf /tmp/paperclip-hermes-sandbox-*"]
+    }
+  ],
+  "human_approval_required": [
+    {
+      "action": "production:any_modification",
+      "class": "human_required",
+      "description": "ANY production modification or deployment (port 3100)",
+      "examples": ["restarting production", "deploying to production"]
+    },
+    {
+      "action": "secrets:create_change_expose",
+      "class": "human_required",
+      "description": "Secrets creation, change, or exposure",
+      "examples": ["creating new API keys", "changing credentials"]
+    },
+    {
+      "action": "network:expanded_egress",
+      "class": "human_required",
+      "description": "Expanding network egress beyond authorized scope",
+      "examples": ["adding new provider endpoints"]
+    },
+    {
+      "action": "model:change_provider_authorization",
+      "class": "human_required",
+      "description": "Changing model/provider authorization",
+      "examples": ["switching from DeepSeek to OpenAI"]
+    },
+    {
+      "action": "data:destructive_db",
+      "class": "human_required",
+      "description": "Destructive DB or data operations",
+      "examples": ["dropping tables", "deleting business data"]
+    },
+    {
+      "action": "security:change_boundaries",
+      "class": "human_required",
+      "description": "Changing security/containment/AppArmor boundaries",
+      "examples": ["disabling bubblewrap", "weakening AppArmor"]
+    },
+    {
+      "action": "external:publish_message",
+      "class": "human_required",
+      "description": "External email or message publication",
+      "examples": ["sending emails via SMTP"]
+    },
+    {
+      "action": "financial:transaction",
+      "class": "human_required",
+      "description": "Financial transaction or material API spending increase",
+      "examples": ["approving budget increases beyond thresholds"]
+    },
+    {
+      "action": "architecture:ambiguity",
+      "class": "human_required",
+      "description": "Architectural ambiguity outside mission scope",
+      "examples": ["decisions not covered by mission acceptance criteria"]
+    },
+    {
+      "action": "git:push",
+      "class": "human_required",
+      "description": "Pushing commits to remote (not autonomous in V0)",
+      "examples": ["git push", "git push origin branch"]
+    }
+  ],
+  "prohibited": [
+    {
+      "action": "governance:bypass",
+      "class": "prohibited",
+      "description": "Bypassing governance controls",
+      "examples": ["disabling authorization checks"]
+    },
+    {
+      "action": "credentials:expose_raw",
+      "class": "prohibited",
+      "description": "Exposing raw credentials",
+      "examples": ["logging API keys", "printing secrets"]
+    },
+    {
+      "action": "containment:disable",
+      "class": "prohibited",
+      "description": "Disabling containment",
+      "examples": ["disabling bwrap"]
+    },
+    {
+      "action": "provider:silent_substitution",
+      "class": "prohibited",
+      "description": "Silently selecting another model/provider",
+      "examples": ["falling back from DeepSeek to another provider"]
+    },
+    {
+      "action": "production:fallback_from_staging",
+      "class": "prohibited",
+      "description": "Touching production because staging failed",
+      "examples": ["deploying to production as staging workaround"]
+    },
+    {
+      "action": "mission:scope_expansion",
+      "class": "prohibited",
+      "description": "Expanding mission scope autonomously",
+      "examples": ["adding features beyond acceptance criteria"]
+    }
+  ]
+}

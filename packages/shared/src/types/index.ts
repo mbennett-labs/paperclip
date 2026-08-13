@@ -883,3 +883,13 @@ export type {
   MissionVerification,
   MissionView,
 } from "./mission.js";
+export {
+  OPERATOR_MISSION_STATUSES,
+  OPERATOR_AUTHORITY_SCOPES,
+  type OperatorMissionStatus,
+  type OperatorAuthorityScope,
+  type MissionReceipt,
+  type OperatorActionClass,
+  type OperatorActionRule,
+  type OperatorAuthorityPolicy,
+} from "./operator-mission.js";
