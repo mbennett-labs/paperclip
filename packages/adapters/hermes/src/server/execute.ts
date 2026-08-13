@@ -127,8 +127,10 @@ export interface HermesCommandArgsInput {
  * Hermes dialect (default) preserves the historical `chat -q` argv.
  * OpenClaw dialect emits OpenClaw 2026.2.17's embedded, non-interactive
  * `agent --local --session-id <runId> --message <prompt> --json --timeout <sec>`.
- * Model/provider are not passed as flags for OpenClaw — they are resolved from
- * the governed environment (e.g. OPENROUTER_API_KEY) plus OpenClaw's config.
+ * Model selection for OpenClaw is driven by writing a minimal `openclaw.json`
+ * into the sandbox home (agents.defaults.model.primary). The `agent --local`
+ * CLI does not accept --model; the sandbox config file is the selection method
+ * supported by this installed version.
  */
 export function buildHermesCommandArgs(input: HermesCommandArgsInput): string[] {
   if (input.dialect === "openclaw") {
@@ -758,6 +760,28 @@ export async function execute(
 
     await fs.mkdir(sandboxWorkspaceDir, { recursive: true });
     await fs.mkdir(sandboxHomeDir, { recursive: true });
+
+    // ── OpenClaw dialect: seed model config so OpenClaw resolves the
+    //    Paperclip-configured model instead of falling back to hardcoded
+    //    defaults (anthropic/claude-opus-4-6).  The `agent --local` CLI
+    //    does not accept --model; model selection is driven by the agent
+    //    config file ($HOME/.openclaw/openclaw.json).
+    if (dialect === "openclaw" && model) {
+      const openclawConfigDir = path.join(sandboxHomeDir, ".openclaw");
+      await fs.mkdir(openclawConfigDir, { recursive: true });
+      const configPayload: Record<string, unknown> = {
+        agents: {
+          defaults: {
+            model: { primary: model },
+          },
+        },
+      };
+      await fs.writeFile(
+        path.join(openclawConfigDir, "openclaw.json"),
+        JSON.stringify(configPayload),
+        { mode: 0o600 },
+      );
+    }
 
     const extraPaths: { path: string; access: "ro" | "rw" }[] = [{ path: cwd, access: "ro" }];
     if (instructionsFilePath) {

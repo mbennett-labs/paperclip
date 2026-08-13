@@ -3,7 +3,9 @@
  *
  * Pins the argv contract for both the Hermes CLI dialect (historical `chat -q`)
  * and the OpenClaw 2026.2.17 dialect (`agent --local --session-id --message
- * --json`). No process is spawned and no provider is contacted.
+ * --json`). Model selection in the OpenClaw dialect is driven by a minimal
+ * `openclaw.json` written into the sandbox home (agents.defaults.model.primary).
+ * No process is spawned and no provider is contacted.
  */
 
 import { describe, expect, test } from "vitest";
@@ -91,7 +93,7 @@ describe("buildHermesCommandArgs — OpenClaw dialect", () => {
     expect(args).not.toContain("-Q");
   });
 
-  test("does not emit -m/--provider (model/provider come from governed env)", () => {
+  test("does not emit -m/--provider (model provided via openclaw.json sandbox config)", () => {
     const args = buildHermesCommandArgs({ ...baseInput, dialect: "openclaw" });
     expect(args).not.toContain("-m");
     expect(args).not.toContain("--provider");
