@@ -4,6 +4,8 @@ import { operatorMissionService } from "../services/operator-mission.js";
 import { assertCompanyAccess } from "./authz.js";
 import { notFound, conflict } from "../errors.js";
 import type { OperatorMissionStatus } from "@paperclipai/shared";
+import { spawn } from "node:child_process";
+import path from "node:path";
 
 export function operatorMissionRoutes(db: Db) {
   const router = Router();
@@ -22,6 +24,7 @@ export function operatorMissionRoutes(db: Db) {
         provider,
         model,
         credentialRefType,
+        message,
       } = req.body as {
         issueId?: string | null;
         missionId: string;
@@ -29,6 +32,7 @@ export function operatorMissionRoutes(db: Db) {
         provider?: string | null;
         model?: string | null;
         credentialRefType?: string | null;
+        message?: string;
       };
 
       if (!missionId) {
@@ -50,6 +54,45 @@ export function operatorMissionRoutes(db: Db) {
         model,
         credentialRefType,
       });
+
+      // Launch the autonomous operator workflow in the background.
+      // The run-mission.sh script executes stages A-H and updates the
+      // mission record via PATCH as it progresses.
+      const runnerScript = path.resolve(
+        process.cwd(),
+        "scripts/operator-loop/run-mission.sh",
+      );
+      const runnerArgs = [
+        "--mission-id", missionId,
+        "--repo-dir", process.cwd(),
+        "--company-id", companyId,
+        "--api-base", "http://localhost:3101/api",
+        "--provider", provider ?? "openrouter",
+        "--model", model ?? "openrouter/deepseek/deepseek-chat",
+      ];
+      if (issueId) {
+        runnerArgs.push("--issue-id", issueId);
+      }
+      if (message) {
+        runnerArgs.push("--message", message);
+      }
+
+      // Mark the mission as running before launching
+      if (!record) {
+        res.status(500).json({ error: "Failed to create mission record" });
+        return;
+      }
+      await svc.updateStatus(record.id, "running");
+
+      spawn("bash", [runnerScript, ...runnerArgs], {
+        detached: true,
+        stdio: "ignore",
+        cwd: process.cwd(),
+        env: {
+          ...process.env,
+          PAPERCLIP_OPERATOR_RECORD_EXISTS: "true",
+        },
+      }).unref();
 
       res.status(201).json(record);
     },

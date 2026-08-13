@@ -165,6 +165,12 @@ api_get() {
 
 record_mission() {
   if [[ -n "$COMPANY_ID" ]] && [[ "$DRY_RUN" != "true" ]]; then
+    # Check if mission was already created by the API endpoint.
+    # If PAPERCLIP_OPERATOR_RECORD_EXISTS is set, skip creation.
+    if [[ "${PAPERCLIP_OPERATOR_RECORD_EXISTS:-}" == "true" ]]; then
+      echo "  Mission record already created by API — skipping POST"
+      return 0
+    fi
     local result
     result="$(api_post "/companies/$COMPANY_ID/operator-missions" \
       "{\"missionId\":\"$MISSION_ID\",\"issueId\":${ISSUE_ID:+\"$ISSUE_ID\"},\"provider\":\"$PROVIDER\",\"model\":\"$MODEL\",\"credentialRefType\":\"secret_ref\"}")"

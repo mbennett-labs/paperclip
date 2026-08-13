@@ -1,5 +1,6 @@
 export const OPERATOR_MISSION_STATUSES = [
   "submitted",
+  "running",
   "preflighting",
   "preflight_passed",
   "preflight_failed",
