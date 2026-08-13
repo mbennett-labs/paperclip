@@ -19,6 +19,7 @@ const mockHeartbeatService = vi.hoisted(() => ({
 const mockIssueService = vi.hoisted(() => ({
   getById: vi.fn(),
   getByIdentifier: vi.fn(),
+  list: vi.fn(),
 }));
 
 const mockInstanceSettingsService = vi.hoisted(() => ({
@@ -176,6 +177,7 @@ describe("agent live run routes", () => {
       status: "in_progress",
     });
     mockIssueService.getById.mockResolvedValue(null);
+    mockIssueService.list.mockResolvedValue([]);
     mockAgentService.getById.mockResolvedValue({
       id: "agent-1",
       companyId: "company-1",
@@ -624,7 +626,34 @@ describe("agent live run routes", () => {
     });
   });
 
-  it("calls heartbeat.wakeup with the legacy minimal shape when the body is empty", async () => {
+  it("auto-resolves the agent's assigned issue when no explicit issueId is provided", async () => {
+    mockIssueService.list.mockResolvedValue([
+      { id: "issue-assigned-1", identifier: "PC1A2-100" },
+    ]);
+
+    const res = await requestApp(
+      await createApp(),
+      (baseUrl) => request(baseUrl)
+        .post(`/api/agents/${routeAgentId}/heartbeat/invoke?companyId=company-1`)
+        .send({}),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(202);
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(routeAgentId, {
+      source: "on_demand",
+      triggerDetail: "manual",
+      requestedByActorType: "user",
+      requestedByActorId: "local-board",
+      contextSnapshot: {
+        triggeredBy: "board",
+        actorId: "local-board",
+        issueId: "issue-assigned-1",
+        paperclipIssueIdentifier: "PC1A2-100",
+      },
+    });
+  });
+
+  it("calls heartbeat.wakeup with the legacy minimal shape when the agent has no assigned issue", async () => {
     const res = await requestApp(
       await createApp(),
       (baseUrl) => request(baseUrl)

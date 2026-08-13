@@ -246,3 +246,49 @@ test("preserves custom prompt templates while exposing runtime and wake variable
   expect(prompt).toContain("Issue description:\n```text\nUse the wake payload as runtime authority.\n```");
   expect(prompt).not.toContain("Paperclip runtime identity:");
 });
+
+test("renders safely without any wake payload or task markdown (generic on-demand invocation)", () => {
+  const ctx = {
+    agent: {
+      id: "agent-1",
+      name: "Hermes Engineer",
+      companyId: "company-1",
+    },
+    runId: "run-1",
+    config: {},
+    context: {},
+  } as any;
+  const prompt = buildPrompt(ctx, {});
+
+  expect(prompt).toContain('You are "Hermes Engineer"');
+  expect(prompt).toContain("Paperclip runtime identity:");
+  expect(prompt).toContain("- Agent ID: agent-1");
+  expect(prompt).toContain("You are agent agent-1 (Hermes Engineer). Continue your Paperclip work.");
+  expect(prompt).toContain("clear final disposition");
+  expect(prompt).not.toContain("## Paperclip Wake Payload");
+  expect(prompt).not.toContain("Paperclip task context:");
+  expect(prompt).not.toContain("Issue description:");
+  expect(prompt).not.toContain("PAPERCLIP_API_KEY: sk-");
+  expect(prompt).not.toContain("bearer");
+});
+
+test("no hardcoded Paperclip API token leaks into the prompt", () => {
+  const prompt = buildPrompt(baseContext(), {
+    paperclipApiUrl: "http://paperclip.local/api",
+  });
+
+  expect(prompt).not.toContain("sk-");
+  expect(prompt).not.toContain("Bearer sk-");
+  expect(prompt).not.toContain("PAPERCLIP_API_KEY=sk-");
+  expect(prompt).toContain("Authorization: Bearer $PAPERCLIP_API_KEY");
+});
+
+test("openclaw dialect prompt preserves execution contract without granting API access", () => {
+  const prompt = buildPrompt(baseContext(), {}, { resumedSession: false });
+
+  expect(prompt).toContain("clear final disposition");
+  expect(prompt).toContain("keep `in_progress` only when a live continuation path exists");
+  expect(prompt).toContain("Use child issues for parallel or long delegated work instead of polling agents, sessions, or processes.");
+  expect(prompt).not.toContain("allowPaperclipApiAccess");
+  expect(prompt).not.toContain("PAPERCLIP_API_KEY=");
+});

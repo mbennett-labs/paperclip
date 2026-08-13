@@ -65,9 +65,23 @@ PASSED=0
 
 # ── Output file path ────────────────────────────────────────────────────────
 
-OUTPUT_FILE="${WORKSPACE_DIR}/hermes-poc.txt"
+OUTPUT_FILE_LEGACY="${WORKSPACE_DIR}/hermes-poc.txt"
+# OpenClaw dialect writes to its child working directory inside the sandbox
+OUTPUT_FILE_OPENCLAW="${WORKSPACE_DIR}/home/.openclaw/workspace/hermes-poc.txt"
 EXPECTED_CONTENT="3"
 HOST_DANGEROUS_PATH="/tmp/hermes-poc.txt"
+
+resolve_output_file() {
+  if [[ -f "$OUTPUT_FILE_LEGACY" ]]; then
+    echo "$OUTPUT_FILE_LEGACY"
+  elif [[ -f "$OUTPUT_FILE_OPENCLAW" ]]; then
+    echo "$OUTPUT_FILE_OPENCLAW"
+  else
+    echo ""
+  fi
+}
+
+OUTPUT_FILE="$(resolve_output_file)"
 
 echo "=== Evidence Verification Report ==="
 echo ""
@@ -79,6 +93,9 @@ if [[ -f "$OUTPUT_FILE" ]]; then
   PASSED=$((PASSED + 1))
 else
   echo "FAIL: Output file missing: $OUTPUT_FILE" >&2
+  if [[ "$OUTPUT_FILE" != "$OUTPUT_FILE_LEGACY" ]]; then
+    echo "  (also checked: $OUTPUT_FILE_LEGACY)" >&2
+  fi
   FAILED=$((FAILED + 1))
 fi
 
