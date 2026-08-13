@@ -169,10 +169,19 @@ else
   PASSED=$((PASSED + 1))
 fi
 
-# ── 7. Workspace can be created ────────────────────────────────────────────
+# ── 7. Workspace can be created (disposable probe — MUST NOT leave residue) ─
+#
+# The real run workspace (${SANDBOX_PARENT}/paperclip-hermes-sandbox-${RUN_ID})
+# is created by the Paperclip server at execution time, under the server's own
+# UID.  If preflight creates it here (as root), the staging service (UID 997)
+# cannot later mkdir inside it and Hermes execution fails with EACCES.
+#
+# So this step proves the sandbox parent is writable using a disposable probe
+# directory that is created and removed in the same command.  It never touches
+# the real run workspace.
 
-check "workspace dir can be created: $WORKSPACE_DIR" "" \
-  bash -c 'mkdir -p "$0" 2>/dev/null && test -d "$0" && test -w "$0"' "$WORKSPACE_DIR"
+check "workspace dir can be created and removed under $SANDBOX_PARENT" "" \
+  bash -c 'd="$(mktemp -d "${1}/paperclip-hermes-preflight-XXXXXX")" && rmdir "$d"' _ "$SANDBOX_PARENT"
 
 # ── 8. Sufficient resources ────────────────────────────────────────────────
 
