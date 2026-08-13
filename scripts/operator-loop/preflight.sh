@@ -124,17 +124,14 @@ check "Staging health endpoint returns 200" "HTTP $STAGING_HEALTH" test "$STAGIN
 # ── A6: Record staging PID ───────────────────────────────────────────────────
 
 if [[ -z "$STAGING_PID" ]]; then
-  STAGING_PID="$(pgrep -f "tsx.*index.ts" 2>/dev/null | head -1 || echo "")"
-  if [[ -z "$STAGING_PID" ]]; then
-    STAGING_PID="$(pgrep -f "paperclip" 2>/dev/null | head -1 || echo "")"
-  fi
+  STAGING_PID="$(ss -tlnp 2>/dev/null | grep 3101 | grep -oP 'pid=\K\d+' | head -1 || echo "")"
 fi
 echo "  Staging PID: ${STAGING_PID:-<unknown>}"
 
 # ── A7: Record production PID WITHOUT modifying it ───────────────────────────
 
 if [[ -z "$PRODUCTION_PID" ]]; then
-  PRODUCTION_PID="$(pgrep -f "port.*3100" 2>/dev/null | head -1 || echo "")"
+  PRODUCTION_PID="$(ss -tlnp 2>/dev/null | grep 3100 | grep -oP 'pid=\K\d+' | head -1 || echo "")"
 fi
 
 PRODUCTION_HEALTH=""

@@ -194,7 +194,10 @@ echo "━━━ A. PREFLIGHT ━━━"
 echo ""
 
 record_mission
-update_mission_status "preflighting"
+# Only update to preflighting if record wasn't pre-created by the API
+if [[ "${PAPERCLIP_OPERATOR_RECORD_EXISTS:-}" != "true" ]]; then
+  update_mission_status "preflighting"
+fi
 
 PREFLIGHT_OUTPUT="$("$SCRIPT_DIR/preflight.sh" \
   --mission-id "$MISSION_ID" \
@@ -223,33 +226,48 @@ update_mission_status "preflight_passed" "{\"initial_head\":\"$INITIAL_HEAD\"}"
 echo ""
 echo "━━━ B. IMPLEMENTATION ━━━"
 echo ""
-echo "  Delegating to Hermes/OpenClaw (hermes_local, commandDialect=openclaw)"
-echo "  This stage is handled by the existing Paperclip heartbeat + Hermes adapter."
-echo "  The agent receives the mission and constraints through standard wake/execute."
-echo ""
-echo "  For V0, the operator submits the mission to the Paperclip board as an issue,"
-echo "  and the Hermes agent picks it up through the normal heartbeat loop."
-echo ""
-
-if [[ -n "$ISSUE_ID" ]]; then
-  echo "  Issue: $ISSUE_ID (already exists — agent will execute via heartbeat)"
-else
-  echo "  INFO: No issue-id provided. For full autonomous execution, create an issue"
-  echo "  via the Paperclip board and assign a hermes_local agent."
-  echo ""
-  echo "  Manual alternative:"
-  echo "    curl -X POST $API_BASE/companies/COMPANY_ID/issues \\"
-  echo "      -d '{\"title\":\"$MESSAGE\",\"assigneeAgentId\":\"HERMES_AGENT_ID\"}'"
-fi
 
 update_mission_status "implementing"
 
-# In V0, we don't block on Hermes completion — the operator submits and the
-# heartbeat system runs the agent. For the workflow continuity, we note this.
+HERMES_AGENT_ID="65c8be90-be41-40c5-8232-1d8bfce01a15"
 
-echo ""
-echo "  Implementation dispatched via Paperclip agent heartbeat."
-echo "  Monitor at: $API_BASE/companies/$COMPANY_ID/mission/$ISSUE_ID"
+# Create issue for Hermes if not already provided
+if [[ -z "$ISSUE_ID" ]] && [[ -n "$COMPANY_ID" ]] && [[ "$DRY_RUN" != "true" ]]; then
+  ISSUE_RESP="$(curl -s -X POST "$API_BASE/companies/$COMPANY_ID/issues" \
+    -H "Content-Type: application/json" \
+    -d "{\"title\":\"$MESSAGE\",\"description\":\"Explicit mission binding: $MISSION_ID\",\"assigneeAgentId\":\"$HERMES_AGENT_ID\",\"priority\":\"medium\"}" 2>/dev/null)"
+  ISSUE_ID="$(echo "$ISSUE_RESP" | python3 -c "import sys,json; print(json.load(sys.stdin).get('id',''))" 2>/dev/null || echo "")"
+  if [[ -n "$ISSUE_ID" ]]; then
+    echo "  Created issue: $ISSUE_ID"
+    update_mission_status "implementing" "{\"issue_id\":\"$ISSUE_ID\"}"
+  fi
+fi
+
+# Update mission with run info once Hermes starts
+if [[ -n "$ISSUE_ID" ]] && [[ -n "$COMPANY_ID" ]] && [[ "$DRY_RUN" != "true" ]]; then
+  echo "  Waiting for Hermes agent to pick up issue $ISSUE_ID..."
+  for i in $(seq 1 90); do
+    sleep 10
+    ISSUE_STATUS="$(curl -s "$API_BASE/companies/$COMPANY_ID/issues?limit=50&issuId=$ISSUE_ID" 2>/dev/null | python3 -c "
+import sys,json
+issues=json.load(sys.stdin)
+for i in issues if isinstance(issues,list) else []:
+    if i.get('id') == '$ISSUE_ID':
+        print(json.dumps({'status':i.get('status'),'exec':i.get('executionRunId','none')}))
+        break
+" 2>/dev/null)" || true
+    ISSUE_STAT="$(echo "$ISSUE_STATUS" | python3 -c "import sys,json; print(json.load(sys.stdin).get('status','unknown'))" 2>/dev/null || echo "unknown")"
+    ISSUE_RUNID="$(echo "$ISSUE_STATUS" | python3 -c "import sys,json; print(json.load(sys.stdin).get('exec','none'))" 2>/dev/null || echo "none")"
+
+    if [[ "$ISSUE_STAT" == "done" || "$ISSUE_STAT" == "blocked" || "$ISSUE_STAT" == "failed" ]]; then
+      echo "  Hermes completed: status=$ISSUE_STAT run=$ISSUE_RUNID"
+      update_mission_status "implemented" "{\"issue_id\":\"$ISSUE_ID\",\"run_id\":\"$ISSUE_RUNID\"}"
+      break
+    elif [[ "$ISSUE_STAT" == "in_progress" ]]; then
+      echo -n "."
+    fi
+  done
+fi
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # C. VERIFICATION
