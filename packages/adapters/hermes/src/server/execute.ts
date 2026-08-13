@@ -33,6 +33,8 @@ import {
   buildPaperclipEnv,
   renderTemplate,
   ensureAbsoluteDirectory,
+  asString,
+  parseObject,
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
   joinPromptSections,
   renderPaperclipWakePrompt,
@@ -79,6 +81,53 @@ function cfgStringArray(v: unknown): string[] | undefined {
 
 export function resolveHermesCommand(config: Record<string, unknown>): string {
   return cfgString(config.hermesCommand) || cfgString(config.command) || HERMES_CLI;
+}
+
+/**
+ * Resolve the Hermes child working directory using the canonical Paperclip
+ * workspace model (shared with the other local adapters).
+ *
+ * Precedence:
+ *   1. The run workspace supplied by the execution context
+ *      (`context.paperclipWorkspace.cwd`) — always an absolute path.
+ *   2. An explicit `config.cwd` override (when the workspace source is
+ *      `agent_home`, a configured cwd wins over the fallback agent home).
+ *   3. The host process cwd (`process.cwd()`), which Node always returns as
+ *      an absolute path.
+ *
+ * The result is guaranteed absolute; a relative "." is never produced because
+ * the sandbox (local-process-sandbox) rejects non-absolute mount paths.
+ */
+export function resolveHermesWorkingDirectory(
+  config: Record<string, unknown>,
+  context: Record<string, unknown>,
+): string {
+  const workspaceContext = parseObject(context.paperclipWorkspace);
+  const workspaceCwd = asString(workspaceContext.cwd, "");
+  const workspaceSource = asString(workspaceContext.source, "");
+  const configuredCwd = cfgString(config.cwd);
+  const useConfiguredInsteadOfAgentHome =
+    workspaceSource === "agent_home" && Boolean(configuredCwd);
+  const effectiveWorkspaceCwd = useConfiguredInsteadOfAgentHome ? "" : workspaceCwd;
+  return effectiveWorkspaceCwd || configuredCwd || process.cwd();
+}
+
+/**
+ * Resolve the contained sandbox workspace root.
+ *
+ * `containment.workspaceDir` is an optional persistent-config override; when it
+ * is unset (the normal case) the workspace is derived per-run from the run ID,
+ * so a new POC run never depends on a stale poc-001/poc-002 directory embedded
+ * in the persistent agent configuration.
+ */
+export function resolveHermesSandboxWorkspaceDir(
+  config: Record<string, unknown>,
+  runId: string,
+): string {
+  return (
+    cfgString(config["containment.workspaceDir"]) ||
+    path.join(os.tmpdir(), `paperclip-hermes-sandbox-${runId}`)
+  );
 }
 
 /**
@@ -530,8 +579,10 @@ export async function execute(
   }
 
   // ── Resolve working directory ──────────────────────────────────────────
-  const cwd =
-    cfgString(config.cwd) || cfgString(ctx.config?.workspaceDir) || ".";
+  // Canonical model: run workspace from execution context, then config.cwd
+  // override, then process.cwd(). Never a relative "." — the sandbox requires
+  // absolute paths and a relative cwd is unrelated to the contained workspace.
+  const cwd = resolveHermesWorkingDirectory(config, ctxContext);
   try {
     await ensureAbsoluteDirectory(cwd);
   } catch {
@@ -542,9 +593,7 @@ export async function execute(
   const containmentEnabled = cfgBoolean(config.containment) === true;
   let sandboxOpts: LocalProcessSandboxOptions | null = null;
   if (containmentEnabled) {
-    const sandboxWorkspaceDir =
-      cfgString(config["containment.workspaceDir"]) ||
-      path.join(os.tmpdir(), `paperclip-hermes-sandbox-${ctx.runId}`);
+    const sandboxWorkspaceDir = resolveHermesSandboxWorkspaceDir(config, ctx.runId);
     const sandboxHomeDir =
       cfgString(config["containment.homeDir"]) ||
       path.join(sandboxWorkspaceDir, "home");
