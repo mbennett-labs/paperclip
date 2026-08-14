@@ -292,3 +292,35 @@ test("openclaw dialect prompt preserves execution contract without granting API 
   expect(prompt).not.toContain("allowPaperclipApiAccess");
   expect(prompt).not.toContain("PAPERCLIP_API_KEY=");
 });
+
+
+test("quarantines stale runtime session handles carried by continuation summaries", () => {
+  const staleSessionId = "d8c60dcf-5cc7-4944-a8fe-9e0a4a9bba86";
+  const prompt = buildPrompt(baseContext({
+    paperclipWake: {
+      reason: "issue_assigned",
+      issue: {
+        id: "issue-1",
+        identifier: "QSL-1",
+        title: "Finish Operator Loop V0.1",
+        status: "todo",
+        priority: "medium",
+        workMode: "standard",
+      },
+      continuationSummary: {
+        body: `Prior run ${staleSessionId} failed; inspect session status before continuing.`,
+        bodyTruncated: false,
+      },
+      checkedOutByHarness: true,
+      commentWindow: { requestedCount: 0, includedCount: 0, missingCount: 0 },
+      comments: [],
+      fallbackFetchNeeded: false,
+    },
+  }), {});
+
+  expect(prompt).toContain("Issue continuation summary (historical evidence):");
+  expect(prompt).toContain("Runtime/session handles named in this summary belong to prior runs and are non-actionable");
+  expect(prompt).toContain("Do not call `session_status` or any `sessions_*` tool with an identifier copied from this summary");
+  expect(prompt).toContain("durable Paperclip issue/run evidence and the Paperclip API");
+  expect(prompt).toContain(staleSessionId);
+});
