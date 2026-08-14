@@ -8,9 +8,13 @@ Generated for the Mission Control V0.1 reliability slice.
 - Path: `/opt/paperclip-deployments/thebinmap-email-ops-staging`
 - Reliability base HEAD: `aad6cc3e5ebbdbda5e8f76a4fc83a00aeede859a`
 - Reliability branch: `feat/qsl-mission-control-v0-1-reliability`
-- Director access: read-only evidence/discovery
-- Staging Engineer access: bounded writable contained workspace when explicitly assembled for an L0/L1 coding mission
-- Verification Engineer access: read-only independent verification
+- Director access: canonical staging repo read-only evidence/discovery (`containment.cwdAccess=ro`)
+- Canonical staging deployment tree stays protected; do not chmod/chown it for Mission Cells
+- QSL-1 Flight #2 implementation workspace: `/opt/paperclip-mission-cells/QSL-1/flight-2-implementation`
+- Staging Engineer access: read/write only inside that isolated clone (`containment.cwdAccess=rw`, `containment.cwdWriteRoot=/opt/paperclip-mission-cells/QSL-1/flight-2-implementation`)
+- Verification Engineer access: the same isolated clone read-only (`containment.cwdAccess=ro`)
+- Sentinel Governor / Selarix Recorder: canonical repo and mission workspace read-only
+- `rw` is fail-closed unless the real resolved cwd remains inside the configured absolute write root; filesystem root is never accepted
 
 ## Runtime surfaces
 

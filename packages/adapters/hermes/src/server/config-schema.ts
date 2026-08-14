@@ -142,6 +142,23 @@ export function getConfigSchema(): AdapterConfigSchema {
         hint: "Writable sandbox root. Hermes can read/write files inside this directory. Defaults to a temp directory if unset.",
       },
       {
+        key: "containment.cwdAccess",
+        label: "Contained cwd access",
+        type: "select",
+        default: "ro",
+        options: [
+          { value: "ro", label: "Read-only (default)" },
+          { value: "rw", label: "Read/write — bounded by cwd write root" },
+        ],
+        hint: "Keep read-only for control-plane/reviewer agents. rw is only for bounded implementation workers and requires containment.cwdWriteRoot.",
+      },
+      {
+        key: "containment.cwdWriteRoot",
+        label: "Contained cwd write root",
+        type: "text",
+        hint: "Required when cwdAccess=rw. The real resolved cwd must remain inside this absolute root. '/' is rejected.",
+      },
+      {
         key: "containment.homeDir",
         label: "Containment home directory",
         type: "text",

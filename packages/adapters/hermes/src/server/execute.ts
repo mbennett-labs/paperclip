@@ -211,6 +211,34 @@ export function resolveHermesSandboxWorkspaceDir(
   );
 }
 
+export async function resolveContainedHermesCwdAccess(
+  config: Record<string, unknown>,
+  cwd: string,
+): Promise<"ro" | "rw"> {
+  const requested = cfgString(config["containment.cwdAccess"]) || "ro";
+  if (requested === "ro") return "ro";
+  if (requested !== "rw") {
+    throw new Error(`Invalid containment.cwdAccess "${requested}". Must be "ro" or "rw".`);
+  }
+
+  const configuredRoot = cfgString(config["containment.cwdWriteRoot"]);
+  if (!configuredRoot || !path.isAbsolute(configuredRoot)) {
+    throw new Error("containment.cwdAccess=rw requires an absolute containment.cwdWriteRoot.");
+  }
+
+  const [realCwd, realRoot] = await Promise.all([
+    fs.realpath(cwd),
+    fs.realpath(configuredRoot),
+  ]);
+  if (realRoot === path.parse(realRoot).root) {
+    throw new Error("containment.cwdWriteRoot may not be the filesystem root.");
+  }
+  if (realCwd !== realRoot && !realCwd.startsWith(realRoot + path.sep)) {
+    throw new Error("Contained writable cwd escapes containment.cwdWriteRoot.");
+  }
+  return "rw";
+}
+
 /**
  * Apply the contained execution identity to the child environment.
  *
@@ -810,7 +838,8 @@ export async function execute(
       );
     }
 
-    const extraPaths: { path: string; access: "ro" | "rw" }[] = [{ path: cwd, access: "ro" }];
+    const cwdAccess = await resolveContainedHermesCwdAccess(config, cwd);
+    const extraPaths: { path: string; access: "ro" | "rw" }[] = [{ path: cwd, access: cwdAccess }];
     if (instructionsFilePath) {
       extraPaths.push({ path: path.dirname(instructionsFilePath), access: "ro" });
     }
