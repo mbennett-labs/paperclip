@@ -197,6 +197,28 @@ export const issueExecutionMonitorPolicySchema = z.object({
   recoveryPolicy: z.enum(ISSUE_EXECUTION_MONITOR_RECOVERY_POLICIES).optional().nullable().default(null),
 });
 
+export const issueMissionAcceptanceCriterionSchema = z.object({
+  id: z.string().trim().min(1).max(64),
+  text: z.string().trim().min(1).max(5000),
+}).strict();
+
+export const issueMissionContractSchema = z.object({
+  version: z.literal(1).optional().default(1),
+  objective: z.string().trim().min(1).max(20000),
+  authorityLevel: z.enum(["L0", "L1", "L2", "L3", "L4"]),
+  acceptanceCriteria: z.array(issueMissionAcceptanceCriterionSchema).min(1).max(20),
+  maxRepairRetries: z.number().int().positive().max(10),
+  requiredStages: z.array(z.enum([
+    "implementation",
+    "verification",
+    "sentinel_review",
+    "provenance_receipt",
+  ])).min(1).max(10),
+  provider: z.string().trim().min(1).max(120),
+  model: z.string().trim().min(1).max(240),
+  productionIsolationRequired: z.boolean(),
+}).strict();
+
 export const issueExecutionPolicySchema = z.object({
   mode: z.enum(ISSUE_EXECUTION_POLICY_MODES).optional().default("normal"),
   commentRequired: z.boolean().optional().default(true),
@@ -204,6 +226,7 @@ export const issueExecutionPolicySchema = z.object({
   monitor: issueExecutionMonitorPolicySchema.optional().nullable(),
   reviewPreset: lowTrustReviewPresetPolicySchema.optional(),
   authorizationPolicy: trustAuthorizationPolicySchema.optional(),
+  missionContract: issueMissionContractSchema.optional(),
 });
 
 export const issueExecutionMonitorStateSchema = z.object({

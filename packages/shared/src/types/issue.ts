@@ -615,6 +615,30 @@ export interface IssueExecutionMonitorPolicy {
   recoveryPolicy?: IssueExecutionMonitorRecoveryPolicy | null;
 }
 
+export interface IssueMissionAcceptanceCriterion {
+  id: string;
+  text: string;
+}
+
+export type IssueMissionAuthorityLevel = "L0" | "L1" | "L2" | "L3" | "L4";
+export type IssueMissionRequiredStage =
+  | "implementation"
+  | "verification"
+  | "sentinel_review"
+  | "provenance_receipt";
+
+export interface IssueMissionContract {
+  version: 1;
+  objective: string;
+  authorityLevel: IssueMissionAuthorityLevel;
+  acceptanceCriteria: IssueMissionAcceptanceCriterion[];
+  maxRepairRetries: number;
+  requiredStages: IssueMissionRequiredStage[];
+  provider: string;
+  model: string;
+  productionIsolationRequired: boolean;
+}
+
 export interface IssueExecutionPolicy {
   mode: IssueExecutionPolicyMode;
   commentRequired: boolean;
@@ -622,6 +646,7 @@ export interface IssueExecutionPolicy {
   monitor?: IssueExecutionMonitorPolicy | null;
   reviewPreset?: LowTrustReviewPresetPolicy;
   authorizationPolicy?: TrustAuthorizationPolicy;
+  missionContract?: IssueMissionContract;
 }
 
 export interface IssueExecutionMonitorState {

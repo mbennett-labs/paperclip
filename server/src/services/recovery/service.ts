@@ -422,6 +422,19 @@ type ContinuationRetryClassification = {
   errorCode: string | null;
 };
 
+export function effectiveContinuationRetryMaxAttempts(
+  platformMaxAttempts: number,
+  executionPolicy: unknown,
+): number {
+  const policy = parseObject(executionPolicy);
+  const missionContract = parseObject(policy.missionContract);
+  const configured = missionContract.maxRepairRetries;
+  if (typeof configured !== "number" || !Number.isInteger(configured) || configured < 1) {
+    return platformMaxAttempts;
+  }
+  return Math.min(platformMaxAttempts, configured);
+}
+
 export function classifyContinuationFailure(latestRun: LatestIssueRun): ContinuationRetryClassification {
   const errorCode = readNonEmptyString(latestRun?.errorCode);
   if (errorCode && NON_RETRYABLE_CONTINUATION_ERROR_CODES.has(errorCode)) {
@@ -4049,11 +4062,18 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
             agentId,
             classification.errorCode,
           );
-          if (consecutive >= classification.maxAttempts) {
+          const effectiveMaxAttempts = effectiveContinuationRetryMaxAttempts(
+            classification.maxAttempts,
+            issue.executionPolicy,
+          );
+          if (consecutive >= effectiveMaxAttempts) {
             const failureSummary = summarizeRunFailureForIssueComment(latestRun);
             const attemptCopy = consecutive <= 1 ? "" : ` (${consecutive}× attempts)`;
             const causeCopy = classification.errorCode
               ? ` Latest cause: \`${classification.errorCode}\`.`
+              : "";
+            const missionRetryCopy = effectiveMaxAttempts < classification.maxAttempts
+              ? ` Mission contract retry cap: ${effectiveMaxAttempts}.`
               : "";
             const updated = await escalateStrandedAssignedIssue({
               issue,
@@ -4061,7 +4081,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
               latestRun,
               comment:
                 "Paperclip automatically retried continuation for this assigned `in_progress` issue after its live " +
-                `execution disappeared, but it still has no live execution path${attemptCopy}.${causeCopy}${failureSummary ?? ""} ` +
+                `execution disappeared, but it still has no live execution path${attemptCopy}.${causeCopy}${missionRetryCopy}${failureSummary ?? ""} ` +
                 "Moving it to `blocked` so it is visible for intervention.",
             });
             if (updated) {

@@ -375,6 +375,24 @@ export function buildPrompt(
   ]);
 }
 
+export function resolveContainedPaperclipApiAllowlistTarget(apiUrl: string): string {
+  let parsed: URL;
+  try {
+    parsed = new URL(apiUrl);
+  } catch {
+    throw new Error("Contained Paperclip API URL must be a valid loopback HTTP URL.");
+  }
+  const hostname = parsed.hostname.toLowerCase();
+  if (parsed.protocol !== "http:" || (hostname !== "127.0.0.1" && hostname !== "localhost")) {
+    throw new Error("Contained Paperclip API access is restricted to loopback HTTP staging endpoints.");
+  }
+  if (parsed.username || parsed.password) {
+    throw new Error("Contained Paperclip API URL must not contain credentials.");
+  }
+  const port = parsed.port || "80";
+  return `${hostname}:${port}`;
+}
+
 // ---------------------------------------------------------------------------
 // Output parsing
 // ---------------------------------------------------------------------------
@@ -756,6 +774,15 @@ export async function execute(
     if (providerPreset === "openrouter") {
       networkScope = "allowlist";
       networkAllowlist = ["openrouter.ai:443"];
+    }
+    if (allowApiAccess) {
+      const configuredPaperclipApiUrl =
+        cfgString(config.paperclipApiUrl) ||
+        process.env.PAPERCLIP_API_URL ||
+        "http://127.0.0.1:3100/api";
+      const paperclipApiTarget = resolveContainedPaperclipApiAllowlistTarget(configuredPaperclipApiUrl);
+      networkScope = "allowlist";
+      if (!networkAllowlist.includes(paperclipApiTarget)) networkAllowlist.push(paperclipApiTarget);
     }
 
     await fs.mkdir(sandboxWorkspaceDir, { recursive: true });
