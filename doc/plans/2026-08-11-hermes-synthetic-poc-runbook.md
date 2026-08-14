@@ -280,3 +280,61 @@ After successful execution and verification:
 3. Run cleanup
 4. Document any issues or surprises
 5. Proceed to the approval-gated POC if this one succeeds
+
+---
+
+## Operator-Mission UUID Incident — Resolved — 2026-08-14
+
+### Verdict
+
+**RESOLVED — invalid caller/test input, not a database or migration defect.**
+
+### Verified API Contract
+
+Operator Mission routes require the canonical Paperclip company UUID:
+
+`/api/companies/:companyId/...`
+
+TheBinMap staging company UUID:
+
+`f5609cfe-37ff-4061-a3c7-35ae55dbcc2b`
+
+Verified behavior:
+
+- Correct UUID request → normal `404 Operator mission not found`
+- Invalid slug `thebinmap` → `500 Internal Server Error`
+- Database error: `invalid input syntax for type uuid: "thebinmap"`
+
+### Root Cause
+
+A caller/test supplied the company slug `thebinmap` where the UUID-only API
+contract requires the canonical company UUID.
+
+### Explicitly Disproven
+
+The incident was not caused by:
+
+- database schema incompatibility
+- missing migration
+- staging environment configuration
+- systemd environment injection
+- a requirement for slug-to-UUID resolution
+
+### Operational Rule
+
+Operator Mission submissions MUST use the canonical company UUID:
+
+`f5609cfe-37ff-4061-a3c7-35ae55dbcc2b`
+
+Do not substitute `thebinmap`.
+
+### Follow-Up Hardening
+
+Malformed/non-UUID `:companyId` values should return `400 Bad Request`
+instead of reaching PostgreSQL and producing `500 Internal Server Error`.
+
+This is defensive hardening and is not a V0.1 blocker.
+
+### Verification Principle
+
+**Observe the value before repairing the value.**
