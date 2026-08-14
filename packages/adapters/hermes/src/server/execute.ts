@@ -790,6 +790,13 @@ export async function execute(
     if (sandboxHomeDir) {
       extraPaths.push({ path: sandboxHomeDir, access: "rw" });
     }
+// Mount OpenClaw installation directory when running the openclaw dialect.
+// The openclaw CLI (whether invoked directly at /home/openclaw/.local/bin/openclaw
+// or through a wrapper that delegates to it) needs its symlink target and
+// node_modules readable inside the bubblewrap sandbox.
+if (dialect === "openclaw") {
+  extraPaths.push({ path: "/home/openclaw/.local", access: "ro" });
+}
 
     sandboxOpts = {
       workspaceDir: sandboxWorkspaceDir,
