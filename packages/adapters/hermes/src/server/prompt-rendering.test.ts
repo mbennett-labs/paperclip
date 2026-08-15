@@ -324,3 +324,38 @@ test("quarantines stale runtime session handles carried by continuation summarie
   expect(prompt).toContain("durable Paperclip issue/run evidence and the Paperclip API");
   expect(prompt).toContain(staleSessionId);
 });
+
+
+
+test("recovery wake keeps minimal disposition API guidance while suppressing generic deliverable workflow", () => {
+  const prompt = buildPrompt(baseContext({
+    paperclipWake: {
+      reason: "source_scoped_recovery_action",
+      issue: {
+        id: "issue-1",
+        identifier: "QSL-1",
+        title: "Finish Operator Loop V0.1",
+        status: "blocked",
+        priority: "medium",
+        workMode: "standard",
+      },
+      checkedOutByHarness: true,
+      commentWindow: { requestedCount: 0, includedCount: 0, missingCount: 0 },
+      comments: [],
+      fallbackFetchNeeded: false,
+    },
+  }), {
+    paperclipApiUrl: "http://127.0.0.1:3101/api",
+  });
+
+  expect(prompt).toContain("Recovery contract: your job is to RECOVER this task, not to do the work.");
+  expect(prompt).toContain("Paperclip recovery API guidance:");
+  expect(prompt).toContain("A narrative response is not a disposition.");
+  expect(prompt).toContain("$PAPERCLIP_API_URL");
+  expect(prompt).toContain("Authorization: Bearer $PAPERCLIP_API_KEY");
+  expect(prompt).toContain("X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID");
+  expect(prompt).toContain('PATCH \"$api/issues/issue-1\"');
+  expect(prompt).toContain("`in_progress` only when a live continuation path actually exists");
+  expect(prompt).not.toContain("Safe multiline update pattern:");
+  expect(prompt).not.toContain('You are "Hermes Engineer", an AI agent employee in a Paperclip-managed company.');
+});

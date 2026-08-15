@@ -319,6 +319,42 @@ const HERMES_DEFAULT_PROMPT_TEMPLATE = [
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
 ].join("\n");
 
+const HERMES_RECOVERY_PROMPT_TEMPLATE = [
+  'You are "{{agent.name}}", the recovery owner for a Paperclip-managed issue.',
+  "",
+  "Paperclip runtime identity:",
+  "- Agent ID: {{agent.id}}",
+  "- Company ID: {{agent.companyId}}",
+  "- Run ID: {{run.id}}",
+  "- API base: {{paperclipApiUrl}}",
+  "",
+  "Paperclip recovery API guidance:",
+  "- This is a recovery heartbeat. Recover the issue state; do not perform the deliverable work.",
+  "- Before returning, persist exactly one valid issue disposition through the Paperclip API. A narrative response is not a disposition.",
+  "- Use `curl` from the terminal and the existing `$PAPERCLIP_API_URL`, `$PAPERCLIP_API_KEY`, and `$PAPERCLIP_RUN_ID` environment variables.",
+  "- Include the Authorization and X-Paperclip-Run-Id headers on the mutating issue request.",
+  "- Valid dispositions are `done`, `in_review`, `blocked`, or `in_progress` only when a live continuation path actually exists.",
+  "- If work is incomplete and no live continuation path exists, use `blocked` with a concise blocker owner and next action.",
+  "- Do not copy transcript text into the disposition comment; summarize only the durable state and next action.",
+  "",
+  "Recovery disposition update pattern:",
+  "```bash",
+  "api=\"${PAPERCLIP_API_URL%/}\"",
+  "case \"$api\" in */api) ;; *) api=\"$api/api\" ;; esac",
+  "status=blocked  # deliberately replace only if another valid disposition is actually supported",
+  "body=$(cat <<'MD'",
+  "Recovery disposition: <concise durable state, blocker/owner if any, and next action>",
+  "MD",
+  ")",
+  "jq -n --arg status \"$status\" --arg comment \"$body\" '{status:$status, comment:$comment}' | \\",
+  "  curl -sS -X PATCH \"$api/issues/{{context.issueId}}\" \\",
+  "    -H \"Authorization: Bearer $PAPERCLIP_API_KEY\" \\",
+  "    -H \"X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID\" \\",
+  "    -H \"Content-Type: application/json\" \\",
+  "    --data-binary @-",
+  "```",
+].join("\\n");
+
 function renderConditionalSections(template: string, vars: Record<string, unknown>): string {
   const isTruthy = (key: string) => {
     if (key === "noTask") return !vars.taskId;
@@ -392,9 +428,9 @@ export function buildPrompt(
     paperclipRunIdEnv: "PAPERCLIP_RUN_ID",
   };
 
-  const rendered = isPaperclipRecoveryWakePayload(context.paperclipWake)
-    ? ""
-    : renderTemplate(renderConditionalSections(template, vars), vars);
+  const recoveryWake = isPaperclipRecoveryWakePayload(context.paperclipWake);
+  const renderedTemplate = recoveryWake ? HERMES_RECOVERY_PROMPT_TEMPLATE : template;
+  const rendered = renderTemplate(renderConditionalSections(renderedTemplate, vars), vars);
   return joinPromptSections([
     wakePrompt,
     sessionHandoffMarkdown,
