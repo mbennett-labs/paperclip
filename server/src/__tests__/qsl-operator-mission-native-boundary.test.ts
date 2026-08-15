@@ -16,4 +16,13 @@ describe("QSL native Mission Control boundary", () => {
     expect(source).toContain("heartbeat.wakeup");
     expect(source).toContain("reconcileOperatorMission");
   });
+
+  it("fails closed when the native reviewer wake is skipped or deferred", () => {
+    const source = readFileSync(routePath, "utf8");
+
+    expect(source).toContain("const reviewRun = await heartbeat.wakeup");
+    expect(source).toContain("if (!reviewRun)");
+    expect(source).toContain("operator_review_dispatch_not_queued");
+    expect(source).toContain("reviewRunId = reviewRun.id");
+  });
 });
