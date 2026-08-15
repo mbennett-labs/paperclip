@@ -5,7 +5,7 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 
 describe("Operator Loop verification diagnostics", () => {
-  it("surfaces failed-stage diagnostics and reports stage evidence independently", () => {
+  it("surfaces failed-stage diagnostics and persists independent stage evidence", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "qsl-verify-"));
     const repoDir = path.join(root, "repo");
     const binDir = path.join(root, "bin");
@@ -23,7 +23,17 @@ describe("Operator Loop verification diagnostics", () => {
     const scriptPath = path.resolve(__dirname, "../verify-mission.sh");
     const result = spawnSync(
       "bash",
-      [scriptPath, "--mission-id", "verifier-diagnostics-test", "--repo-dir", repoDir],
+      [
+        scriptPath,
+        "--mission-id",
+        "verifier-diagnostics-test",
+        "--issue-id",
+        "QSL-TEST",
+        "--run-id",
+        "run-verify-test",
+        "--repo-dir",
+        repoDir,
+      ],
       {
         encoding: "utf8",
         env: {
@@ -42,19 +52,34 @@ describe("Operator Loop verification diagnostics", () => {
     expect(combined).toContain("PASS: Typecheck passed");
     expect(combined).toContain("PASS: Build passed");
 
-    const evidenceMatch = result.stdout.match(
-      /=== Verification Evidence \(JSON\) ===\n(\{[\s\S]*?\n\})/,
-    );
-    expect(evidenceMatch).not.toBeNull();
-    const evidence = JSON.parse(evidenceMatch![1]);
+    const receiptMatch = result.stdout.match(/^  Receipt: (.+)$/m);
+    expect(receiptMatch).not.toBeNull();
+    const receiptPath = path.join(repoDir, receiptMatch![1]);
+    expect(fs.existsSync(receiptPath)).toBe(true);
+
+    const evidence = JSON.parse(fs.readFileSync(receiptPath, "utf8"));
     expect(evidence).toMatchObject({
+      schema: "qsl.verification_receipt.v1",
+      classes: ["test", "verification", "provenance"],
+      retention_status: "durable",
       mission_id: "verifier-diagnostics-test",
+      issue_id: "QSL-TEST",
+      run_ids: ["run-verify-test"],
       tests: "failed",
       typecheck: "passed",
       build: "passed",
       diff_check: "clean",
-      diagnostic_tail_lines: 25,
+      verification_result: "failed",
+      stages: {
+        tests: { status: "failed", command: "pnpm test:run" },
+        typecheck: { status: "passed", command: "pnpm -r typecheck" },
+        build: { status: "passed", command: "pnpm build" },
+        diff_check: { status: "clean", command: "git diff --check" },
+      },
     });
+    expect(evidence.artifact_id).toContain("qsl-verification-verifier-diagnostics-test-");
+    expect(evidence.diagnostics.tests).toContain("TEST_DIAGNOSTIC_SENTINEL");
+    expect(evidence.diagnostics.tail_lines).toBe(25);
 
     fs.rmSync(root, { recursive: true, force: true });
   });
