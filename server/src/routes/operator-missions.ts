@@ -140,6 +140,7 @@ export function operatorMissionRoutes(db: Db) {
       const {
         status,
         evidence,
+        initialHead,
         finalHead,
         changedFiles,
         reviewVerdict,
@@ -165,6 +166,7 @@ export function operatorMissionRoutes(db: Db) {
           : undefined;
 
       const fields: Record<string, unknown> = {};
+      if (initialHead !== undefined) fields.initialHead = initialHead;
       if (finalHead !== undefined) fields.finalHead = finalHead;
       if (changedFiles !== undefined) fields.changedFiles = changedFiles;
       if (reviewVerdict !== undefined) fields.reviewVerdict = reviewVerdict;
