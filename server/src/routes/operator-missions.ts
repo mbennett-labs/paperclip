@@ -12,7 +12,7 @@ import {
   logActivity,
 } from "../services/index.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
-import { notFound, conflict } from "../errors.js";
+import { notFound, conflict, HttpError } from "../errors.js";
 import type { OperatorMissionStatus } from "@paperclipai/shared";
 
 export function operatorMissionRoutes(db: Db) {
@@ -75,6 +75,7 @@ export function operatorMissionRoutes(db: Db) {
       const actor = getActorInfo(req);
       const previousStatus = issue.status;
       let statusChanged = false;
+      let reviewRunId: string | null = null;
 
       try {
         if (previousStatus !== plan.nextIssueStatus) {
@@ -87,7 +88,7 @@ export function operatorMissionRoutes(db: Db) {
           statusChanged = true;
         }
 
-        await heartbeat.wakeup(plan.reviewerAgentId, {
+        const reviewRun = await heartbeat.wakeup(plan.reviewerAgentId, {
           source: "assignment",
           triggerDetail: "system",
           reason: "execution_review_requested",
@@ -107,6 +108,15 @@ export function operatorMissionRoutes(db: Db) {
             executionStage: plan.executionStage,
           },
         });
+        if (!reviewRun) {
+          throw new HttpError(503, "Native reviewer dispatch was not queued", {
+            code: "operator_review_dispatch_not_queued",
+            issueId: issue.id,
+            reviewerAgentId: plan.reviewerAgentId,
+            stageId: plan.executionStage.stageId,
+          });
+        }
+        reviewRunId = reviewRun.id;
 
         await logActivity(db, {
           companyId: issue.companyId,
@@ -120,6 +130,7 @@ export function operatorMissionRoutes(db: Db) {
           entityId: issue.id,
           details: {
             reviewerAgentId: plan.reviewerAgentId,
+            reviewRunId,
             stageId: plan.executionStage.stageId,
             previousStatus,
             nextStatus: plan.nextIssueStatus,
@@ -148,6 +159,7 @@ export function operatorMissionRoutes(db: Db) {
         issueId: issue.id,
         status: plan.nextIssueStatus,
         reviewerAgentId: plan.reviewerAgentId,
+        reviewRunId,
         stageId: plan.executionStage.stageId,
         dispatch: "queued",
       });
