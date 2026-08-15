@@ -9,6 +9,7 @@ STAGING_SERVICE="paperclip-thebinmap-staging.service"
 PRODUCTION_SERVICE="paperclip-thebinmap-prod.service"
 STAGING_HEALTH="http://127.0.0.1:3101/api/health"
 PRODUCTION_HEALTH="http://127.0.0.1:3100/api/health"
+STAGING_READY_TIMEOUT_SECONDS="${STAGING_READY_TIMEOUT_SECONDS:-60}"
 
 cd "$REPO"
 
@@ -131,16 +132,26 @@ fi
 echo "Mission Cell workspace refresh: PASS ($WORKSPACE_HEAD)"
 
 systemctl restart "$STAGING_SERVICE"
-sleep 3
 
-if [[ "$(systemctl is-active "$STAGING_SERVICE")" != "active" ]]; then
-  echo "BLOCKED: staging service failed to restart" >&2
+STAGING_HTTP="000"
+for second in $(seq 1 "$STAGING_READY_TIMEOUT_SECONDS"); do
+  if [[ "$(systemctl is-active "$STAGING_SERVICE" 2>/dev/null || true)" == "active" ]]; then
+    STAGING_HTTP="$(curl -s -o /dev/null -w '%{http_code}' "$STAGING_HEALTH" || true)"
+    if [[ "$STAGING_HTTP" == "200" ]]; then
+      echo "Staging readiness: PASS after ${second}s"
+      break
+    fi
+  fi
+  sleep 1
+done
+
+if [[ "$(systemctl is-active "$STAGING_SERVICE" 2>/dev/null || true)" != "active" ]]; then
+  echo "BLOCKED: staging service failed to become active" >&2
   exit 1
 fi
 
-STAGING_HTTP="$(curl -s -o /dev/null -w '%{http_code}' "$STAGING_HEALTH" || true)"
 if [[ "$STAGING_HTTP" != "200" ]]; then
-  echo "BLOCKED: staging health failed after exact service restart (HTTP $STAGING_HTTP)" >&2
+  echo "BLOCKED: staging health failed to reach HTTP 200 within ${STAGING_READY_TIMEOUT_SECONDS}s (last HTTP $STAGING_HTTP)" >&2
   exit 1
 fi
 
@@ -168,7 +179,7 @@ Durable verification receipt: PASS
 Cumulative mission evidence: PASS
 Server typecheck/build on Node 22: PASS
 Mission Cell workspace: $WORKSPACE
-Staging exact service restart: PASS
+Staging bounded readiness: PASS
 QSL-1: NOT RETRIED
 Production isolation: PASS (PID $PROD_PID_AFTER)
 EOF
