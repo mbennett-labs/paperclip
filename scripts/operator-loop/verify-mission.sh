@@ -3,6 +3,8 @@
 #
 # Runs mission-relevant tests, typecheck, and build.
 # Captures results as evidence. Does NOT mutate state beyond running build tools.
+# Failed checks emit bounded diagnostics so the recovery owner can diagnose the
+# actual failure instead of receiving only a generic verifier exit status.
 #
 # Usage:
 #   ./verify-mission.sh --mission-id ID [--repo-dir DIR] [--skip-tests] [--skip-typecheck] [--skip-build]
@@ -56,6 +58,24 @@ TESTS_OUTPUT=""
 TYPECHECK_OUTPUT=""
 BUILD_OUTPUT=""
 DIFF_CHECK_OUTPUT=""
+TESTS_STATUS="skipped"
+TYPECHECK_STATUS="skipped"
+BUILD_STATUS="skipped"
+DIFF_CHECK_STATUS="clean"
+DIAGNOSTIC_LINES="${VERIFY_DIAGNOSTIC_LINES:-200}"
+
+emit_failure_diagnostics() {
+  local stage="$1"
+  local output="$2"
+
+  echo "--- ${stage} diagnostics (last ${DIAGNOSTIC_LINES} lines) ---" >&2
+  if [[ -n "$output" ]]; then
+    printf '%s\n' "$output" | tail -n "$DIAGNOSTIC_LINES" >&2
+  else
+    echo "(no output captured)" >&2
+  fi
+  echo "--- end ${stage} diagnostics ---" >&2
+}
 
 echo "=== Operator Loop V0 — Verification ==="
 echo "  Mission: $MISSION_ID"
@@ -67,10 +87,13 @@ echo ""
 if [[ "$SKIP_TESTS" != "true" ]]; then
   echo "--- Running tests (pnpm test:run) ---"
   if TESTS_OUTPUT="$(cd "$REPO_DIR" && pnpm test:run 2>&1)"; then
+    TESTS_STATUS="passed"
     echo "PASS: Tests passed"
     PASSED=$((PASSED + 1))
   else
+    TESTS_STATUS="failed"
     echo "FAIL: Tests failed" >&2
+    emit_failure_diagnostics "tests" "$TESTS_OUTPUT"
     FAILED=$((FAILED + 1))
   fi
 else
@@ -82,10 +105,13 @@ fi
 if [[ "$SKIP_TYPECHECK" != "true" ]]; then
   echo "--- Running typecheck (pnpm -r typecheck) ---"
   if TYPECHECK_OUTPUT="$(cd "$REPO_DIR" && pnpm -r typecheck 2>&1)"; then
+    TYPECHECK_STATUS="passed"
     echo "PASS: Typecheck passed"
     PASSED=$((PASSED + 1))
   else
+    TYPECHECK_STATUS="failed"
     echo "FAIL: Typecheck failed" >&2
+    emit_failure_diagnostics "typecheck" "$TYPECHECK_OUTPUT"
     FAILED=$((FAILED + 1))
   fi
 else
@@ -97,10 +123,13 @@ fi
 if [[ "$SKIP_BUILD" != "true" ]]; then
   echo "--- Running build (pnpm build) ---"
   if BUILD_OUTPUT="$(cd "$REPO_DIR" && pnpm build 2>&1)"; then
+    BUILD_STATUS="passed"
     echo "PASS: Build passed"
     PASSED=$((PASSED + 1))
   else
+    BUILD_STATUS="failed"
     echo "FAIL: Build failed" >&2
+    emit_failure_diagnostics "build" "$BUILD_OUTPUT"
     FAILED=$((FAILED + 1))
   fi
 else
@@ -112,9 +141,11 @@ fi
 echo "--- Running git diff --check ---"
 DIFF_CHECK_OUTPUT="$(cd "$REPO_DIR" && git diff --check 2>&1)" || true
 if [[ -z "$DIFF_CHECK_OUTPUT" ]]; then
+  DIFF_CHECK_STATUS="clean"
   echo "PASS: git diff --check clean"
   PASSED=$((PASSED + 1))
 else
+  DIFF_CHECK_STATUS="whitespace_warnings"
   echo "WARNING: git diff --check found whitespace issues:"
   echo "$DIFF_CHECK_OUTPUT"
 fi
@@ -134,10 +165,11 @@ echo "=== Verification Evidence (JSON) ==="
 cat <<EVIDENCE
 {
   "mission_id": "$MISSION_ID",
-  "tests": "$([[ "$SKIP_TESTS" == "true" ]] && echo "skipped" || echo "$([[ $FAILED -eq 0 ]] && echo "passed" || echo "failed")")",
-  "typecheck": "$([[ "$SKIP_TYPECHECK" == "true" ]] && echo "skipped" || echo "$([[ $FAILED -eq 0 ]] && echo "passed" || echo "failed")")",
-  "build": "$([[ "$SKIP_BUILD" == "true" ]] && echo "skipped" || echo "$([[ $FAILED -eq 0 ]] && echo "passed" || echo "failed")")",
-  "diff_check": "$([[ -z "$DIFF_CHECK_OUTPUT" ]] && echo "clean" || echo "whitespace_warnings")",
+  "tests": "$TESTS_STATUS",
+  "typecheck": "$TYPECHECK_STATUS",
+  "build": "$BUILD_STATUS",
+  "diff_check": "$DIFF_CHECK_STATUS",
+  "diagnostic_tail_lines": $DIAGNOSTIC_LINES,
   "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 }
 EVIDENCE
