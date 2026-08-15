@@ -156,6 +156,7 @@ export function operatorMissionService(db: Db) {
     updateFields: async (
       id: string,
       fields: Partial<{
+        initialHead: string | null;
         finalHead: string | null;
         changedFiles: string[] | null;
         reviewVerdict: string | null;
