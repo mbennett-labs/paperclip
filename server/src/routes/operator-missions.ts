@@ -2,18 +2,23 @@ import { Router } from "express";
 import type { Db } from "@paperclipai/db";
 import { operatorMissionService } from "../services/operator-mission.js";
 import { mergeMissionEvidence } from "../services/operator-mission-evidence.js";
+import { resolveOperatorMissionDispatch } from "../services/operator-mission-dispatch.js";
 import { resolveOperatorReviewDispatch } from "../services/operator-review-dispatch.js";
-import { heartbeatService, issueService, logActivity } from "../services/index.js";
+import {
+  executionWorkspaceService,
+  heartbeatService,
+  issueService,
+  logActivity,
+} from "../services/index.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
 import { notFound, conflict } from "../errors.js";
 import type { OperatorMissionStatus } from "@paperclipai/shared";
-import { spawn } from "node:child_process";
-import path from "node:path";
 
 export function operatorMissionRoutes(db: Db) {
   const router = Router();
   const svc = operatorMissionService(db);
   const issueSvc = issueService(db);
+  const workspaces = executionWorkspaceService(db);
   const heartbeat = heartbeatService(db);
 
   // QSL Operator Loop V0.1 explicit review dispatch.
@@ -164,7 +169,7 @@ export function operatorMissionRoutes(db: Db) {
         message,
       } = req.body as {
         issueId?: string | null;
-        missionId: string;
+        missionId?: string;
         authorityScope?: string;
         provider?: string | null;
         model?: string | null;
@@ -172,62 +177,148 @@ export function operatorMissionRoutes(db: Db) {
         message?: string;
       };
 
-      if (!missionId) {
+      const normalizedMissionId = typeof missionId === "string" ? missionId.trim() : "";
+      const normalizedIssueId = typeof issueId === "string" ? issueId.trim() : "";
+      if (!normalizedMissionId) {
         res.status(400).json({ error: "missionId is required" });
         return;
       }
+      if (!normalizedIssueId) {
+        res.status(400).json({ error: "issueId is required for native mission dispatch" });
+        return;
+      }
 
-      const existing = await svc.getByMissionId(companyId, missionId);
+      const existing = await svc.getByMissionId(companyId, normalizedMissionId);
       if (existing) {
         throw conflict("Mission already exists");
       }
 
+      const issue = await issueSvc.getById(normalizedIssueId);
+      if (!issue || issue.companyId !== companyId) {
+        throw notFound("Issue not found");
+      }
+
+      const persistedWorkspace = issue.executionWorkspaceId
+        ? await workspaces.getById(issue.executionWorkspaceId)
+        : null;
+      const resolution = resolveOperatorMissionDispatch({
+        companyId,
+        missionId: normalizedMissionId,
+        issue,
+        workspace: persistedWorkspace,
+        message,
+      });
+      if (!resolution.ok) {
+        res.status(422).json({ error: resolution.reason });
+        return;
+      }
+
+      const actor = getActorInfo(req);
+      const { plan } = resolution;
       const record = await svc.create({
         companyId,
-        issueId: issueId ?? null,
-        missionId,
+        issueId: issue.id,
+        missionId: normalizedMissionId,
         authorityScope,
         provider,
         model,
         credentialRefType,
+        createdByRunId: actor.runId ?? null,
       });
-
-      const runnerScript = path.resolve(
-        process.cwd(),
-        "scripts/operator-loop/run-mission.sh",
-      );
-      const runnerArgs = [
-        "--mission-id", missionId,
-        "--repo-dir", process.cwd(),
-        "--company-id", companyId,
-        "--api-base", "http://localhost:3101/api",
-        "--provider", provider ?? "openrouter",
-        "--model", model ?? "openrouter/deepseek/deepseek-chat",
-      ];
-      if (issueId) {
-        runnerArgs.push("--issue-id", issueId);
-      }
-      if (message) {
-        runnerArgs.push("--message", message);
-      }
-
       if (!record) {
         res.status(500).json({ error: "Failed to create mission record" });
         return;
       }
-      await svc.updateStatus(record.id, "running");
 
-      spawn("bash", [runnerScript, ...runnerArgs], {
-        detached: true,
-        stdio: "ignore",
-        cwd: process.cwd(),
-        env: {
-          ...process.env,
-          PAPERCLIP_OPERATOR_RECORD_EXISTS: "true",
-        },
-      }).unref();
+      try {
+        const run = await heartbeat.wakeup(plan.agentId, {
+          source: "assignment",
+          triggerDetail: "system",
+          reason: "operator_mission_requested",
+          payload: plan.payload,
+          idempotencyKey: plan.idempotencyKey,
+          requestedByActorType: actor.actorType,
+          requestedByActorId: actor.actorId,
+          contextSnapshot: plan.contextSnapshot,
+        });
 
-      res.status(201).json(record);
+        if (!run) {
+          const failedEvidence = mergeMissionEvidence(record.evidence, {
+            dispatch: {
+              status: "failed",
+              mechanism: "native_heartbeat",
+              reason: "heartbeat_wakeup_not_queued",
+              agentId: plan.agentId,
+              workspaceId: plan.workspaceId,
+            },
+          });
+          await svc.updateFields(record.id, {
+            terminalStatus: "dispatch_failed",
+            evidence: failedEvidence,
+          });
+          await svc.updateStatus(record.id, "failed");
+          res.status(503).json({
+            error: "Native mission dispatch was not queued",
+            missionId: normalizedMissionId,
+          });
+          return;
+        }
+
+        const dispatchEvidence = mergeMissionEvidence(record.evidence, {
+          dispatch: {
+            status: "queued",
+            mechanism: "native_heartbeat",
+            agentId: plan.agentId,
+            runId: run.id,
+            workspaceId: plan.workspaceId,
+            workspaceRealization: plan.workspaceId ? "persisted" : "heartbeat_owned",
+          },
+        });
+        await svc.updateFields(record.id, {
+          implementRunId: run.id,
+          evidence: dispatchEvidence,
+        });
+        const runningRecord = await svc.updateStatus(record.id, "implementing");
+
+        await logActivity(db, {
+          companyId,
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId,
+          runId: actor.runId,
+          agentApiKeyId: actor.agentApiKeyId,
+          action: "operator_mission.native_dispatched",
+          entityType: "operator_mission",
+          entityId: record.id,
+          details: {
+            missionId: normalizedMissionId,
+            issueId: issue.id,
+            implementationAgentId: plan.agentId,
+            implementRunId: run.id,
+            workspaceId: plan.workspaceId,
+            idempotencyKey: plan.idempotencyKey,
+          },
+        });
+
+        res.status(201).json(runningRecord ?? record);
+      } catch (err) {
+        const dispatchError = err instanceof Error ? err.message : String(err);
+        const failedEvidence = mergeMissionEvidence(record.evidence, {
+          dispatch: {
+            status: "failed",
+            mechanism: "native_heartbeat",
+            reason: dispatchError,
+            agentId: plan.agentId,
+            workspaceId: plan.workspaceId,
+          },
+        });
+        await svc.updateFields(record.id, {
+          terminalStatus: "dispatch_failed",
+          evidence: failedEvidence,
+        }).catch(() => null);
+        await svc.updateStatus(record.id, "failed").catch(() => null);
+        throw err;
+      }
     },
   );
 
