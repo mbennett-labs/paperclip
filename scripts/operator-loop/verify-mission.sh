@@ -2,12 +2,13 @@
 # Operator Loop V0 — Mission Verification (Stage C)
 #
 # Runs mission-relevant tests, typecheck, and build.
-# Captures results as evidence. Does NOT mutate state beyond running build tools.
-# Failed checks emit bounded diagnostics so the recovery owner can diagnose the
-# actual failure instead of receiving only a generic verifier exit status.
+# Captures results as durable machine-readable evidence. Does NOT mutate runtime
+# state beyond running build tools and writing the repository-local receipt that
+# travels with the mission commit.
 #
 # Usage:
-#   ./verify-mission.sh --mission-id ID [--repo-dir DIR] [--skip-tests] [--skip-typecheck] [--skip-build]
+#   ./verify-mission.sh --mission-id ID [--repo-dir DIR] [--issue-id ID]
+#     [--run-id ID] [--skip-tests] [--skip-typecheck] [--skip-build]
 #
 # Exit codes:
 #   0  All selected verifications passed
@@ -17,6 +18,8 @@
 set -euo pipefail
 
 MISSION_ID=""
+ISSUE_ID=""
+RUN_ID=""
 REPO_DIR=""
 SKIP_TESTS=false
 SKIP_TYPECHECK=false
@@ -26,13 +29,17 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --mission-id)
       MISSION_ID="$2"; shift 2 ;;
+    --issue-id)
+      ISSUE_ID="$2"; shift 2 ;;
+    --run-id)
+      RUN_ID="$2"; shift 2 ;;
     --repo-dir)
       REPO_DIR="$2"; shift 2 ;;
     --skip-tests) SKIP_TESTS=true; shift ;;
     --skip-typecheck) SKIP_TYPECHECK=true; shift ;;
     --skip-build) SKIP_BUILD=true; shift ;;
     --help|-h)
-      echo "Usage: $0 --mission-id ID [--repo-dir DIR]"
+      echo "Usage: $0 --mission-id ID [--repo-dir DIR] [--issue-id ID] [--run-id ID]"
       exit 0 ;;
     *)
       echo "ERROR: Unknown argument: $1" >&2; exit 2 ;;
@@ -64,21 +71,40 @@ BUILD_STATUS="skipped"
 DIFF_CHECK_STATUS="clean"
 DIAGNOSTIC_LINES="${VERIFY_DIAGNOSTIC_LINES:-200}"
 
+bounded_tail() {
+  local output="$1"
+  if [[ -n "$output" ]]; then
+    printf '%s\n' "$output" | tail -n "$DIAGNOSTIC_LINES"
+  fi
+}
+
 emit_failure_diagnostics() {
   local stage="$1"
   local output="$2"
 
   echo "--- ${stage} diagnostics (last ${DIAGNOSTIC_LINES} lines) ---" >&2
   if [[ -n "$output" ]]; then
-    printf '%s\n' "$output" | tail -n "$DIAGNOSTIC_LINES" >&2
+    bounded_tail "$output" >&2
   else
     echo "(no output captured)" >&2
   fi
   echo "--- end ${stage} diagnostics ---" >&2
 }
 
+git_value_or_unknown() {
+  local value
+  value="$(git -C "$REPO_DIR" "$@" 2>/dev/null || true)"
+  if [[ -n "$value" ]]; then
+    printf '%s' "$value"
+  else
+    printf 'unknown'
+  fi
+}
+
 echo "=== Operator Loop V0 — Verification ==="
 echo "  Mission: $MISSION_ID"
+echo "  Issue: ${ISSUE_ID:-<none>}"
+echo "  Run: ${RUN_ID:-<none>}"
 echo "  Repo: $REPO_DIR"
 echo ""
 
@@ -150,6 +176,134 @@ else
   echo "$DIFF_CHECK_OUTPUT"
 fi
 
+# ── C5: Persist canonical verification receipt ───────────────────────────────
+
+TIMESTAMP_UTC="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+TIMESTAMP_FILE="$(date -u +%Y%m%dT%H%M%SZ)"
+BRANCH="$(git_value_or_unknown rev-parse --abbrev-ref HEAD)"
+COMMIT_SHA="$(git_value_or_unknown rev-parse HEAD)"
+SHORT_HEAD="${COMMIT_SHA:0:12}"
+if [[ -z "$SHORT_HEAD" || "$SHORT_HEAD" == "unknown" ]]; then
+  SHORT_HEAD="unknown"
+fi
+REPO_TOP="$(git -C "$REPO_DIR" rev-parse --show-toplevel 2>/dev/null || printf '%s' "$REPO_DIR")"
+REPOSITORY_NAME="$(basename "$REPO_TOP")"
+NODE_VERSION="$(node --version 2>/dev/null || echo unknown)"
+PNPM_VERSION="$(pnpm --version 2>/dev/null || echo unknown)"
+OS_VERSION="$(uname -srm 2>/dev/null || echo unknown)"
+VERIFICATION_RESULT="$([[ $FAILED -eq 0 ]] && echo passed || echo failed)"
+ARTIFACT_ID="qsl-verification-${MISSION_ID}-${TIMESTAMP_FILE}-${SHORT_HEAD}"
+RECEIPT_ROOT="${PAPERCLIP_VERIFICATION_RECEIPT_DIR:-$REPO_DIR/doc/evidence/verification}"
+RECEIPT_DIR="$RECEIPT_ROOT/$MISSION_ID"
+RECEIPT_FILE="$RECEIPT_DIR/${TIMESTAMP_FILE}-${SHORT_HEAD}.json"
+mkdir -p "$RECEIPT_DIR"
+
+TESTS_DIAGNOSTIC="$(bounded_tail "$TESTS_OUTPUT")"
+TYPECHECK_DIAGNOSTIC="$(bounded_tail "$TYPECHECK_OUTPUT")"
+BUILD_DIAGNOSTIC="$(bounded_tail "$BUILD_OUTPUT")"
+DIFF_DIAGNOSTIC="$(bounded_tail "$DIFF_CHECK_OUTPUT")"
+
+export QSL_RECEIPT_SCHEMA="qsl.verification_receipt.v1"
+export QSL_ARTIFACT_ID="$ARTIFACT_ID"
+export QSL_TIMESTAMP_UTC="$TIMESTAMP_UTC"
+export QSL_REPOSITORY_NAME="$REPOSITORY_NAME"
+export QSL_REPOSITORY_PATH="$REPO_DIR"
+export QSL_BRANCH="$BRANCH"
+export QSL_COMMIT_SHA="$COMMIT_SHA"
+export QSL_MISSION_ID="$MISSION_ID"
+export QSL_ISSUE_ID="$ISSUE_ID"
+export QSL_RUN_ID="$RUN_ID"
+export QSL_NODE_VERSION="$NODE_VERSION"
+export QSL_PNPM_VERSION="$PNPM_VERSION"
+export QSL_OS_VERSION="$OS_VERSION"
+export QSL_TESTS_STATUS="$TESTS_STATUS"
+export QSL_TYPECHECK_STATUS="$TYPECHECK_STATUS"
+export QSL_BUILD_STATUS="$BUILD_STATUS"
+export QSL_DIFF_STATUS="$DIFF_CHECK_STATUS"
+export QSL_TESTS_DIAGNOSTIC="$TESTS_DIAGNOSTIC"
+export QSL_TYPECHECK_DIAGNOSTIC="$TYPECHECK_DIAGNOSTIC"
+export QSL_BUILD_DIAGNOSTIC="$BUILD_DIAGNOSTIC"
+export QSL_DIFF_DIAGNOSTIC="$DIFF_DIAGNOSTIC"
+export QSL_DIAGNOSTIC_LINES="$DIAGNOSTIC_LINES"
+export QSL_VERIFICATION_RESULT="$VERIFICATION_RESULT"
+
+python3 - "$RECEIPT_FILE" <<'PY'
+import json
+import os
+import sys
+
+path = sys.argv[1]
+
+def optional(value: str):
+    return value if value else None
+
+def diagnostic(value: str, status: str):
+    if status == "failed" or status == "whitespace_warnings":
+        return value or "(no output captured)"
+    return None
+
+receipt = {
+    "schema": os.environ["QSL_RECEIPT_SCHEMA"],
+    "artifact_id": os.environ["QSL_ARTIFACT_ID"],
+    "classes": ["test", "verification", "provenance"],
+    "retention_status": "durable",
+    "timestamp_utc": os.environ["QSL_TIMESTAMP_UTC"],
+    "repository": os.environ["QSL_REPOSITORY_NAME"],
+    "repository_path": os.environ["QSL_REPOSITORY_PATH"],
+    "branch": os.environ["QSL_BRANCH"],
+    "commit_sha": os.environ["QSL_COMMIT_SHA"],
+    "mission_id": os.environ["QSL_MISSION_ID"],
+    "issue_id": optional(os.environ["QSL_ISSUE_ID"]),
+    "run_ids": [os.environ["QSL_RUN_ID"]] if os.environ["QSL_RUN_ID"] else [],
+    "actor": "operator-loop-verifier",
+    "environment": {
+        "node": os.environ["QSL_NODE_VERSION"],
+        "pnpm": os.environ["QSL_PNPM_VERSION"],
+        "os": os.environ["QSL_OS_VERSION"],
+    },
+    "stages": {
+        "tests": {
+            "status": os.environ["QSL_TESTS_STATUS"],
+            "command": "pnpm test:run",
+        },
+        "typecheck": {
+            "status": os.environ["QSL_TYPECHECK_STATUS"],
+            "command": "pnpm -r typecheck",
+        },
+        "build": {
+            "status": os.environ["QSL_BUILD_STATUS"],
+            "command": "pnpm build",
+        },
+        "diff_check": {
+            "status": os.environ["QSL_DIFF_STATUS"],
+            "command": "git diff --check",
+        },
+    },
+    "diagnostics": {
+        "tests": diagnostic(os.environ["QSL_TESTS_DIAGNOSTIC"], os.environ["QSL_TESTS_STATUS"]),
+        "typecheck": diagnostic(os.environ["QSL_TYPECHECK_DIAGNOSTIC"], os.environ["QSL_TYPECHECK_STATUS"]),
+        "build": diagnostic(os.environ["QSL_BUILD_DIAGNOSTIC"], os.environ["QSL_BUILD_STATUS"]),
+        "diff_check": diagnostic(os.environ["QSL_DIFF_DIAGNOSTIC"], os.environ["QSL_DIFF_STATUS"]),
+        "tail_lines": int(os.environ["QSL_DIAGNOSTIC_LINES"]),
+    },
+    "tests": os.environ["QSL_TESTS_STATUS"],
+    "typecheck": os.environ["QSL_TYPECHECK_STATUS"],
+    "build": os.environ["QSL_BUILD_STATUS"],
+    "diff_check": os.environ["QSL_DIFF_STATUS"],
+    "verification_result": os.environ["QSL_VERIFICATION_RESULT"],
+}
+
+with open(path, "w", encoding="utf-8") as handle:
+    json.dump(receipt, handle, indent=2, sort_keys=True)
+    handle.write("\n")
+PY
+
+if [[ "$RECEIPT_FILE" == "$REPO_DIR/"* ]]; then
+  RECEIPT_DISPLAY="${RECEIPT_FILE#$REPO_DIR/}"
+else
+  RECEIPT_DISPLAY="$RECEIPT_FILE"
+fi
+
 # ── Summary ──────────────────────────────────────────────────────────────────
 
 echo ""
@@ -157,22 +311,11 @@ echo "=== Verification Summary ==="
 echo "  Mission: $MISSION_ID"
 echo "  Passed: $PASSED"
 echo "  Failed: $FAILED"
-
-# ── Output verification evidence as JSON ─────────────────────────────────────
+echo "  Receipt: $RECEIPT_DISPLAY"
 
 echo ""
 echo "=== Verification Evidence (JSON) ==="
-cat <<EVIDENCE
-{
-  "mission_id": "$MISSION_ID",
-  "tests": "$TESTS_STATUS",
-  "typecheck": "$TYPECHECK_STATUS",
-  "build": "$BUILD_STATUS",
-  "diff_check": "$DIFF_CHECK_STATUS",
-  "diagnostic_tail_lines": $DIAGNOSTIC_LINES,
-  "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-}
-EVIDENCE
+cat "$RECEIPT_FILE"
 
 if [[ $FAILED -gt 0 ]]; then
   echo ""
