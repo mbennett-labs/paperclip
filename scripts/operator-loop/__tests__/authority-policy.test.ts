@@ -20,19 +20,22 @@ describe("Operator Authority Policy", () => {
     expect(policy.description.length).toBeGreaterThan(0);
   });
 
-  it("defines all four action classification categories", () => {
+  it("defines the three enforcement buckets and explicit audit markers", () => {
     const policy = loadPolicy();
     expect(policy.preauthorized).toBeInstanceOf(Array);
-    expect(policy.audit_but_no_approval).toBeInstanceOf(Array);
     expect(policy.human_approval_required).toBeInstanceOf(Array);
     expect(policy.prohibited).toBeInstanceOf(Array);
+
+    const auditedAutonomous = policy.preauthorized.filter(
+      (action: { audit?: boolean }) => action.audit === true,
+    );
+    expect(auditedAutonomous.length).toBeGreaterThan(0);
   });
 
   it("each action has required fields", () => {
     const policy = loadPolicy();
     for (const category of [
       "preauthorized",
-      "audit_but_no_approval",
       "human_approval_required",
       "prohibited",
     ]) {
@@ -47,13 +50,11 @@ describe("Operator Authority Policy", () => {
     }
   });
 
-  it("no action appears in multiple categories", () => {
+  it("no action appears in multiple enforcement buckets", () => {
     const policy = loadPolicy();
     const allActions = new Map<string, string>();
-
     const categories = [
       "preauthorized",
-      "audit_but_no_approval",
       "human_approval_required",
       "prohibited",
     ] as const;
@@ -114,6 +115,20 @@ describe("Operator Authority Policy", () => {
     expect(autonomousActions).toContain("staging:health_check");
     expect(autonomousActions).toContain("evidence:collect");
     expect(autonomousActions).toContain("workspace:cleanup_temp");
+  });
+
+  it("audited autonomous actions are explicitly marked", () => {
+    const policy = loadPolicy();
+    const audited = policy.preauthorized
+      .filter((a: { audit?: boolean }) => a.audit === true)
+      .map((a: { action: string }) => a.action);
+
+    expect(audited).toContain("repo:read_source");
+    expect(audited).toContain("test:run_unit_integration");
+    expect(audited).toContain("build:typecheck");
+    expect(audited).toContain("git:commit");
+    expect(audited).toContain("staging:restart");
+    expect(audited).toContain("evidence:collect");
   });
 
   it("git:push requires human approval", () => {
