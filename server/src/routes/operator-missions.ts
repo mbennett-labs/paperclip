@@ -3,6 +3,7 @@ import type { Db } from "@paperclipai/db";
 import { operatorMissionService } from "../services/operator-mission.js";
 import { mergeMissionEvidence } from "../services/operator-mission-evidence.js";
 import { resolveOperatorMissionDispatch } from "../services/operator-mission-dispatch.js";
+import { reconcileOperatorMission } from "../services/operator-mission-reconcile.js";
 import { resolveOperatorReviewDispatch } from "../services/operator-review-dispatch.js";
 import {
   executionWorkspaceService,
@@ -334,7 +335,8 @@ export function operatorMissionRoutes(db: Db) {
         throw notFound("Operator mission not found");
       }
 
-      res.json(record);
+      const reconciled = await reconcileOperatorMission(db, record);
+      res.json(reconciled);
     },
   );
 
@@ -348,7 +350,10 @@ export function operatorMissionRoutes(db: Db) {
         ? parseInt(req.query.limit as string, 10)
         : 20;
       const records = await svc.listByCompany(companyId, Math.min(limit, 100));
-      res.json(records);
+      const reconciled = await Promise.all(
+        records.map((record) => reconcileOperatorMission(db, record)),
+      );
+      res.json(reconciled);
     },
   );
 
@@ -443,7 +448,8 @@ export function operatorMissionRoutes(db: Db) {
         throw notFound("Operator mission not found");
       }
 
-      const receipt = svc.toReceipt(record);
+      const reconciled = await reconcileOperatorMission(db, record);
+      const receipt = svc.toReceipt(reconciled);
       res.json(receipt);
     },
   );
