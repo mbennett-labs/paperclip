@@ -1,6 +1,7 @@
 import { Router } from "express";
 import type { Db } from "@paperclipai/db";
 import { operatorMissionService } from "../services/operator-mission.js";
+import { mergeMissionEvidence } from "../services/operator-mission-evidence.js";
 import { assertCompanyAccess } from "./authz.js";
 import { notFound, conflict } from "../errors.js";
 import type { OperatorMissionStatus } from "@paperclipai/shared";
@@ -55,9 +56,6 @@ export function operatorMissionRoutes(db: Db) {
         credentialRefType,
       });
 
-      // Launch the autonomous operator workflow in the background.
-      // The run-mission.sh script executes stages A-H and updates the
-      // mission record via PATCH as it progresses.
       const runnerScript = path.resolve(
         process.cwd(),
         "scripts/operator-loop/run-mission.sh",
@@ -77,7 +75,6 @@ export function operatorMissionRoutes(db: Db) {
         runnerArgs.push("--message", message);
       }
 
-      // Mark the mission as running before launching
       if (!record) {
         res.status(500).json({ error: "Failed to create mission record" });
         return;
@@ -158,6 +155,15 @@ export function operatorMissionRoutes(db: Db) {
         reviewRunId,
       } = req.body as Record<string, unknown>;
 
+      const incomingEvidence =
+        evidence && typeof evidence === "object" && !Array.isArray(evidence)
+          ? (evidence as Record<string, unknown>)
+          : undefined;
+      const mergedEvidence =
+        incomingEvidence !== undefined
+          ? mergeMissionEvidence(record.evidence, incomingEvidence)
+          : undefined;
+
       const fields: Record<string, unknown> = {};
       if (finalHead !== undefined) fields.finalHead = finalHead;
       if (changedFiles !== undefined) fields.changedFiles = changedFiles;
@@ -173,7 +179,7 @@ export function operatorMissionRoutes(db: Db) {
       if (escalations !== undefined) fields.escalations = escalations;
       if (costUsage !== undefined) fields.costUsage = costUsage;
       if (terminalStatus !== undefined) fields.terminalStatus = terminalStatus;
-      if (evidence !== undefined) fields.evidence = evidence;
+      if (mergedEvidence !== undefined) fields.evidence = mergedEvidence;
       if (implementRunId !== undefined) fields.implementRunId = implementRunId;
       if (reviewRunId !== undefined) fields.reviewRunId = reviewRunId;
 
@@ -181,7 +187,7 @@ export function operatorMissionRoutes(db: Db) {
         const updated = await svc.updateStatus(
           record.id,
           status as OperatorMissionStatus,
-          evidence as Record<string, unknown> | undefined,
+          mergedEvidence ?? undefined,
         );
         if (updated && Object.keys(fields).length > 0) {
           const merged = await svc.updateFields(record.id, fields);
