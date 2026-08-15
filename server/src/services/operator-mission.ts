@@ -67,6 +67,42 @@ function toRecord(row: OperatorMissionRow): OperatorMissionRecord {
   };
 }
 
+function readString(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value : null;
+}
+
+export function operatorMissionAgentId(
+  evidence: Record<string, unknown> | null | undefined,
+): string | null {
+  if (!evidence) return null;
+
+  const nativeLifecycle =
+    typeof evidence.nativeLifecycle === "object" &&
+    evidence.nativeLifecycle !== null &&
+    !Array.isArray(evidence.nativeLifecycle)
+      ? (evidence.nativeLifecycle as Record<string, unknown>)
+      : null;
+  const implementationRun =
+    nativeLifecycle &&
+    typeof nativeLifecycle.implementationRun === "object" &&
+    nativeLifecycle.implementationRun !== null &&
+    !Array.isArray(nativeLifecycle.implementationRun)
+      ? (nativeLifecycle.implementationRun as Record<string, unknown>)
+      : null;
+  const nativeAgentId = readString(implementationRun?.agentId);
+  if (nativeAgentId) return nativeAgentId;
+
+  // The dispatch receipt exists immediately after the native heartbeat is
+  // queued, before the first lifecycle reconciliation read has occurred.
+  const dispatch =
+    typeof evidence.dispatch === "object" &&
+    evidence.dispatch !== null &&
+    !Array.isArray(evidence.dispatch)
+      ? (evidence.dispatch as Record<string, unknown>)
+      : null;
+  return readString(dispatch?.agentId);
+}
+
 export function operatorMissionService(db: Db) {
   return {
     create: async (input: {
@@ -185,7 +221,7 @@ export function operatorMissionService(db: Db) {
     toReceipt: (record: OperatorMissionRecord): MissionReceipt => ({
       mission_id: record.missionId,
       issue_id: record.issueId,
-      agent_id: null,
+      agent_id: operatorMissionAgentId(record.evidence),
       run_ids: [record.implementRunId, record.reviewRunId].filter(
         (id): id is string => id !== null,
       ),
