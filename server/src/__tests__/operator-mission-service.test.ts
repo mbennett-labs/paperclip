@@ -3,6 +3,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   companies,
   createDb,
+  issues,
   operatorMissions,
 } from "@paperclipai/db";
 import {
@@ -47,10 +48,12 @@ describeEmbeddedPostgres("operator mission service", () => {
 
   afterEach(async () => {
     await db.delete(operatorMissions);
+    await db.delete(issues);
   });
 
   afterAll(async () => {
     await db.delete(operatorMissions);
+    await db.delete(issues);
     await db.delete(companies);
     await tempDb?.cleanup();
   });
@@ -73,20 +76,22 @@ describeEmbeddedPostgres("operator mission service", () => {
     expect(record!.model).toBe("openrouter/deepseek/deepseek-chat");
   });
 
-  it("prevents duplicate mission_id within same company", async () => {
+  it("finds an existing mission_id within the same company", async () => {
     const missionId = `test-mission-${randomUUID().slice(0, 8)}`;
     await svc.create({ companyId, missionId });
 
     const duplicate = await svc.getByMissionId(companyId, missionId);
     expect(duplicate).not.toBeNull();
     expect(duplicate!.missionId).toBe(missionId);
-
-    // Creating another with same missionId should fail at DB level
-    // (not enforced in service yet — DB unique constraint would reject)
   });
 
-  it("binds to an issue when issueId is provided", async () => {
+  it("binds to an existing issue when issueId is provided", async () => {
     const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Operator mission test issue",
+    });
     const missionId = `test-mission-${randomUUID().slice(0, 8)}`;
 
     const record = await svc.create({
@@ -139,13 +144,20 @@ describeEmbeddedPostgres("operator mission service", () => {
   });
 
   it("generates a valid receipt from a completed mission", async () => {
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Operator mission receipt issue",
+    });
     const missionId = `test-mission-${randomUUID().slice(0, 8)}`;
     const record = await svc.create({
       companyId,
       missionId,
-      issueId: randomUUID(),
+      issueId,
       provider: "openrouter",
       model: "openrouter/deepseek/deepseek-chat",
+      credentialRefType: "secret_ref",
       initialHead: "abc123def456",
     });
 
@@ -158,8 +170,6 @@ describeEmbeddedPostgres("operator mission service", () => {
       productionPidAfter: "9999",
       productionUntouched: "true",
       terminalStatus: "completed",
-      implementRunId: randomUUID(),
-      reviewRunId: randomUUID(),
       evidence: { tests: "passed", typecheck: "passed", build: "passed" },
     });
 
@@ -180,7 +190,7 @@ describeEmbeddedPostgres("operator mission service", () => {
     expect(receipt.staging_pid).toBe("12345");
     expect(receipt.production_untouched).toBe("true");
     expect(receipt.terminal_status).toBe("completed");
-    expect(receipt.run_ids.length).toBeGreaterThanOrEqual(0);
+    expect(receipt.run_ids).toEqual([]);
   });
 
   it("lists missions by company", async () => {
