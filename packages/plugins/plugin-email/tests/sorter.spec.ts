@@ -40,7 +40,7 @@ function metadata(overrides: Partial<IntakeMetadata> = {}): IntakeMetadata {
 }
 
 // ---------------------------------------------------------------------------
-// All 11 fixture scenarios
+// Existing fixture scenarios + dedicated system-notification coverage
 // ---------------------------------------------------------------------------
 
 describe("sortIntakeRecord — classification contract", () => {
@@ -65,16 +65,16 @@ describe("sortIntakeRecord — classification contract", () => {
     },
   );
 
-  // Verify ALL 7 categories are exercised
-  const categoriesSeen = new Set<IntakeSortCategory>();
-  SORTER_FIXTURES.forEach((f) => categoriesSeen.add(f.expectedCategory));
+  // System notifications have dedicated cases below rather than changing the
+  // historical synthetic fixture file solely to satisfy category enumeration.
+  const categoriesCovered = new Set<IntakeSortCategory>(["system_notification"]);
+  SORTER_FIXTURES.forEach((f) => categoriesCovered.add(f.expectedCategory));
   for (const cat of ALL_INTAKE_CATEGORIES) {
-    it(`category "${cat}" has at least one fixture`, () => {
-      expect(categoriesSeen.has(cat)).toBe(true);
+    it(`category "${cat}" has classification coverage`, () => {
+      expect(categoriesCovered.has(cat)).toBe(true);
     });
   }
 
-  // Verify label contract
   it("every category has a label", () => {
     for (const cat of ALL_INTAKE_CATEGORIES) {
       expect(CATEGORY_LABELS[cat]).toBeTruthy();
@@ -163,6 +163,90 @@ describe("sortIntakeRecord — separate dimensions preserved", () => {
     expect(result.category).toBe("store_submission");
     expect(result.humanReviewStatus).toBe("genuine_external");
     expect(result.replyActionStatus).toBe("none");
+  });
+});
+
+describe("sortIntakeRecord — system notification boundary", () => {
+  it("keeps TherapistIndex operational notifications out of reply work", () => {
+    const result = sortIntakeRecord({
+      sourceDetection: detection({
+        sourceType: "contact",
+        sourceForm: "therapist_index",
+        sourcePage: "/moderation",
+        brand: "therapist_index",
+        confidence: 0.8,
+      }),
+      classHint: "contact_general",
+      intakeMetadata: null,
+      duplicateMatchStrength: null,
+      latestVerdict: null,
+      hasReplyDraft: false,
+      inReplyTo: null,
+      hasReferences: false,
+    });
+
+    expect(result.category).toBe("system_notification");
+    expect(result.replyActionStatus).toBe("none");
+    expect(result.rulesMatched).toContain("sorter:system_notification");
+  });
+
+  it("keeps alert and newsletter signups out of reply work", () => {
+    for (const sourceType of ["alert_signup", "newsletter_signup"] as const) {
+      const result = sortIntakeRecord({
+        sourceDetection: detection({ sourceType, brand: "thebinmap", confidence: 0.9 }),
+        classHint: sourceType === "alert_signup" ? "store_alert_signup" : "newsletter_signup",
+        intakeMetadata: null,
+        duplicateMatchStrength: null,
+        latestVerdict: null,
+        hasReplyDraft: false,
+        inReplyTo: null,
+        hasReferences: false,
+      });
+      expect(result.category).toBe("system_notification");
+      expect(result.replyActionStatus).toBe("none");
+    }
+  });
+
+  it("keeps TherapistIndex correction/removal work actionable", () => {
+    const result = sortIntakeRecord({
+      sourceDetection: detection({
+        sourceType: "correction",
+        sourceForm: "therapist_index",
+        brand: "therapist_index",
+        confidence: 0.8,
+      }),
+      classHint: "correction",
+      intakeMetadata: null,
+      duplicateMatchStrength: null,
+      latestVerdict: null,
+      hasReplyDraft: false,
+      inReplyTo: null,
+      hasReferences: false,
+    });
+
+    expect(result.category).toBe("general_email");
+    expect(result.replyActionStatus).toBe("draft_needed");
+  });
+
+  it("explicit reply headers override system-notification routing", () => {
+    const result = sortIntakeRecord({
+      sourceDetection: detection({
+        sourceType: "contact",
+        sourceForm: "therapist_index",
+        brand: "therapist_index",
+        confidence: 0.8,
+      }),
+      classHint: "contact_general",
+      intakeMetadata: null,
+      duplicateMatchStrength: null,
+      latestVerdict: null,
+      hasReplyDraft: false,
+      inReplyTo: "prior@example.com",
+      hasReferences: true,
+    });
+
+    expect(result.category).toBe("reply_continuation");
+    expect(result.replyActionStatus).toBe("draft_needed");
   });
 });
 
