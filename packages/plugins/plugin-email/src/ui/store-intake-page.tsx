@@ -43,6 +43,11 @@ type EmailPluginConfigView = {
   enabled?: boolean;
   scheduledPollingEnabled?: boolean;
   outboundEnabled?: boolean;
+  mailboxProfiles?: Array<{
+    key?: string;
+    username?: string;
+    status?: "active" | "standby" | "reserved";
+  }>;
   username?: string;
   extraProfilesJson?: string;
   markSeen?: boolean;
@@ -216,9 +221,20 @@ function nextAction(item: QueueItem): string {
 
 function parseMailboxProfiles(
   config: EmailPluginConfigView | null | undefined,
-): Array<{ key: string; username: string }> {
-  const profiles: Array<{ key: string; username: string }> = [];
-  if (config?.username) profiles.push({ key: "primary", username: config.username });
+): Array<{ key: string; username: string; status: "active" | "standby" | "reserved" }> {
+  const structured = Array.isArray(config?.mailboxProfiles) ? config.mailboxProfiles : [];
+  if (structured.length > 0) {
+    return structured.flatMap((entry) => {
+      const key = typeof entry?.key === "string" ? entry.key.trim() : "";
+      const username = typeof entry?.username === "string" ? entry.username.trim() : "";
+      if (!key || !username) return [];
+      const status = entry.status === "active" || entry.status === "reserved" ? entry.status : "standby";
+      return [{ key, username, status }];
+    });
+  }
+
+  const profiles: Array<{ key: string; username: string; status: "active" | "standby" | "reserved" }> = [];
+  if (config?.username) profiles.push({ key: "primary", username: config.username, status: "active" });
 
   const raw = (config?.extraProfilesJson ?? "").trim();
   if (!raw) return profiles;
@@ -240,7 +256,7 @@ function parseMailboxProfiles(
       const key = typeof keyValue === "string" && keyValue.trim()
         ? keyValue.trim()
         : `extra-${i + 1}`;
-      profiles.push({ key, username });
+      profiles.push({ key, username, status: "active" });
     }
   } catch {
     // Worker-side validation owns config errors. Keep the console readable.
@@ -343,6 +359,7 @@ export function StoreIntakePage({ context }: PluginPageProps) {
   const scheduled = configData?.scheduledPollingEnabled === true;
   const outbound = configData?.outboundEnabled === true;
   const markSeen = configData?.markSeen === true;
+  const activeMailboxCount = mailboxProfiles.filter((profile) => profile.status === "active").length;
 
   return (
     <div style={{ padding: 16, fontSize: 13, display: "grid", gap: 14 }}>
@@ -361,7 +378,7 @@ export function StoreIntakePage({ context }: PluginPageProps) {
         <span><strong>Polling:</strong> {scheduled ? "scheduled" : "manual only"}</span>
         <span><strong>Mailbox state:</strong> {markSeen ? "may mark seen" : "read-only"}</span>
         <span><strong>Outbound:</strong> {outbound ? "Board send enabled" : "locked"}</span>
-        <span><strong>Mailboxes:</strong> {mailboxProfiles.length}</span>
+        <span><strong>Mailboxes:</strong> {mailboxProfiles.length} ({activeMailboxCount} active)</span>
         {configData?.intakeSince ? <span><strong>Boundary:</strong> {configData.intakeSince}</span> : null}
       </div>
 
@@ -370,7 +387,7 @@ export function StoreIntakePage({ context }: PluginPageProps) {
           <span style={{ fontWeight: 600, opacity: 0.75 }}>Configured mailbox profiles</span>
           {mailboxProfiles.map((profile) => (
             <span key={`${profile.key}:${profile.username}`} style={mailboxPillStyle} title={profile.username}>
-              {profile.key}: {profile.username}
+              {profile.key}: {profile.username} · {profile.status}
             </span>
           ))}
         </div>
@@ -398,7 +415,7 @@ export function StoreIntakePage({ context }: PluginPageProps) {
         <select value={mailboxFilter} onChange={(event) => setMailboxFilter(event.target.value)} style={selectStyle}>
           <option value="all">All mailboxes</option>
           {mailboxProfiles.map((profile) => (
-            <option key={profile.key} value={profile.key}>{profile.username}</option>
+            <option key={profile.key} value={profile.key}>{profile.username} · {profile.status}</option>
           ))}
         </select>
       </div>

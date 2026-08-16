@@ -2,7 +2,6 @@ import { createHash } from "node:crypto";
 import {
   definePlugin,
   runWorker,
-  type EnvSecretRefBinding,
   type PluginContext,
 } from "@paperclipai/plugin-sdk";
 import {
@@ -78,28 +77,21 @@ import {
   formatDraftDocument,
   type DraftCandidate,
 } from "./mail/drafts.js";
+import {
+  activeMailboxProfiles,
+  buildMailboxProfiles,
+  hasActiveMailboxConfig,
+  resolveProfileCredentialBinding,
+  type MailboxProfileHostConfig,
+  type ResolvedMailboxProfile,
+} from "./mail/mailbox-profiles.js";
 
-type EmailPluginConfig = {
-  enabled?: boolean;
+type EmailPluginConfig = MailboxProfileHostConfig & {
   scheduledPollingEnabled?: boolean;
   outboundEnabled?: boolean;
   intakeProjectId?: string;
   triageAgentId?: string;
   billingCode?: string;
-  username?: string;
-  credentialSecretRef?: string | EnvSecretRefBinding;
-  imapHost?: string;
-  imapPort?: number;
-  imapSecure?: boolean;
-  smtpHost?: string;
-  smtpPort?: number;
-  smtpSecure?: boolean;
-  pollFolder?: string;
-  archiveFolder?: string;
-  markSeen?: boolean;
-  maxMessagesPerPoll?: number;
-  extraProfilesJson?: string;
-  intakeSince?: string;
   storeExportPath?: string;
 };
 
@@ -262,45 +254,17 @@ function configError(message: string): Error {
   return new Error(`[${"qsl.email"}] ${message}`);
 }
 
-function buildProfiles(config: EmailPluginConfig): ConnectorProfile[] {
-  const base: ConnectorProfile = {
-    key: "primary",
-    imapHost: config.imapHost || DEFAULTS.imapHost,
-    imapPort: Number(config.imapPort ?? DEFAULTS.imapPort),
-    imapSecure: config.imapSecure ?? DEFAULTS.imapSecure,
-    smtpHost: config.smtpHost || DEFAULTS.smtpHost,
-    smtpPort: Number(config.smtpPort ?? DEFAULTS.smtpPort),
-    smtpSecure: config.smtpSecure ?? DEFAULTS.smtpSecure,
-    username: config.username || "",
-    pollFolder: config.pollFolder || DEFAULTS.pollFolder,
-    archiveFolder: config.archiveFolder ?? DEFAULTS.archiveFolder,
-    markSeen: config.markSeen ?? DEFAULTS.markSeen,
-    maxMessagesPerPoll: Number(config.maxMessagesPerPoll ?? DEFAULTS.maxMessagesPerPoll),
-    ...(config.intakeSince ? { intakeSince: config.intakeSince } : {}),
-  };
-  const profiles: ConnectorProfile[] = [];
-  if (base.username) profiles.push(base);
-  const extraRaw = (config.extraProfilesJson ?? "").trim();
-  if (extraRaw) {
-    try {
-      const extra = JSON.parse(extraRaw) as Array<Partial<ConnectorProfile>>;
-      for (let i = 0; i < extra.length; i += 1) {
-        const p = extra[i];
-        if (!p.username) continue;
-        profiles.push({ ...base, ...p, key: p.key || `extra-${i + 1}` } as ConnectorProfile);
-      }
-    } catch {
-      throw configError("extraProfilesJson is not valid JSON.");
-    }
-  }
-  return profiles;
+function buildProfiles(config: EmailPluginConfig): ResolvedMailboxProfile[] {
+  return buildMailboxProfiles(config);
 }
 
-async function resolvePassword(ctx: PluginContext, config: EmailPluginConfig, companyId: string): Promise<string> {
-  if (!config.credentialSecretRef) {
-    throw configError("credentialSecretRef is not configured. Bind the mailbox credential secret in plugin settings.");
-  }
-  return ctx.secrets.resolve(config.credentialSecretRef, { companyId, configPath: "credentialSecretRef" });
+async function resolvePassword(
+  ctx: PluginContext,
+  profile: ResolvedMailboxProfile,
+  companyId: string,
+): Promise<string> {
+  const binding = resolveProfileCredentialBinding(profile);
+  return ctx.secrets.resolve(binding.secretRef, { companyId, configPath: binding.configPath });
 }
 
 /**
@@ -320,7 +284,7 @@ async function resolveActiveCompanies(ctx: PluginContext): Promise<Array<{ compa
       continue;
     }
     if (!config || typeof config !== "object") continue;
-    if (!config.username) continue;
+    if (!hasActiveMailboxConfig(config)) continue;
     active.push({ companyId: company.id, config });
   }
   return active;
@@ -637,17 +601,20 @@ async function runPollForCompany(
     throw configError("intakeSince is not a valid date (use YYYY-MM-DD, e.g. 2026-07-01): " + config.intakeSince);
   }
 
-  const profiles = buildProfiles(config);
+  const profiles = activeMailboxProfiles(config);
   if (profiles.length === 0) {
-    throw configError("No mailbox profiles configured. Set the primary username/credential or extraProfilesJson.");
+    throw configError("No active mailbox profiles configured. Activate a mailbox profile or configure the legacy primary mailbox.");
   }
-  const password = await resolvePassword(ctx, config, companyId);
 
   const results: ProfilePollResult[] = [];
   for (const profile of profiles) {
     const result: ProfilePollResult = { key: profile.key, ok: true, found: 0, created: 0, skippedDuplicates: 0 };
     const cursorKey = `uid-cursor:${profile.key}`;
     try {
+      if (profile.intakeSince && !isValidIntakeDate(profile.intakeSince)) {
+        throw configError(`Mailbox profile "${profile.key}" intakeSince is not a valid date (use YYYY-MM-DD): ${profile.intakeSince}`);
+      }
+      const password = await resolvePassword(ctx, profile, companyId);
       const cursorRaw = await ctx.state.get({ scopeKind: "company", scopeId: companyId, namespace: STATE_NS, stateKey: cursorKey });
       const afterUid = typeof cursorRaw === "number" ? cursorRaw : 0;
       const fetched = await fetchUnseen(profile, password, afterUid);
@@ -1037,7 +1004,7 @@ const plugin = definePlugin({
       if (companyId) {
         const config = (await ctx.config.get(companyId)) as EmailPluginConfig;
         if (config?.enabled === false) throw configError("Connector is disabled for this company.");
-        if (!config?.username) throw configError("Mailbox is not configured for this company.");
+        if (!hasActiveMailboxConfig(config)) throw configError("No active mailbox is configured for this company.");
         const results = await runPollForCompany(ctx, companyId, config, false);
         return { ok: true, results };
       }
@@ -1055,7 +1022,7 @@ const plugin = definePlugin({
       if (!companyId) throw configError("poll-target requires companyId.");
       const config = (await ctx.config.get(companyId)) as EmailPluginConfig;
       if (config?.enabled === false) throw configError("Connector is disabled for this company.");
-      if (!config?.username) throw configError("Mailbox is not configured for this company.");
+      if (!hasActiveMailboxConfig(config)) throw configError("No active mailbox is configured for this company.");
       if (config?.outboundEnabled === true) {
         throw configError("poll-target is not available when outbound is enabled.");
       }
@@ -1072,10 +1039,19 @@ const plugin = definePlugin({
         throw configError("poll-target maxResults must be 1 during this pilot.");
       }
 
-      const profiles = buildProfiles(config);
-      if (profiles.length === 0) throw configError("No mailbox profiles configured.");
-      const password = await resolvePassword(ctx, config, companyId);
-      const profile = profiles[0];
+      const profiles = activeMailboxProfiles(config);
+      if (profiles.length === 0) throw configError("No active mailbox profiles configured.");
+      const requestedProfileKey = typeof params?.profileKey === "string" && params.profileKey.trim()
+        ? params.profileKey.trim()
+        : null;
+      const profile = requestedProfileKey
+        ? profiles.find((candidate) => candidate.key === requestedProfileKey)
+        : profiles[0];
+      if (!profile) throw configError(`Active mailbox profile "${requestedProfileKey}" was not found.`);
+      if (profile.intakeSince && !isValidIntakeDate(profile.intakeSince)) {
+        throw configError(`Mailbox profile "${profile.key}" intakeSince is not a valid date (use YYYY-MM-DD): ${profile.intakeSince}`);
+      }
+      const password = await resolvePassword(ctx, profile, companyId);
 
       const fetched = await searchBySubject(profile, password, {
         subject,
@@ -1153,7 +1129,7 @@ const plugin = definePlugin({
       if (config?.outboundEnabled !== true) {
         throw configError("Outbound email is disabled for this company.");
       }
-      if (!config?.username) throw configError("Mailbox is not configured for this company.");
+      if (!hasActiveMailboxConfig(config)) throw configError("No active mailbox is configured for this company.");
       const issueId = params?.issueId as string;
       if (!issueId) throw configError("send-reply requires issueId.");
 
@@ -1177,9 +1153,14 @@ const plugin = definePlugin({
       const to = draft.to || thread.fromAddress || thread.from;
       const subject = draft.subject || thread.subject;
       const profiles = buildProfiles(config);
-      const profile = profiles.find((p) => p.key === thread.profileKey) ?? profiles[0];
-      if (!profile) throw configError("No mailbox profile configured for sending.");
-      const password = await resolvePassword(ctx, config, companyId);
+      const profile = profiles.find((candidate) => candidate.key === thread.profileKey);
+      if (!profile) {
+        throw configError(`Mailbox profile "${thread.profileKey}" linked to this message is no longer configured. Refusing to send through a different mailbox.`);
+      }
+      if (profile.operationalStatus !== "active") {
+        throw configError(`Mailbox profile "${thread.profileKey}" is ${profile.operationalStatus}; activate that exact mailbox before sending.`);
+      }
+      const password = await resolvePassword(ctx, profile, companyId);
 
       const result = await sendReply(profile, password, {
         to,
@@ -1241,20 +1222,50 @@ const plugin = definePlugin({
     const errors: string[] = [];
     if (!cfg.intakeProjectId) warnings.push("intakeProjectId is empty; intake issues will be created without a project.");
     if (!cfg.triageAgentId) warnings.push("triageAgentId is empty; intake issues will be unassigned.");
-    if (!cfg.username) errors.push("Mailbox username is required.");
-    if (!cfg.credentialSecretRef) errors.push("A credential secret binding is required.");
+
+    const hasStructuredProfiles = Array.isArray(cfg.mailboxProfiles) && cfg.mailboxProfiles.length > 0;
+    if (!hasStructuredProfiles) {
+      if (!cfg.username) errors.push("Mailbox username is required when structured Mailbox Profiles are not configured.");
+      if (!cfg.credentialSecretRef) errors.push("A legacy company mailbox credential secret binding is required when structured Mailbox Profiles are not configured.");
+    }
+
     if (cfg.intakeSince) {
       if (!isValidIntakeDate(cfg.intakeSince)) {
         errors.push("intakeSince is not a valid date (use YYYY-MM-DD, e.g. 2026-07-01).");
       } else {
-        warnings.push("intakeSince: " + cfg.intakeSince + " — IMAP SINCE filter active; messages with internal date before this date are skipped.");
+        warnings.push("intakeSince: " + cfg.intakeSince + " — company IMAP SINCE filter active; messages with internal date before this date are skipped unless a mailbox overrides it.");
       }
     }
     if (errors.length > 0) return { ok: false, warnings, errors };
 
     try {
       const profiles = buildProfiles(cfg);
-      return { ok: true, warnings: [...warnings, `Configuration valid. ${profiles.length} profile(s) configured. Live IMAP/SMTP verification runs on the first poll.`] };
+      for (const profile of profiles) {
+        if (profile.intakeSince && !isValidIntakeDate(profile.intakeSince)) {
+          errors.push(`Mailbox profile "${profile.key}" intakeSince is not a valid date (use YYYY-MM-DD).`);
+        }
+      }
+      if (errors.length > 0) return { ok: false, warnings, errors };
+
+      const activeCount = profiles.filter((profile) => profile.operationalStatus === "active").length;
+      const standbyCount = profiles.filter((profile) => profile.operationalStatus === "standby").length;
+      const reservedCount = profiles.filter((profile) => profile.operationalStatus === "reserved").length;
+      const sharedCredentialCount = profiles.filter((profile) => profile.credentialMode === "company_shared").length;
+
+      if (activeCount === 0) {
+        warnings.push("No active mailbox profiles. This company is modeled in Email Operations but inbox polling will remain idle.");
+      }
+      if (sharedCredentialCount > 1) {
+        warnings.push("Legacy mailbox profiles share one company credential. Use structured Mailbox Profiles before operating unrelated inbox accounts.");
+      }
+
+      return {
+        ok: true,
+        warnings: [
+          ...warnings,
+          `Configuration valid. ${profiles.length} mailbox profile(s): ${activeCount} active, ${standbyCount} standby, ${reservedCount} reserved. Live IMAP/SMTP verification runs only for active mailboxes.`,
+        ],
+      };
     } catch (err) {
       return { ok: false, warnings, errors: [summarizeError(err)] };
     }
