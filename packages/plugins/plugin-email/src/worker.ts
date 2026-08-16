@@ -895,7 +895,22 @@ const plugin = definePlugin({
     ctx.data.register("intake-queue", async (params) => {
       const companyId = params?.companyId as string;
       if (!companyId) return [];
+      const requestedProfileKey = typeof params?.profileKey === "string" && params.profileKey.trim()
+        ? params.profileKey.trim()
+        : null;
       try {
+        const config = (await ctx.config.get(companyId).catch(() => null)) as EmailPluginConfig | null;
+        const mailboxUsernameByKey = new Map<string, string>();
+        if (config) {
+          try {
+            for (const profile of buildProfiles(config)) {
+              mailboxUsernameByKey.set(profile.key, profile.username);
+            }
+          } catch {
+            // Keep historical queue evidence readable even if current mailbox config is incomplete.
+          }
+        }
+
         const issues = await ctx.issues.list({
           companyId,
           originKindPrefix: ORIGIN_KIND_INTAKE,
@@ -905,6 +920,12 @@ const plugin = definePlugin({
         for (const issue of issues) {
           try {
             const evidence = await ctx.state.get({ scopeKind: "issue", scopeId: issue.id, namespace: STATE_NS_INTAKE, stateKey: "intake-evidence" });
+            const evidenceRecord = evidence && typeof evidence === "object"
+              ? evidence as Record<string, unknown>
+              : null;
+            const profileKey = typeof evidenceRecord?.profileKey === "string" ? evidenceRecord.profileKey : null;
+            if (requestedProfileKey && profileKey !== requestedProfileKey) continue;
+
             const reviewKeys = await ctx.state.get({ scopeKind: "issue", scopeId: issue.id, namespace: STATE_NS_INTAKE, stateKey: "intake-review-keys" });
             const reviewKeyList: string[] = Array.isArray(reviewKeys) ? reviewKeys : [];
             let latestVerdict: string | null = null;
@@ -930,12 +951,18 @@ const plugin = definePlugin({
               status: issue.status,
               priority: issue.priority,
               createdAt: issue.createdAt,
-              storeName: resolveQueueStoreName(evidence as Record<string, unknown> | null),
-              sourceForm: (evidence as Record<string, unknown> | null)?.sourceDetection
-                ? ((evidence as Record<string, unknown>).sourceDetection as Record<string, string>)?.sourceForm ?? null
+              profileKey,
+              mailboxUsername: profileKey ? mailboxUsernameByKey.get(profileKey) ?? null : null,
+              fromAddress: typeof evidenceRecord?.fromAddress === "string" ? evidenceRecord.fromAddress : null,
+              to: typeof evidenceRecord?.to === "string" ? evidenceRecord.to : null,
+              messageSubject: typeof evidenceRecord?.subject === "string" ? evidenceRecord.subject : issue.title,
+              messageDate: typeof evidenceRecord?.date === "string" ? evidenceRecord.date : issue.createdAt,
+              storeName: resolveQueueStoreName(evidenceRecord),
+              sourceForm: evidenceRecord?.sourceDetection
+                ? (evidenceRecord.sourceDetection as Record<string, string>)?.sourceForm ?? null
                 : null,
-              sourceType: (evidence as Record<string, unknown> | null)?.sourceDetection
-                ? ((evidence as Record<string, unknown>).sourceDetection as Record<string, string>)?.sourceType ?? null
+              sourceType: evidenceRecord?.sourceDetection
+                ? (evidenceRecord.sourceDetection as Record<string, string>)?.sourceType ?? null
                 : null,
               latestVerdict,
               latestOutcome,
