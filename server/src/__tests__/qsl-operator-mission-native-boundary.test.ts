@@ -25,4 +25,23 @@ describe("QSL native Mission Control boundary", () => {
     expect(source).toContain("operator_review_dispatch_not_queued");
     expect(source).toContain("reviewRunId = reviewRun.id");
   });
+
+  it("withholds implementation dispatch for human-required authority", () => {
+    const source = readFileSync(routePath, "utf8");
+    const gateIndex = source.indexOf(
+      'if (normalizedAuthorityScope === "human_required")',
+    );
+    const implementationWakeIndex = source.indexOf(
+      "const run = await heartbeat.wakeup(plan.agentId",
+    );
+
+    expect(source).toContain(
+      'error: "authorityScope must be autonomous or human_required"',
+    );
+    expect(source).toContain('dispatch: "withheld"');
+    expect(source).toContain('terminalStatus: "human_approval_required"');
+    expect(source).toContain('"operator_mission.authority_escalated"');
+    expect(gateIndex).toBeGreaterThan(-1);
+    expect(implementationWakeIndex).toBeGreaterThan(gateIndex);
+  });
 });
