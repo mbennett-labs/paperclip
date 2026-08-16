@@ -8,6 +8,7 @@
  * Safety invariants:
  * - Duplicate messages do not generate duplicate reply drafts.
  * - Spam does not generate reply drafts.
+ * - System notifications do not generate reply drafts.
  * - Uncertain recipient/thread relationships fail closed (no draft).
  * - Incomplete submissions can generate a clarification-draft candidate.
  * - Final send remains a separate Board/human-approved action.
@@ -53,6 +54,7 @@ const DRAFT_BLOCKED_CATEGORIES: Set<IntakeSortCategory> = new Set([
   "spam_irrelevant",
   "duplicate",
   "unknown",
+  "system_notification",
 ]);
 
 const DRAFT_NEEDED_CATEGORIES: Set<IntakeSortCategory> = new Set([
