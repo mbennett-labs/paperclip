@@ -1,7 +1,6 @@
-import { useState, useMemo } from "react";
+import { useMemo, useState } from "react";
 import {
   usePluginData,
-  usePluginAction,
   useHostNavigation,
   type PluginPageProps,
 } from "@paperclipai/plugin-sdk/ui";
@@ -28,40 +27,55 @@ type QueueItem = {
     field: string;
     values: Array<{ value: string; source: string; precedence: number }>;
   }>;
+  sortCategory: string | null;
+  sortLabel: string | null;
+  replyActionStatus: string | null;
+  draftCandidateKind: string | null;
 };
 
-type FilterName =
-  | "all"
-  | "action_required"
-  | "forms_and_leads"
-  | "listing_operations"
-  | "needs_review"
-  | "newsletters_promotions"
-  | "system_notifications"
-  | "likely_spam"
-  | "recently_reviewed"
-  | "partial_data"
-  | "needs_source_check"
-  | "thebinmap_brand"
-  | "qsl_brand"
-  | "therapist_index_brand";
+type EmailPluginConfigView = {
+  enabled?: boolean;
+  scheduledPollingEnabled?: boolean;
+  outboundEnabled?: boolean;
+  username?: string;
+  extraProfilesJson?: string;
+  markSeen?: boolean;
+  maxMessagesPerPoll?: number;
+  intakeSince?: string;
+};
 
-const FILTERS: { key: FilterName; label: string }[] = [
-  { key: "all", label: "All" },
-  { key: "action_required", label: "Action Required" },
-  { key: "forms_and_leads", label: "Forms & Leads" },
-  { key: "listing_operations", label: "Listing Ops" },
+type WorkflowFilter =
+  | "inbox"
+  | "attention"
+  | "drafts"
+  | "needs_review"
+  | "submissions"
+  | "correspondence"
+  | "data_quality"
+  | "suppressed"
+  | "reviewed";
+
+type BrandFilter = "all" | "thebinmap" | "qsl" | "therapist_index" | "unknown";
+
+const FILTERS: Array<{ key: WorkflowFilter; label: string }> = [
+  { key: "inbox", label: "Inbox" },
+  { key: "attention", label: "Needs Attention" },
+  { key: "drafts", label: "Draft Work" },
   { key: "needs_review", label: "Needs Review" },
-  { key: "newsletters_promotions", label: "Newsletters & Promos" },
-  { key: "system_notifications", label: "System Notifications" },
-  { key: "likely_spam", label: "Likely Spam" },
-  { key: "recently_reviewed", label: "Recently Reviewed" },
-  { key: "partial_data", label: "Partial Data" },
-  { key: "needs_source_check", label: "Needs Source Check" },
-  { key: "thebinmap_brand", label: "TheBinMap" },
-  { key: "qsl_brand", label: "QSL" },
-  { key: "therapist_index_brand", label: "TherapistIndex" },
+  { key: "submissions", label: "Submissions" },
+  { key: "correspondence", label: "Correspondence" },
+  { key: "data_quality", label: "Data Quality" },
+  { key: "suppressed", label: "Suppressed" },
+  { key: "reviewed", label: "Reviewed" },
 ];
+
+const BRAND_LABELS: Record<BrandFilter, string> = {
+  all: "All portfolio brands",
+  thebinmap: "TheBinMap",
+  qsl: "QSL",
+  therapist_index: "TherapistIndex",
+  unknown: "Unassigned",
+};
 
 const VERDICT_LABELS: Record<string, string> = {
   genuine_external: "Genuine",
@@ -83,298 +97,400 @@ const TRANSPORT_LABELS: Record<string, string> = {
 const COMPLETENESS_LABELS: Record<string, string> = {
   complete: "Complete",
   partial: "Partial",
-  needs_source_verification: "Needs Verification",
+  needs_source_verification: "Needs verification",
 };
 
-function completenessColor(c: string): string {
-  if (c === "complete") return "#27ae60";
-  if (c === "partial") return "#e67e22";
-  return "#e74c3c";
-}
-
-function completenessBg(c: string): string {
-  if (c === "complete") return "rgba(39,174,96,0.12)";
-  if (c === "partial") return "rgba(230,126,34,0.12)";
-  return "rgba(231,76,60,0.12)";
-}
-
-function transportColor(t: string): string {
-  if (t === "provider_webhook" || t === "provider_api") return "#2980b9";
-  if (t === "wordpress_event") return "#8e44ad";
-  if (t === "email_notification") return "#7f8c8d";
-  return "#bdc3c7";
-}
-
-function extractBrand(item: QueueItem): string {
-  const st = (item.sourceType ?? "").toLowerCase();
-  const sf = (item.sourceForm ?? "").toLowerCase();
-  if (sf.includes("thebinmap") || st.includes("store_submission") || st.includes("listing_claim") || st.includes("alert_signup")) return "thebinmap";
-  if (sf.includes("qsl") || st.includes("qsl")) return "qsl";
-  if (sf.includes("therapist")) return "therapist_index";
+function brandOf(item: QueueItem): BrandFilter {
+  const form = (item.sourceForm ?? "").toLowerCase();
+  const type = (item.sourceType ?? "").toLowerCase();
+  if (form.includes("thebinmap")) return "thebinmap";
+  if (form.includes("qsl") || type.startsWith("qsl_")) return "qsl";
+  if (form.includes("therapist")) return "therapist_index";
+  if (type === "store_submission" || type === "listing_claim" || type === "alert_signup" || type === "newsletter_signup") {
+    return "thebinmap";
+  }
   return "unknown";
 }
 
-const BRAND_LABELS: Record<string, string> = {
-  thebinmap: "TheBinMap",
-  qsl: "QSL",
-  therapist_index: "TherapistIndex",
-  unknown: "—",
-};
+function isSuppressed(item: QueueItem): boolean {
+  return item.sortCategory === "spam_irrelevant" || item.sortCategory === "duplicate";
+}
 
-function filterItems(items: QueueItem[], filter: FilterName): QueueItem[] {
+function needsAttention(item: QueueItem): boolean {
+  if (isSuppressed(item)) return false;
+  if (item.status !== "todo") return false;
+  if (item.sortCategory === "unknown" || item.sortCategory === "incomplete") return true;
+  if (item.priority === "high" && !item.latestVerdict) return true;
+  if (item.replyActionStatus === "draft_needed") return true;
+  return false;
+}
+
+function hasDraftWork(item: QueueItem): boolean {
+  return Boolean(item.draftCandidateKind) || item.replyActionStatus === "draft_needed" || item.replyActionStatus === "draft_ready";
+}
+
+function hasDataQualityWork(item: QueueItem): boolean {
+  return item.recordCompleteness !== "complete" || item.missingFields.length > 0 || item.conflictingFields.length > 0;
+}
+
+function matchesWorkflow(item: QueueItem, filter: WorkflowFilter): boolean {
   switch (filter) {
-    case "all":
-      return items;
-    case "action_required":
-      return items.filter((i) =>
-        i.priority === "high" && i.status === "todo" && !i.latestVerdict);
-    case "forms_and_leads":
-      return items.filter((i) =>
-        (i.sourceType ?? "").match(/store_submission|listing_claim|qsl_risk_calc|qsl_security_review/));
-    case "listing_operations":
-      return items.filter((i) =>
-        (i.sourceType ?? "").match(/listing_claim|correction|contact/) &&
-        (i.sourceForm ?? "").includes("therapist_index"));
+    case "inbox":
+      return !isSuppressed(item) && item.status === "todo";
+    case "attention":
+      return needsAttention(item);
+    case "drafts":
+      return !isSuppressed(item) && hasDraftWork(item);
     case "needs_review":
-      return items.filter((i) => !i.latestVerdict && i.hasEvidence);
-    case "newsletters_promotions":
-      return items.filter((i) =>
-        (i.sourceType ?? "").match(/newsletter_signup|alert_signup|provider_marketing/));
-    case "system_notifications":
-      return items.filter((i) =>
-        (i.sourceType ?? "").match(/provider_marketing/) ||
-        (i.sourceForm ?? "").includes("therapist_index") && !(i.sourceType ?? "").match(/correction|removal/));
-    case "likely_spam":
-      return items.filter((i) =>
-        i.latestVerdict === "spam" || (i.sourceType ?? "") === "provider_marketing");
-    case "recently_reviewed":
-      return items.filter((i) => i.latestVerdict).slice(-30);
-    case "partial_data":
-      return items.filter((i) => i.recordCompleteness === "partial");
-    case "needs_source_check":
-      return items.filter((i) => i.recordCompleteness === "needs_source_verification");
-    case "thebinmap_brand":
-      return items.filter((i) => extractBrand(i) === "thebinmap");
-    case "qsl_brand":
-      return items.filter((i) => extractBrand(i) === "qsl");
-    case "therapist_index_brand":
-      return items.filter((i) => extractBrand(i) === "therapist_index");
+      return !isSuppressed(item) && !item.latestVerdict && item.hasEvidence;
+    case "submissions":
+      return item.sortCategory === "store_submission" || item.sortCategory === "incomplete";
+    case "correspondence":
+      return item.sortCategory === "general_email" || item.sortCategory === "reply_continuation";
+    case "data_quality":
+      return hasDataQualityWork(item);
+    case "suppressed":
+      return isSuppressed(item);
+    case "reviewed":
+      return Boolean(item.latestVerdict);
     default:
-      return items;
+      return true;
   }
+}
+
+function attentionScore(item: QueueItem): number {
+  let score = 0;
+  if (needsAttention(item)) score += 100;
+  if (item.priority === "high") score += 25;
+  if (item.sortCategory === "unknown") score += 20;
+  if (item.sortCategory === "incomplete") score += 15;
+  if (item.replyActionStatus === "draft_needed") score += 10;
+  if (item.recordCompleteness === "needs_source_verification") score += 8;
+  if (item.conflictingFields.length > 0) score += 5;
+  if (item.latestVerdict) score -= 30;
+  if (isSuppressed(item)) score -= 100;
+  return score;
+}
+
+function nextAction(item: QueueItem): string {
+  if (item.sortCategory === "spam_irrelevant") return "No action — suppressed";
+  if (item.sortCategory === "duplicate") return "No action — duplicate";
+  if (item.sortCategory === "unknown") return "Human triage";
+  if (item.sortCategory === "incomplete") {
+    return item.draftCandidateKind ? "Review clarification draft" : "Request missing information";
+  }
+  if (item.sortCategory === "reply_continuation") {
+    return item.draftCandidateKind ? "Review reply draft" : "Prepare reply";
+  }
+  if (item.sortCategory === "general_email") {
+    return item.draftCandidateKind ? "Review reply draft" : "Review correspondence";
+  }
+  if (item.sortCategory === "store_submission") {
+    if (!item.latestVerdict) return "Review submission";
+    return item.draftCandidateKind ? "Review acknowledgment" : "Reviewed";
+  }
+  if (item.latestVerdict) return "Reviewed";
+  return "Review";
+}
+
+function parseMailboxProfiles(config: EmailPluginConfigView | null | undefined): Array<{ key: string; username: string }> {
+  const profiles: Array<{ key: string; username: string }> = [];
+  if (config?.username) profiles.push({ key: "primary", username: config.username });
+  const raw = (config?.extraProfilesJson ?? "").trim();
+  if (!raw) return profiles;
+  try {
+    const extra = JSON.parse(raw) as Array<{ key?: unknown; username?: unknown }>;
+    for (let i = 0; i < extra.length; i += 1) {
+      const username = typeof extra[i]?.username === "string" ? extra[i].username.trim() : "";
+      if (!username) continue;
+      const key = typeof extra[i]?.key === "string" && extra[i].key.trim() ? extra[i].key.trim() : `extra-${i + 1}`;
+      profiles.push({ key, username });
+    }
+  } catch {
+    // Configuration validation lives in the worker. The console remains readable if JSON is malformed.
+  }
+  return profiles;
+}
+
+function categoryStyle(category: string | null): React.CSSProperties {
+  if (category === "store_submission") return { color: "#2980b9", background: "rgba(41,128,185,0.12)" };
+  if (category === "reply_continuation" || category === "general_email") return { color: "#7d3c98", background: "rgba(125,60,152,0.12)" };
+  if (category === "incomplete" || category === "unknown") return { color: "#b45f06", background: "rgba(230,126,34,0.14)" };
+  if (category === "spam_irrelevant" || category === "duplicate") return { color: "#666", background: "rgba(127,127,127,0.12)" };
+  return { color: "#555", background: "rgba(127,127,127,0.08)" };
+}
+
+function completenessStyle(value: string): React.CSSProperties {
+  if (value === "complete") return { color: "#1e8449", background: "rgba(39,174,96,0.12)" };
+  if (value === "partial") return { color: "#b45f06", background: "rgba(230,126,34,0.12)" };
+  return { color: "#b03a2e", background: "rgba(231,76,60,0.12)" };
 }
 
 export function StoreIntakePage({ context }: PluginPageProps) {
   const companyId = context.companyId;
   const { data, loading, error, refresh } = usePluginData<QueueItem[]>("intake-queue", { companyId });
+  const { data: configData } = usePluginData<EmailPluginConfigView | null>("plugin-config", { companyId });
   const { resolveHref } = useHostNavigation();
-  const [activeFilter, setActiveFilter] = useState<FilterName>("all");
+  const [activeFilter, setActiveFilter] = useState<WorkflowFilter>("attention");
+  const [brandFilter, setBrandFilter] = useState<BrandFilter>("all");
+  const [search, setSearch] = useState("");
 
-  const items: QueueItem[] = data ?? [];
-  const filtered = useMemo(() => filterItems(items, activeFilter), [items, activeFilter]);
+  const items = data ?? [];
+  const mailboxProfiles = useMemo(() => parseMailboxProfiles(configData), [configData]);
+
   const counts = useMemo(() => {
-    const c: Record<string, number> = {};
-    for (const f of FILTERS) {
-      c[f.key] = filterItems(items, f.key).length;
+    const result: Record<WorkflowFilter, number> = {
+      inbox: 0,
+      attention: 0,
+      drafts: 0,
+      needs_review: 0,
+      submissions: 0,
+      correspondence: 0,
+      data_quality: 0,
+      suppressed: 0,
+      reviewed: 0,
+    };
+    for (const item of items) {
+      for (const filter of FILTERS) {
+        if (matchesWorkflow(item, filter.key)) result[filter.key] += 1;
+      }
     }
-    return c;
+    return result;
   }, [items]);
 
+  const filtered = useMemo(() => {
+    const needle = search.trim().toLowerCase();
+    return items
+      .filter((item) => matchesWorkflow(item, activeFilter))
+      .filter((item) => brandFilter === "all" || brandOf(item) === brandFilter)
+      .filter((item) => {
+        if (!needle) return true;
+        const haystack = [
+          item.identifier,
+          item.title,
+          item.storeName,
+          item.sourceForm,
+          item.sourceType,
+          item.sortLabel,
+          item.sortCategory,
+          item.latestVerdict,
+        ]
+          .filter(Boolean)
+          .join(" ")
+          .toLowerCase();
+        return haystack.includes(needle);
+      })
+      .sort((a, b) => {
+        const score = attentionScore(b) - attentionScore(a);
+        if (score !== 0) return score;
+        return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
+      });
+  }, [items, activeFilter, brandFilter, search]);
+
   if (!companyId) {
-    return <div style={{ padding: 16, fontSize: 13, opacity: 0.7 }}>Select a company to view the intake queue.</div>;
+    return <div style={{ padding: 16, fontSize: 13, opacity: 0.7 }}>Select a company to view Email Operations.</div>;
   }
 
-  return (
-    <div style={{ padding: 16, fontSize: 13 }}>
-      <h2 style={{ fontWeight: 700, fontSize: 18, margin: "0 0 12px 0" }}>Email Intake Review</h2>
+  const connectorEnabled = configData?.enabled !== false;
+  const scheduled = configData?.scheduledPollingEnabled === true;
+  const outbound = configData?.outboundEnabled === true;
+  const markSeen = configData?.markSeen === true;
 
-      <div style={{ display: "flex", gap: 6, marginBottom: 16, flexWrap: "wrap" }}>
-        {FILTERS.map((f) => (
+  return (
+    <div style={{ padding: 16, fontSize: 13, display: "grid", gap: 14 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "flex-start", flexWrap: "wrap" }}>
+        <div>
+          <h2 style={{ fontWeight: 700, fontSize: 20, margin: 0 }}>Email Operations</h2>
+          <div style={{ marginTop: 4, opacity: 0.7, maxWidth: 760 }}>
+            Governed intake for this company. Sort everything, suppress low-value traffic, and surface only the messages that need action, review, or human judgment.
+          </div>
+        </div>
+        <button style={buttonStyle} onClick={() => refresh()}>Refresh queue</button>
+      </div>
+
+      <div style={systemBarStyle}>
+        <span><strong>Connector:</strong> {connectorEnabled ? "enabled" : "disabled"}</span>
+        <span><strong>Polling:</strong> {scheduled ? "scheduled" : "manual only"}</span>
+        <span><strong>Mailbox state:</strong> {markSeen ? "may mark seen" : "read-only"}</span>
+        <span><strong>Outbound:</strong> {outbound ? "Board send enabled" : "locked"}</span>
+        <span><strong>Mailboxes:</strong> {mailboxProfiles.length || 0}</span>
+        {configData?.intakeSince ? <span><strong>Boundary:</strong> {configData.intakeSince}</span> : null}
+      </div>
+
+      {mailboxProfiles.length > 0 ? (
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
+          <span style={{ fontWeight: 600, opacity: 0.75 }}>Configured mailbox profiles</span>
+          {mailboxProfiles.map((profile) => (
+            <span key={`${profile.key}:${profile.username}`} style={mailboxPillStyle} title={profile.username}>
+              {profile.key}: {profile.username}
+            </span>
+          ))}
+        </div>
+      ) : null}
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 8 }}>
+        <SummaryCard label="Needs attention" value={counts.attention} detail="Escalate or act" emphasis />
+        <SummaryCard label="Draft work" value={counts.drafts} detail="Candidates or replies" />
+        <SummaryCard label="Needs review" value={counts.needs_review} detail="No human verdict yet" />
+        <SummaryCard label="Suppressed" value={counts.suppressed} detail="Spam + duplicates" />
+      </div>
+
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+        <input
+          value={search}
+          onChange={(event) => setSearch(event.target.value)}
+          placeholder="Search subject, ID, source, store..."
+          style={searchStyle}
+        />
+        <select value={brandFilter} onChange={(event) => setBrandFilter(event.target.value as BrandFilter)} style={selectStyle}>
+          {(Object.keys(BRAND_LABELS) as BrandFilter[]).map((key) => (
+            <option key={key} value={key}>{BRAND_LABELS[key]}</option>
+          ))}
+        </select>
+      </div>
+
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+        {FILTERS.map((filter) => (
           <button
-            key={f.key}
-            onClick={() => setActiveFilter(f.key)}
+            key={filter.key}
+            onClick={() => setActiveFilter(filter.key)}
             style={{
-              padding: "4px 12px",
-              borderRadius: 6,
-              border: "1px solid rgba(127,127,127,0.35)",
-              cursor: "pointer",
-              fontWeight: activeFilter === f.key ? 700 : 400,
-              background: activeFilter === f.key ? "rgba(41,128,185,0.12)" : "transparent",
-              fontSize: 13,
+              ...filterButtonStyle,
+              fontWeight: activeFilter === filter.key ? 700 : 500,
+              background: activeFilter === filter.key ? "rgba(41,128,185,0.12)" : "transparent",
             }}
           >
-            {f.label} ({counts[f.key] ?? 0})
+            {filter.label} ({counts[filter.key]})
           </button>
         ))}
       </div>
 
-      {loading && <div style={{ opacity: 0.7 }}>Loading intake queue...</div>}
-      {error && <div style={{ color: "#c0392b", fontSize: 12 }}>Error: {error.message}</div>}
+      {loading ? <div style={{ opacity: 0.7 }}>Loading Email Operations...</div> : null}
+      {error ? <div style={{ color: "#c0392b", fontSize: 12 }}>Error: {error.message}</div> : null}
 
-      {!loading && !error && filtered.length === 0 && (
-        <div style={{ opacity: 0.7, padding: "20px 0" }}>No items match this filter.</div>
-      )}
+      {!loading && !error && filtered.length === 0 ? (
+        <div style={{ opacity: 0.7, padding: "24px 0" }}>No messages match the current view.</div>
+      ) : null}
 
-      {filtered.length > 0 && (
-        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
-          <thead>
-            <tr style={{ textAlign: "left", borderBottom: "1px solid rgba(127,127,127,0.25)" }}>
-              <th style={thStyle}>ID</th>
-              <th style={thStyle}>Brand</th>
-              <th style={thStyle}>Intake Type</th>
-              <th style={thStyle}>Subject / Store</th>
-              <th style={thStyle}>Source Data</th>
-              <th style={thStyle}>Transport</th>
-              <th style={thStyle}>Priority</th>
-              <th style={thStyle}>Review</th>
-              <th style={thStyle}>Dup</th>
-              <th style={thStyle}>Received</th>
-            </tr>
-          </thead>
-          <tbody>
-            {filtered.map((item) => {
-              const issueHref = context.companyPrefix
-                ? resolveHref(`/${context.companyPrefix}/issues/${item.issueId}`)
-                : `#issues/${item.issueId}`;
+      {filtered.length > 0 ? (
+        <div style={{ overflowX: "auto" }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, minWidth: 980 }}>
+            <thead>
+              <tr style={{ textAlign: "left", borderBottom: "1px solid rgba(127,127,127,0.25)" }}>
+                <th style={thStyle}>ID</th>
+                <th style={thStyle}>Portfolio</th>
+                <th style={thStyle}>Sorted as</th>
+                <th style={thStyle}>Subject / entity</th>
+                <th style={thStyle}>Next action</th>
+                <th style={thStyle}>Evidence</th>
+                <th style={thStyle}>Review</th>
+                <th style={thStyle}>Received</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filtered.map((item) => {
+                const issueHref = context.companyPrefix
+                  ? resolveHref(`/${context.companyPrefix}/issues/${item.issueId}`)
+                  : `#issues/${item.issueId}`;
+                const brand = brandOf(item);
+                const displayTitle = item.storeName || item.title.replace(/^\[.*?\]\s*/, "");
+                const category = item.sortCategory;
 
-              const brand = extractBrand(item);
-              const displayTitle = item.storeName || item.title.replace(/^\[.*?\]\s*/, "");
-
-              return (
-                <tr
-                  key={item.issueId}
-                  style={{ borderBottom: "1px solid rgba(127,127,127,0.12)", cursor: "pointer" }}
-                  onClick={() => {
-                    window.location.href = issueHref;
-                  }}
-                >
-                  <td style={tdStyle}>
-                    <a href={issueHref} style={{ textDecoration: "none", fontWeight: 600 }}>
-                      {item.identifier || item.issueId.slice(0, 8)}
-                    </a>
-                  </td>
-                  <td style={tdStyle}>
-                    <span style={{
-                      fontSize: 11,
-                      fontWeight: 500,
-                      opacity: brand === "unknown" ? 0.5 : 1,
-                    }}>
-                      {BRAND_LABELS[brand] || brand}
-                    </span>
-                  </td>
-                  <td style={tdStyle}>
-                    <span style={{
-                      padding: "1px 6px",
-                      borderRadius: 3,
-                      fontSize: 11,
-                      fontWeight: 600,
-                      background:
-                        (item.sourceType ?? "").match(/store_submission|listing_claim/) ? "rgba(41,128,185,0.12)"
-                        : (item.sourceType ?? "").match(/qsl_risk_calc|qsl_security_review/) ? "rgba(142,68,173,0.12)"
-                        : (item.sourceType ?? "").match(/newsletter_signup|alert_signup|provider_marketing/) ? "rgba(127,127,127,0.12)"
-                        : "rgba(127,127,127,0.08)",
-                      color:
-                        (item.sourceType ?? "").match(/store_submission|listing_claim/) ? "#2980b9"
-                        : (item.sourceType ?? "").match(/qsl_risk_calc|qsl_security_review/) ? "#8e44ad"
-                        : "#555",
-                    }}>
-                      {(item.sourceType || "—").replace(/_/g, " ")}
-                    </span>
-                  </td>
-                  <td style={{ ...tdStyle, maxWidth: 200, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                    {displayTitle || <span style={{ opacity: 0.5 }}>—</span>}
-                  </td>
-                  <td style={tdStyle}>
-                    <span style={{
-                      display: "inline-block",
-                      padding: "2px 8px",
-                      borderRadius: 4,
-                      fontSize: 11,
-                      fontWeight: 600,
-                      color: completenessColor(item.recordCompleteness),
-                      background: completenessBg(item.recordCompleteness),
-                    }}>
-                      {COMPLETENESS_LABELS[item.recordCompleteness] || item.recordCompleteness}
-                    </span>
-                    {item.missingFields.length > 0 && (
-                      <span style={{ fontSize: 10, opacity: 0.6, marginLeft: 4 }}>
-                        missing: {item.missingFields.slice(0, 2).join(", ")}
-                        {item.missingFields.length > 2 ? ` +${item.missingFields.length - 2}` : ""}
+                return (
+                  <tr
+                    key={item.issueId}
+                    style={{ borderBottom: "1px solid rgba(127,127,127,0.12)", cursor: "pointer" }}
+                    onClick={() => { window.location.href = issueHref; }}
+                  >
+                    <td style={tdStyle}>
+                      <a href={issueHref} style={{ textDecoration: "none", fontWeight: 700 }} onClick={(event) => event.stopPropagation()}>
+                        {item.identifier || item.issueId.slice(0, 8)}
+                      </a>
+                    </td>
+                    <td style={tdStyle}>
+                      <span style={{ fontSize: 11, fontWeight: 600, opacity: brand === "unknown" ? 0.5 : 1 }}>
+                        {BRAND_LABELS[brand]}
                       </span>
-                    )}
-                    {item.conflictingFields.length > 0 && (
-                      <span style={{ fontSize: 10, color: "#e74c3c", marginLeft: 4 }}>
-                        !{item.conflictingFields.length}
+                    </td>
+                    <td style={tdStyle}>
+                      <span style={{ ...badgeStyle, ...categoryStyle(category) }}>
+                        {item.sortLabel || category?.replace(/_/g, " ") || item.sourceType?.replace(/_/g, " ") || "Unsorted"}
                       </span>
-                    )}
-                  </td>
-                  <td style={tdStyle}>
-                    <span style={{
-                      padding: "2px 8px",
-                      borderRadius: 4,
-                      fontSize: 11,
-                      fontWeight: 600,
-                      color: transportColor(item.intakeTransport),
-                      background: transportColor(item.intakeTransport) + "1a",
-                    }}>
-                      {TRANSPORT_LABELS[item.intakeTransport] || item.intakeTransport}
-                    </span>
-                  </td>
-                  <td style={tdStyle}>
-                    {item.priority === "high" ? (
-                      <span style={{
-                        padding: "1px 6px",
-                        borderRadius: 3,
-                        fontSize: 11,
-                        fontWeight: 600,
-                        background: "rgba(230,126,34,0.15)",
-                        color: "#c05610",
-                      }}>{item.priority}</span>
-                    ) : item.priority === "low" ? (
-                      <span style={{ fontSize: 11, opacity: 0.5 }}>{item.priority}</span>
-                    ) : (
-                      <span style={{ fontSize: 11, opacity: 0.7 }}>{item.priority}</span>
-                    )}
-                  </td>
-                  <td style={tdStyle}>
-                    {item.latestVerdict
-                      ? <span style={{
-                          fontWeight: 500,
-                          fontSize: 11,
-                          color: item.latestVerdict === "genuine_external" ? "#27ae60"
-                            : item.latestVerdict === "spam" ? "#e74c3c"
-                            : item.latestVerdict === "duplicate" ? "#e67e22"
-                            : "#555",
-                        }}>{VERDICT_LABELS[item.latestVerdict] || item.latestVerdict}</span>
-                      : <span style={{ opacity: 0.4, fontSize: 11 }}>—</span>}
-                  </td>
-                  <td style={tdStyle}>
-                    {item.duplicateCount > 0
-                      ? <span style={{ fontWeight: 600, fontSize: 11, color: item.duplicateStrength === "strong" ? "#c05610" : "#555" }}>{item.duplicateCount}</span>
-                      : <span style={{ opacity: 0.4 }}>—</span>}
-                  </td>
-                  <td style={tdStyle}>
-                    <span style={{ fontSize: 11, opacity: 0.7 }}>
-                      {new Date(item.createdAt).toLocaleDateString()}
-                    </span>
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      )}
+                    </td>
+                    <td style={{ ...tdStyle, maxWidth: 280 }}>
+                      <div style={{ fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={displayTitle}>
+                        {displayTitle || "—"}
+                      </div>
+                      <div style={{ marginTop: 2, fontSize: 10, opacity: 0.55 }}>
+                        {item.sourceForm || item.sourceType || "unknown source"}
+                      </div>
+                    </td>
+                    <td style={tdStyle}>
+                      <div style={{ fontWeight: needsAttention(item) ? 700 : 500 }}>{nextAction(item)}</div>
+                      {item.draftCandidateKind ? (
+                        <div style={{ marginTop: 2, fontSize: 10, opacity: 0.6 }}>draft: {item.draftCandidateKind.replace(/_/g, " ")}</div>
+                      ) : null}
+                    </td>
+                    <td style={tdStyle}>
+                      <span style={{ ...badgeStyle, ...completenessStyle(item.recordCompleteness) }}>
+                        {COMPLETENESS_LABELS[item.recordCompleteness] || item.recordCompleteness}
+                      </span>
+                      <div style={{ marginTop: 3, fontSize: 10, opacity: 0.58 }}>
+                        {TRANSPORT_LABELS[item.intakeTransport] || item.intakeTransport}
+                        {item.missingFields.length ? ` · ${item.missingFields.length} missing` : ""}
+                        {item.conflictingFields.length ? ` · ${item.conflictingFields.length} conflict` : ""}
+                      </div>
+                    </td>
+                    <td style={tdStyle}>
+                      {item.latestVerdict ? (
+                        <span style={{ fontWeight: 600, fontSize: 11 }}>
+                          {VERDICT_LABELS[item.latestVerdict] || item.latestVerdict}
+                        </span>
+                      ) : (
+                        <span style={{ opacity: 0.45, fontSize: 11 }}>Not reviewed</span>
+                      )}
+                    </td>
+                    <td style={tdStyle}>
+                      <span style={{ fontSize: 11, opacity: 0.7 }} title={new Date(item.createdAt).toLocaleString()}>
+                        {new Date(item.createdAt).toLocaleDateString()}
+                      </span>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      ) : null}
 
-      <div style={{ marginTop: 12, opacity: 0.6, fontSize: 11 }}>
-        {items.length} intake record{items.length !== 1 ? "s" : ""} total ·
-        {counts.action_required} action required ·
-        {counts.needs_review} unreviewed ·
-        {counts.partial_data} partial ·
-        {counts.needs_source_check} needs source check
+      <div style={{ opacity: 0.58, fontSize: 11 }}>
+        Showing {filtered.length} of {items.length} intake records. Company isolation is enforced by the page context. Mailbox profile identity is preserved on each issue’s Email record; queue-level mailbox filtering will be added when that identity is promoted into the queue contract.
       </div>
     </div>
   );
 }
 
-const thStyle: React.CSSProperties = { padding: "6px 8px", fontWeight: 600, opacity: 0.75 };
-const tdStyle: React.CSSProperties = { padding: "6px 8px" };
+function SummaryCard({ label, value, detail, emphasis = false }: { label: string; value: number; detail: string; emphasis?: boolean }) {
+  return (
+    <div style={{
+      border: "1px solid rgba(127,127,127,0.28)",
+      borderRadius: 8,
+      padding: "10px 12px",
+      background: emphasis && value > 0 ? "rgba(230,126,34,0.08)" : "transparent",
+    }}>
+      <div style={{ fontSize: 11, opacity: 0.65 }}>{label}</div>
+      <div style={{ fontSize: 22, lineHeight: 1.2, fontWeight: 750, marginTop: 2 }}>{value}</div>
+      <div style={{ fontSize: 10, opacity: 0.55, marginTop: 2 }}>{detail}</div>
+    </div>
+  );
+}
+
+const thStyle: React.CSSProperties = { padding: "7px 8px", fontWeight: 650, opacity: 0.72, whiteSpace: "nowrap" };
+const tdStyle: React.CSSProperties = { padding: "8px" };
+const badgeStyle: React.CSSProperties = { display: "inline-block", padding: "2px 7px", borderRadius: 4, fontSize: 11, fontWeight: 650 };
+const buttonStyle: React.CSSProperties = { padding: "6px 12px", borderRadius: 6, border: "1px solid rgba(127,127,127,0.4)", cursor: "pointer", background: "transparent", fontWeight: 600 };
+const filterButtonStyle: React.CSSProperties = { padding: "4px 10px", borderRadius: 6, border: "1px solid rgba(127,127,127,0.3)", cursor: "pointer", fontSize: 12 };
+const searchStyle: React.CSSProperties = { minWidth: 280, flex: "1 1 320px", padding: "7px 9px", borderRadius: 6, border: "1px solid rgba(127,127,127,0.35)", background: "transparent", color: "inherit" };
+const selectStyle: React.CSSProperties = { padding: "7px 9px", borderRadius: 6, border: "1px solid rgba(127,127,127,0.35)", background: "transparent", color: "inherit" };
+const systemBarStyle: React.CSSProperties = { display: "flex", gap: "8px 16px", flexWrap: "wrap", padding: "8px 10px", borderRadius: 7, background: "rgba(127,127,127,0.07)", fontSize: 11 };
+const mailboxPillStyle: React.CSSProperties = { padding: "2px 7px", borderRadius: 12, border: "1px solid rgba(127,127,127,0.3)", fontSize: 10, opacity: 0.8 };
