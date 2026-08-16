@@ -5,9 +5,9 @@ const manifest: PaperclipPluginManifestV1 = {
   id: PLUGIN_ID,
   apiVersion: 1,
   version: PLUGIN_VERSION,
-  displayName: "Email Connector (QSL)",
+  displayName: "Email Operations (QSL)",
   description:
-    "Governed email intake and reply for the QSL Email Company. IMAP poll creates triage issues from inbound mail; the Board sends approved drafts via a Board-invoked action. Agents have no send capability by construction.",
+    "Governed portfolio email intake and reply operations. IMAP intake creates reviewable work, deterministic sorting suppresses low-value traffic, and outbound effects remain human-authorized.",
   author: "QuantumShield Labs",
   categories: ["connector", "automation"],
   capabilities: [
@@ -36,7 +36,7 @@ const manifest: PaperclipPluginManifestV1 = {
   },
   instanceConfigSchema: {
     type: "object",
-    description: "Company-scoped connector settings. Configure once per company that operates email (set via plugin settings for the Email company).",
+    description: "Company-scoped Email Operations settings. Configure independently for each portfolio company that operates email.",
     properties: {
       enabled: {
         type: "boolean",
@@ -76,7 +76,7 @@ const manifest: PaperclipPluginManifestV1 = {
       username: {
         type: "string",
         title: "Mailbox Username",
-        description: "IMAP/SMTP username (for Gmail: the full address).",
+        description: "Primary IMAP/SMTP username (for Gmail: the full address).",
       },
       credentialSecretRef: {
         type: "object",
@@ -119,9 +119,9 @@ const manifest: PaperclipPluginManifestV1 = {
       },
       extraProfilesJson: {
         type: "string",
-        title: "Additional Connector Profiles (JSON)",
+        title: "Additional Mailbox Profiles (JSON)",
         description:
-          "Optional JSON array of additional mailbox profiles (same fields as above plus `key`). Future multi-mailbox capability; the engine and loop are identical per profile.",
+          "Optional JSON array of additional mailbox profiles plus `key`. Current v1 profiles share the company-level credential, so use this only for aliases or mailboxes in the same credential group. Independent per-profile credentials are a future contract upgrade.",
         default: DEFAULTS.extraProfilesJson,
       },
       storeExportPath: {
@@ -166,7 +166,7 @@ const manifest: PaperclipPluginManifestV1 = {
       {
         type: "page",
         id: SLOT_IDS.storeIntakePage,
-        displayName: "Store Intake Review",
+        displayName: "Email Operations",
         exportName: EXPORT_NAMES.storeIntakePage,
       },
       {
