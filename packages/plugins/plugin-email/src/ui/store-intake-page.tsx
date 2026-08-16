@@ -31,12 +31,23 @@ type QueueItem = {
   sortLabel: string | null;
   replyActionStatus: string | null;
   draftCandidateKind: string | null;
+  profileKey: string | null;
+  mailboxUsername: string | null;
+  fromAddress: string | null;
+  to: string | null;
+  messageSubject: string | null;
+  messageDate: string | null;
 };
 
 type EmailPluginConfigView = {
   enabled?: boolean;
   scheduledPollingEnabled?: boolean;
   outboundEnabled?: boolean;
+  mailboxProfiles?: Array<{
+    key?: string;
+    username?: string;
+    status?: "active" | "standby" | "reserved";
+  }>;
   username?: string;
   extraProfilesJson?: string;
   markSeen?: boolean;
@@ -210,9 +221,20 @@ function nextAction(item: QueueItem): string {
 
 function parseMailboxProfiles(
   config: EmailPluginConfigView | null | undefined,
-): Array<{ key: string; username: string }> {
-  const profiles: Array<{ key: string; username: string }> = [];
-  if (config?.username) profiles.push({ key: "primary", username: config.username });
+): Array<{ key: string; username: string; status: "active" | "standby" | "reserved" }> {
+  const structured = Array.isArray(config?.mailboxProfiles) ? config.mailboxProfiles : [];
+  if (structured.length > 0) {
+    return structured.flatMap((entry) => {
+      const key = typeof entry?.key === "string" ? entry.key.trim() : "";
+      const username = typeof entry?.username === "string" ? entry.username.trim() : "";
+      if (!key || !username) return [];
+      const status = entry.status === "active" || entry.status === "reserved" ? entry.status : "standby";
+      return [{ key, username, status }];
+    });
+  }
+
+  const profiles: Array<{ key: string; username: string; status: "active" | "standby" | "reserved" }> = [];
+  if (config?.username) profiles.push({ key: "primary", username: config.username, status: "active" });
 
   const raw = (config?.extraProfilesJson ?? "").trim();
   if (!raw) return profiles;
@@ -234,7 +256,7 @@ function parseMailboxProfiles(
       const key = typeof keyValue === "string" && keyValue.trim()
         ? keyValue.trim()
         : `extra-${i + 1}`;
-      profiles.push({ key, username });
+      profiles.push({ key, username, status: "active" });
     }
   } catch {
     // Worker-side validation owns config errors. Keep the console readable.
@@ -260,12 +282,16 @@ function completenessStyle(value: string): CSSProperties {
 
 export function StoreIntakePage({ context }: PluginPageProps) {
   const companyId = context.companyId;
-  const { data, loading, error, refresh } = usePluginData<QueueItem[]>("intake-queue", { companyId });
-  const { data: configData } = usePluginData<EmailPluginConfigView | null>("plugin-config", { companyId });
-  const { resolveHref } = useHostNavigation();
   const [activeFilter, setActiveFilter] = useState<WorkflowFilter>("attention");
   const [brandFilter, setBrandFilter] = useState<BrandFilter>("all");
+  const [mailboxFilter, setMailboxFilter] = useState("all");
   const [search, setSearch] = useState("");
+  const { data, loading, error, refresh } = usePluginData<QueueItem[]>("intake-queue", {
+    companyId,
+    ...(mailboxFilter !== "all" ? { profileKey: mailboxFilter } : {}),
+  });
+  const { data: configData } = usePluginData<EmailPluginConfigView | null>("plugin-config", { companyId });
+  const { resolveHref } = useHostNavigation();
 
   const items = data ?? [];
   const mailboxProfiles = useMemo(() => parseMailboxProfiles(configData), [configData]);
@@ -308,6 +334,10 @@ export function StoreIntakePage({ context }: PluginPageProps) {
           item.sortLabel,
           item.sortCategory,
           item.latestVerdict,
+          item.profileKey,
+          item.mailboxUsername,
+          item.fromAddress,
+          item.to,
         ]
           .filter((value): value is string => typeof value === "string")
           .join(" ")
@@ -329,6 +359,7 @@ export function StoreIntakePage({ context }: PluginPageProps) {
   const scheduled = configData?.scheduledPollingEnabled === true;
   const outbound = configData?.outboundEnabled === true;
   const markSeen = configData?.markSeen === true;
+  const activeMailboxCount = mailboxProfiles.filter((profile) => profile.status === "active").length;
 
   return (
     <div style={{ padding: 16, fontSize: 13, display: "grid", gap: 14 }}>
@@ -347,7 +378,7 @@ export function StoreIntakePage({ context }: PluginPageProps) {
         <span><strong>Polling:</strong> {scheduled ? "scheduled" : "manual only"}</span>
         <span><strong>Mailbox state:</strong> {markSeen ? "may mark seen" : "read-only"}</span>
         <span><strong>Outbound:</strong> {outbound ? "Board send enabled" : "locked"}</span>
-        <span><strong>Mailboxes:</strong> {mailboxProfiles.length}</span>
+        <span><strong>Mailboxes:</strong> {mailboxProfiles.length} ({activeMailboxCount} active)</span>
         {configData?.intakeSince ? <span><strong>Boundary:</strong> {configData.intakeSince}</span> : null}
       </div>
 
@@ -356,7 +387,7 @@ export function StoreIntakePage({ context }: PluginPageProps) {
           <span style={{ fontWeight: 600, opacity: 0.75 }}>Configured mailbox profiles</span>
           {mailboxProfiles.map((profile) => (
             <span key={`${profile.key}:${profile.username}`} style={mailboxPillStyle} title={profile.username}>
-              {profile.key}: {profile.username}
+              {profile.key}: {profile.username} · {profile.status}
             </span>
           ))}
         </div>
@@ -379,6 +410,12 @@ export function StoreIntakePage({ context }: PluginPageProps) {
         <select value={brandFilter} onChange={(event) => setBrandFilter(event.target.value as BrandFilter)} style={selectStyle}>
           {BRAND_OPTIONS.map((option) => (
             <option key={option.key} value={option.key}>{option.label}</option>
+          ))}
+        </select>
+        <select value={mailboxFilter} onChange={(event) => setMailboxFilter(event.target.value)} style={selectStyle}>
+          <option value="all">All mailboxes</option>
+          {mailboxProfiles.map((profile) => (
+            <option key={profile.key} value={profile.key}>{profile.username} · {profile.status}</option>
           ))}
         </select>
       </div>
@@ -408,11 +445,12 @@ export function StoreIntakePage({ context }: PluginPageProps) {
 
       {filtered.length > 0 ? (
         <div style={{ overflowX: "auto" }}>
-          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, minWidth: 980 }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, minWidth: 1120 }}>
             <thead>
               <tr style={{ textAlign: "left", borderBottom: "1px solid rgba(127,127,127,0.25)" }}>
                 <th style={thStyle}>ID</th>
                 <th style={thStyle}>Portfolio</th>
+                <th style={thStyle}>Mailbox</th>
                 <th style={thStyle}>Sorted as</th>
                 <th style={thStyle}>Subject / entity</th>
                 <th style={thStyle}>Next action</th>
@@ -446,6 +484,14 @@ export function StoreIntakePage({ context }: PluginPageProps) {
                       </span>
                     </td>
                     <td style={tdStyle}>
+                      <div style={{ fontSize: 11, fontWeight: 600 }} title={item.mailboxUsername || item.profileKey || undefined}>
+                        {item.mailboxUsername || item.profileKey || "Unknown"}
+                      </div>
+                      {item.profileKey && item.mailboxUsername ? (
+                        <div style={{ marginTop: 2, fontSize: 10, opacity: 0.5 }}>{item.profileKey}</div>
+                      ) : null}
+                    </td>
+                    <td style={tdStyle}>
                       <span style={{ ...badgeStyle, ...categoryStyle(item.sortCategory) }}>
                         {item.sortLabel || item.sortCategory?.replace(/_/g, " ") || item.sourceType?.replace(/_/g, " ") || "Unsorted"}
                       </span>
@@ -455,7 +501,7 @@ export function StoreIntakePage({ context }: PluginPageProps) {
                         {displayTitle || "—"}
                       </div>
                       <div style={{ marginTop: 2, fontSize: 10, opacity: 0.55 }}>
-                        {item.sourceForm || item.sourceType || "unknown source"}
+                        {item.fromAddress ? "from " + item.fromAddress : item.sourceForm || item.sourceType || "unknown source"}
                       </div>
                     </td>
                     <td style={tdStyle}>
@@ -503,7 +549,7 @@ export function StoreIntakePage({ context }: PluginPageProps) {
       ) : null}
 
       <div style={{ opacity: 0.58, fontSize: 11 }}>
-        Showing {filtered.length} of {items.length} intake records. Company isolation is enforced by the page context. Mailbox profile identity is preserved on each issue’s Email record; queue-level mailbox filtering will be added when that identity is promoted into the queue contract.
+        Showing {filtered.length} of {items.length} intake records for the selected mailbox scope. Company isolation is enforced by the page context; mailbox identity and filtering are first-class queue fields.
       </div>
     </div>
   );
