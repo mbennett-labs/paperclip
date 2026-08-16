@@ -1,0 +1,49 @@
+name: Email Operations Validation
+
+on:
+  push:
+    branches:
+      - feat/email-operations-console-v1
+
+permissions:
+  contents: read
+
+concurrency:
+  group: email-operations-validation
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          version: 9.15.4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck email plugin
+        run: pnpm --filter @qsl/plugin-email typecheck
+
+      - name: Test email plugin
+        working-directory: packages/plugins/plugin-email
+        run: pnpm exec vitest run
+
+      - name: Build email plugin
+        run: pnpm --filter @qsl/plugin-email build
+
+      - name: Build Paperclip UI
+        run: pnpm --filter @paperclipai/ui build
