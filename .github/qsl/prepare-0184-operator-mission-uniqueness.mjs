@@ -65,3 +65,4 @@ journal.entries.push({
 await writeFile(journalPath, `${JSON.stringify(journal, null, 2)}\n`);
 
 console.log('Prepared 0184 operator mission uniqueness migration and schema metadata.');
+// Retry marker: rerun from the post-evidence branch head after the first push was correctly rejected as non-fast-forward.
