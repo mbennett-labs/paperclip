@@ -1,0 +1,61 @@
+name: Email Ops Mailbox Final Validation
+
+on:
+  push:
+    branches:
+      - feat/email-operations-mailbox-identity-v1
+
+permissions:
+  contents: write
+
+jobs:
+  finalize-validate-commit:
+    if: ${{ !contains(github.event.head_commit.message, '[email-mailbox-final-validated]') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout feature branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Setup pnpm
+        run: |
+          corepack enable
+          corepack prepare pnpm@9.15.4 --activate
+
+      - name: Install workspace
+        run: pnpm install --frozen-lockfile
+
+      - name: Refresh canonical Email Operations architecture doc
+        run: node scripts/email-ops-mailbox-doc-finalize.mjs
+
+      - name: Email plugin typecheck
+        run: pnpm --filter @qsl/plugin-email typecheck
+
+      - name: Email plugin tests
+        working-directory: packages/plugins/plugin-email
+        run: pnpm exec vitest run
+
+      - name: Email plugin build
+        run: pnpm --filter @qsl/plugin-email build
+
+      - name: Paperclip UI build
+        run: pnpm --filter @paperclipai/ui build
+
+      - name: Verify final diff and commit validated doc refresh
+        run: |
+          git diff --check
+          git rm scripts/email-ops-mailbox-doc-finalize.mjs .github/workflows/email-ops-mailbox-final-validation.yml
+          git add doc/plans/2026-08-06-email-intake-source-of-truth.md
+          git diff --cached --check
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "docs(email): finalize governed multi-mailbox contract [email-mailbox-final-validated]"
+          git push origin HEAD:feat/email-operations-mailbox-identity-v1
