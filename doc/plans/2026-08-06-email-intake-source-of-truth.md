@@ -32,12 +32,15 @@ The UI must consume the persisted `intake-sort-result` contract rather than recr
 - `store_submission`
 - `general_email`
 - `reply_continuation`
+- `system_notification`
 - `spam_irrelevant`
 - `duplicate`
 - `incomplete`
 - `unknown`
 
-The console may build operational views such as Needs Attention, Draft Work, Needs Review, Submissions, Correspondence, Data Quality, Suppressed, and Reviewed, but those views are projections over the persisted sort result rather than a second classifier.
+`system_notification` is an explicit non-reply category for deterministic operational events such as subscription events and recognized internal/site notifications. It is **not** synonymous with junk or low importance: a high-priority operational event may still surface in Needs Attention, but it does not create reply work merely because it arrived over email.
+
+The console may build operational views such as Needs Attention, Draft Work, Needs Review, Submissions, Correspondence, Notifications, Data Quality, Suppressed, and Reviewed, but those views are projections over the persisted sort result rather than a second classifier.
 
 ### Human attention is the scarce resource
 
@@ -46,16 +49,19 @@ The Email Operations page should answer, in order:
 1. What actually needs attention?
 2. What can be safely suppressed or ignored?
 3. What has a draft candidate ready for review?
-4. What still lacks a human verdict?
-5. What evidence is incomplete, conflicting, or provisional?
+4. Which operational notifications should be routed or monitored without a reply?
+5. What still lacks a human verdict?
+6. What evidence is incomplete, conflicting, or provisional?
 
-Routine provider marketing and deterministic duplicates should not compete visually with customer, registration, operational, security, or commercial messages.
+Routine provider marketing and deterministic duplicates should not compete visually with customer, registration, operational, security, or commercial messages. Likewise, deterministic system notifications should not manufacture unnecessary reply drafts or human-verdict work.
 
 ### Outbound authority remains separate
 
 Draft creation and message sending remain different actions. A draft candidate is evidence/work product, not authority to communicate externally.
 
 Default draft candidates must be **portfolio-neutral**. Venture-specific voice, signatures, legal language, and automatic-response policies belong in an explicitly selected company/template policy. No company name may be silently hard-coded into a shared default draft generator.
+
+System notifications are blocked from draft generation. Explicit reply headers take precedence over system-notification routing, so a real human continuation of a thread remains reply work.
 
 Automated sending remains outside this operationalization step.
 
@@ -74,9 +80,10 @@ Queue-level mailbox filtering is intentionally deferred until `profileKey` is pr
 5. **Duplicate matching against known store database** — ingested submissions are compared against the configured store export.
 6. **Append-only human review with verdicts and operational outcomes**.
 7. **Deduplicated intake notifications** for high-priority store submissions.
-8. **Deterministic final sorting** — intake records persist a seven-category sort result and reply-action status.
-9. **Safe draft candidates** — eligible records can produce draft candidates without sending or granting outbound authority.
-10. **Company-scoped Email Operations console** — the queue surfaces attention, draft, review, evidence-quality, portfolio-brand, and suppression views from the persisted intake state.
+8. **Deterministic final sorting** — intake records persist an eight-category sort result and reply-action status.
+9. **System-notification boundary** — recognized operational notifications remain visible evidence but do not generate reply drafts; real reply headers still override this routing.
+10. **Safe draft candidates** — eligible correspondence can produce draft candidates without sending or granting outbound authority.
+11. **Company-scoped Email Operations console** — the queue surfaces attention, draft, notification, review, evidence-quality, portfolio-brand, and suppression views from persisted intake state.
 
 ## What Remains Provisional
 
@@ -87,6 +94,7 @@ Queue-level mailbox filtering is intentionally deferred until `profileKey` is pr
 5. **Per-profile credentials are not implemented** — current additional profiles share one company credential.
 6. **Queue-level mailbox filtering is not implemented** — `profileKey` remains on the issue Email record until the queue contract is extended.
 7. **Venture-specific outbound templates are not implemented** — default draft candidates are deliberately portfolio-neutral.
+8. **TherapistIndex registration/office-event subtypes are not yet modeled** — exact deterministic rules should be added only after representative real messages are captured. Do not infer those formats from unrelated mail.
 
 ## What Requires Provider Webhook/API or WordPress Integration
 
@@ -141,22 +149,26 @@ Queue-level mailbox filtering is intentionally deferred until `profileKey` is pr
 5. **Fingerprint-based correlation** — canonical payload fingerprints allow matching across providers without relying on provider-specific IDs.
 6. **Company-scoped operation** — portfolio companies reuse the same worker and UI with independent config/state boundaries.
 7. **Neutral default drafting** — shared draft generation cannot accidentally impersonate another portfolio company.
+8. **Operational notifications are separate from correspondence** — adding new site/business events does not automatically expand outbound email behavior.
 
 ## What Has Been Implemented
 
 ### New Files
 - `packages/plugins/plugin-email/src/mail/intake-metadata.ts` — IntakeTransport, RecordCompleteness, EvidenceSource, IntakeMetadata types with merge, conflict detection, and completeness computation
 - `packages/plugins/plugin-email/src/mail/reconciliation.ts` — ReconciliationStore, correlateIncomingEvidence, reconcileRecord, canonical payload fingerprinting
-- `packages/plugins/plugin-email/tests/intake-metadata.spec.ts` — 38 synthetic tests covering all 10 required scenarios
+- `packages/plugins/plugin-email/tests/intake-metadata.spec.ts` — 38 synthetic tests covering the governed metadata scenarios
 - `packages/plugins/plugin-email/tests/draft-brand-neutral.spec.ts` — regression coverage preventing venture names from leaking into shared default drafts
+- `packages/plugins/plugin-email/tests/system-notification-draft.spec.ts` — regression coverage proving system notifications cannot produce draft candidates or reply-draft documents
 
 ### Modified Files
 - `packages/plugins/plugin-email/src/mail/normalize.ts` — StoreIntakeRecord includes `intakeMetadata`; extractStoreIntake computes and populates it
 - `packages/plugins/plugin-email/src/worker.ts` — ingestMessage stores intake metadata in plugin_state with reconciliation store persistence; data providers expose metadata and persisted sorting to UI
-- `packages/plugins/plugin-email/src/mail/drafts.ts` — shared draft candidates are portfolio-neutral and remain non-sending work products
-- `packages/plugins/plugin-email/src/ui/store-intake-page.tsx` — upgraded from store-focused review table to company-scoped Email Operations console driven by persisted sort/action state
+- `packages/plugins/plugin-email/src/mail/sorter.ts` — authoritative eight-category sorting, including a non-reply `system_notification` boundary and explicit reply-header precedence
+- `packages/plugins/plugin-email/src/mail/drafts.ts` — shared draft candidates are portfolio-neutral; system notifications are fail-closed from draft generation
+- `packages/plugins/plugin-email/src/ui/store-intake-page.tsx` — upgraded from store-focused review table to company-scoped Email Operations console driven by persisted sort/action state, including a Notifications view
 - `packages/plugins/plugin-email/src/ui/store-intake-tab.tsx` — Source Data Quality card with completeness, transport, evidence sources, missing fields, conflicting values
 - `packages/plugins/plugin-email/src/manifest.ts` — Email Operations naming and explicit multi-mailbox credential boundary
+- `packages/plugins/plugin-email/tests/sorter.spec.ts` — coverage for operational notifications, real-reply precedence, signup routing, and TherapistIndex correction/removal actionability
 
 ### Future Enrichment Contract
 
@@ -171,9 +183,10 @@ When a structured provider payload arrives (webhook, API, WordPress event), the 
 ## Next Operational Gates
 
 1. **Build/typecheck the plugin and UI.**
-2. **Review CI and any static-analysis findings.**
+2. **Review applicable static-analysis / repository review findings.**
 3. **Promote `profileKey` into the queue contract before implementing mailbox-level filtering/pagination.**
 4. **Design per-profile secret bindings before attaching unrelated mailbox credentials.**
 5. **Use real TheBinMap traffic for bounded staging validation.**
-6. **Add TherapistIndex as the next company only after representative registration/office-registration messages are captured and deterministic source rules are defined.**
-7. **Keep scheduled polling and outbound sending disabled until separately approved.**
+6. **Capture representative TherapistIndex registration/office-registration messages, then add exact deterministic subtypes and routing rules.**
+7. **Add TherapistIndex as the next company only after those source rules and safety cases are defined.**
+8. **Keep scheduled polling and outbound sending disabled until separately approved.**
