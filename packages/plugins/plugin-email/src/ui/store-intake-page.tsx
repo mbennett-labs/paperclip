@@ -1,7 +1,7 @@
-import { useMemo, useState } from "react";
+import { useMemo, useState, type CSSProperties } from "react";
 import {
-  usePluginData,
   useHostNavigation,
+  usePluginData,
   type PluginPageProps,
 } from "@paperclipai/plugin-sdk/ui";
 
@@ -71,13 +71,17 @@ const FILTERS: Array<{ key: WorkflowFilter; label: string }> = [
   { key: "reviewed", label: "Reviewed" },
 ];
 
-const BRAND_LABELS: Record<BrandFilter, string> = {
-  all: "All portfolio brands",
-  thebinmap: "TheBinMap",
-  qsl: "QSL",
-  therapist_index: "TherapistIndex",
-  unknown: "Unassigned",
-};
+const BRAND_OPTIONS: Array<{ key: BrandFilter; label: string }> = [
+  { key: "all", label: "All portfolio brands" },
+  { key: "thebinmap", label: "TheBinMap" },
+  { key: "qsl", label: "QSL" },
+  { key: "therapist_index", label: "TherapistIndex" },
+  { key: "unknown", label: "Unassigned" },
+];
+
+const BRAND_LABELS: Record<BrandFilter, string> = Object.fromEntries(
+  BRAND_OPTIONS.map((option) => [option.key, option.label]),
+) as Record<BrandFilter, string>;
 
 const VERDICT_LABELS: Record<string, string> = {
   genuine_external: "Genuine",
@@ -108,7 +112,7 @@ function brandOf(item: QueueItem): BrandFilter {
   if (form.includes("thebinmap")) return "thebinmap";
   if (form.includes("qsl") || type.startsWith("qsl_")) return "qsl";
   if (form.includes("therapist")) return "therapist_index";
-  if (type === "store_submission" || type === "listing_claim" || type === "alert_signup" || type === "newsletter_signup") {
+  if (["store_submission", "listing_claim", "alert_signup", "newsletter_signup"].includes(type)) {
     return "thebinmap";
   }
   return "unknown";
@@ -119,21 +123,23 @@ function isSuppressed(item: QueueItem): boolean {
 }
 
 function needsAttention(item: QueueItem): boolean {
-  if (isSuppressed(item)) return false;
-  if (item.status !== "todo") return false;
+  if (isSuppressed(item) || item.status !== "todo") return false;
   if (item.sortCategory === "unknown" || item.sortCategory === "incomplete") return true;
   if (item.priority === "high" && !item.latestVerdict) return true;
-  if (item.replyActionStatus === "draft_needed") return true;
-  return false;
+  return item.replyActionStatus === "draft_needed";
 }
 
 function hasDraftWork(item: QueueItem): boolean {
-  return Boolean(item.draftCandidateKind) || item.replyActionStatus === "draft_needed" || item.replyActionStatus === "draft_ready";
+  return Boolean(item.draftCandidateKind) ||
+    item.replyActionStatus === "draft_needed" ||
+    item.replyActionStatus === "draft_ready";
 }
 
 function hasDataQualityWork(item: QueueItem): boolean {
   if (item.sortCategory === "system_notification") return false;
-  return item.recordCompleteness !== "complete" || item.missingFields.length > 0 || item.conflictingFields.length > 0;
+  return item.recordCompleteness !== "complete" ||
+    item.missingFields.length > 0 ||
+    item.conflictingFields.length > 0;
 }
 
 function matchesWorkflow(item: QueueItem, filter: WorkflowFilter): boolean {
@@ -145,7 +151,10 @@ function matchesWorkflow(item: QueueItem, filter: WorkflowFilter): boolean {
     case "drafts":
       return !isSuppressed(item) && hasDraftWork(item);
     case "needs_review":
-      return !isSuppressed(item) && item.sortCategory !== "system_notification" && !item.latestVerdict && item.hasEvidence;
+      return !isSuppressed(item) &&
+        item.sortCategory !== "system_notification" &&
+        !item.latestVerdict &&
+        item.hasEvidence;
     case "submissions":
       return item.sortCategory === "store_submission" || item.sortCategory === "incomplete";
     case "correspondence":
@@ -158,8 +167,6 @@ function matchesWorkflow(item: QueueItem, filter: WorkflowFilter): boolean {
       return isSuppressed(item);
     case "reviewed":
       return Boolean(item.latestVerdict);
-    default:
-      return true;
   }
 }
 
@@ -178,47 +185,65 @@ function attentionScore(item: QueueItem): number {
 }
 
 function nextAction(item: QueueItem): string {
-  if (item.sortCategory === "spam_irrelevant") return "No action — suppressed";
-  if (item.sortCategory === "duplicate") return "No action — duplicate";
-  if (item.sortCategory === "system_notification") return item.priority === "high" ? "Review operational event" : "Route / monitor";
-  if (item.sortCategory === "unknown") return "Human triage";
-  if (item.sortCategory === "incomplete") {
-    return item.draftCandidateKind ? "Review clarification draft" : "Request missing information";
+  switch (item.sortCategory) {
+    case "spam_irrelevant":
+      return "No action — suppressed";
+    case "duplicate":
+      return "No action — duplicate";
+    case "system_notification":
+      return item.priority === "high" ? "Review operational event" : "Route / monitor";
+    case "unknown":
+      return "Human triage";
+    case "incomplete":
+      return item.draftCandidateKind ? "Review clarification draft" : "Request missing information";
+    case "reply_continuation":
+      return item.draftCandidateKind ? "Review reply draft" : "Prepare reply";
+    case "general_email":
+      return item.draftCandidateKind ? "Review reply draft" : "Review correspondence";
+    case "store_submission":
+      if (!item.latestVerdict) return "Review submission";
+      return item.draftCandidateKind ? "Review acknowledgment" : "Reviewed";
+    default:
+      return item.latestVerdict ? "Reviewed" : "Review";
   }
-  if (item.sortCategory === "reply_continuation") {
-    return item.draftCandidateKind ? "Review reply draft" : "Prepare reply";
-  }
-  if (item.sortCategory === "general_email") {
-    return item.draftCandidateKind ? "Review reply draft" : "Review correspondence";
-  }
-  if (item.sortCategory === "store_submission") {
-    if (!item.latestVerdict) return "Review submission";
-    return item.draftCandidateKind ? "Review acknowledgment" : "Reviewed";
-  }
-  if (item.latestVerdict) return "Reviewed";
-  return "Review";
 }
 
-function parseMailboxProfiles(config: EmailPluginConfigView | null | undefined): Array<{ key: string; username: string }> {
+function parseMailboxProfiles(
+  config: EmailPluginConfigView | null | undefined,
+): Array<{ key: string; username: string }> {
   const profiles: Array<{ key: string; username: string }> = [];
   if (config?.username) profiles.push({ key: "primary", username: config.username });
+
   const raw = (config?.extraProfilesJson ?? "").trim();
   if (!raw) return profiles;
+
   try {
-    const extra = JSON.parse(raw) as Array<{ key?: unknown; username?: unknown }>;
-    for (let i = 0; i < extra.length; i += 1) {
-      const username = typeof extra[i]?.username === "string" ? extra[i].username.trim() : "";
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return profiles;
+
+    for (let i = 0; i < parsed.length; i += 1) {
+      const entry: unknown = parsed[i];
+      if (!entry || typeof entry !== "object") continue;
+      const record = entry as Record<string, unknown>;
+      const usernameValue = record.username;
+      if (typeof usernameValue !== "string") continue;
+      const username = usernameValue.trim();
       if (!username) continue;
-      const key = typeof extra[i]?.key === "string" && extra[i].key.trim() ? extra[i].key.trim() : `extra-${i + 1}`;
+
+      const keyValue = record.key;
+      const key = typeof keyValue === "string" && keyValue.trim()
+        ? keyValue.trim()
+        : `extra-${i + 1}`;
       profiles.push({ key, username });
     }
   } catch {
-    // Configuration validation lives in the worker. The console remains readable if JSON is malformed.
+    // Worker-side validation owns config errors. Keep the console readable.
   }
+
   return profiles;
 }
 
-function categoryStyle(category: string | null): React.CSSProperties {
+function categoryStyle(category: string | null): CSSProperties {
   if (category === "store_submission") return { color: "#2980b9", background: "rgba(41,128,185,0.12)" };
   if (category === "reply_continuation" || category === "general_email") return { color: "#7d3c98", background: "rgba(125,60,152,0.12)" };
   if (category === "system_notification") return { color: "#2874a6", background: "rgba(52,152,219,0.10)" };
@@ -227,7 +252,7 @@ function categoryStyle(category: string | null): React.CSSProperties {
   return { color: "#555", background: "rgba(127,127,127,0.08)" };
 }
 
-function completenessStyle(value: string): React.CSSProperties {
+function completenessStyle(value: string): CSSProperties {
   if (value === "complete") return { color: "#1e8449", background: "rgba(39,174,96,0.12)" };
   if (value === "partial") return { color: "#b45f06", background: "rgba(230,126,34,0.12)" };
   return { color: "#b03a2e", background: "rgba(231,76,60,0.12)" };
@@ -258,6 +283,7 @@ export function StoreIntakePage({ context }: PluginPageProps) {
       suppressed: 0,
       reviewed: 0,
     };
+
     for (const item of items) {
       for (const filter of FILTERS) {
         if (matchesWorkflow(item, filter.key)) result[filter.key] += 1;
@@ -283,14 +309,14 @@ export function StoreIntakePage({ context }: PluginPageProps) {
           item.sortCategory,
           item.latestVerdict,
         ]
-          .filter(Boolean)
+          .filter((value): value is string => typeof value === "string")
           .join(" ")
           .toLowerCase();
         return haystack.includes(needle);
       })
       .sort((a, b) => {
-        const score = attentionScore(b) - attentionScore(a);
-        if (score !== 0) return score;
+        const scoreDifference = attentionScore(b) - attentionScore(a);
+        if (scoreDifference !== 0) return scoreDifference;
         return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
       });
   }, [items, activeFilter, brandFilter, search]);
@@ -321,7 +347,7 @@ export function StoreIntakePage({ context }: PluginPageProps) {
         <span><strong>Polling:</strong> {scheduled ? "scheduled" : "manual only"}</span>
         <span><strong>Mailbox state:</strong> {markSeen ? "may mark seen" : "read-only"}</span>
         <span><strong>Outbound:</strong> {outbound ? "Board send enabled" : "locked"}</span>
-        <span><strong>Mailboxes:</strong> {mailboxProfiles.length || 0}</span>
+        <span><strong>Mailboxes:</strong> {mailboxProfiles.length}</span>
         {configData?.intakeSince ? <span><strong>Boundary:</strong> {configData.intakeSince}</span> : null}
       </div>
 
@@ -351,8 +377,8 @@ export function StoreIntakePage({ context }: PluginPageProps) {
           style={searchStyle}
         />
         <select value={brandFilter} onChange={(event) => setBrandFilter(event.target.value as BrandFilter)} style={selectStyle}>
-          {(Object.keys(BRAND_LABELS) as BrandFilter[]).map((key) => (
-            <option key={key} value={key}>{BRAND_LABELS[key]}</option>
+          {BRAND_OPTIONS.map((option) => (
+            <option key={option.key} value={option.key}>{option.label}</option>
           ))}
         </select>
       </div>
@@ -402,7 +428,6 @@ export function StoreIntakePage({ context }: PluginPageProps) {
                   : `#issues/${item.issueId}`;
                 const brand = brandOf(item);
                 const displayTitle = item.storeName || item.title.replace(/^\[.*?\]\s*/, "");
-                const category = item.sortCategory;
 
                 return (
                   <tr
@@ -421,8 +446,8 @@ export function StoreIntakePage({ context }: PluginPageProps) {
                       </span>
                     </td>
                     <td style={tdStyle}>
-                      <span style={{ ...badgeStyle, ...categoryStyle(category) }}>
-                        {item.sortLabel || category?.replace(/_/g, " ") || item.sourceType?.replace(/_/g, " ") || "Unsorted"}
+                      <span style={{ ...badgeStyle, ...categoryStyle(item.sortCategory) }}>
+                        {item.sortLabel || item.sortCategory?.replace(/_/g, " ") || item.sourceType?.replace(/_/g, " ") || "Unsorted"}
                       </span>
                     </td>
                     <td style={{ ...tdStyle, maxWidth: 280 }}>
@@ -484,7 +509,17 @@ export function StoreIntakePage({ context }: PluginPageProps) {
   );
 }
 
-function SummaryCard({ label, value, detail, emphasis = false }: { label: string; value: number; detail: string; emphasis?: boolean }) {
+function SummaryCard({
+  label,
+  value,
+  detail,
+  emphasis = false,
+}: {
+  label: string;
+  value: number;
+  detail: string;
+  emphasis?: boolean;
+}) {
   return (
     <div style={{
       border: "1px solid rgba(127,127,127,0.28)",
@@ -499,12 +534,12 @@ function SummaryCard({ label, value, detail, emphasis = false }: { label: string
   );
 }
 
-const thStyle: React.CSSProperties = { padding: "7px 8px", fontWeight: 650, opacity: 0.72, whiteSpace: "nowrap" };
-const tdStyle: React.CSSProperties = { padding: "8px" };
-const badgeStyle: React.CSSProperties = { display: "inline-block", padding: "2px 7px", borderRadius: 4, fontSize: 11, fontWeight: 650 };
-const buttonStyle: React.CSSProperties = { padding: "6px 12px", borderRadius: 6, border: "1px solid rgba(127,127,127,0.4)", cursor: "pointer", background: "transparent", fontWeight: 600 };
-const filterButtonStyle: React.CSSProperties = { padding: "4px 10px", borderRadius: 6, border: "1px solid rgba(127,127,127,0.3)", cursor: "pointer", fontSize: 12 };
-const searchStyle: React.CSSProperties = { minWidth: 280, flex: "1 1 320px", padding: "7px 9px", borderRadius: 6, border: "1px solid rgba(127,127,127,0.35)", background: "transparent", color: "inherit" };
-const selectStyle: React.CSSProperties = { padding: "7px 9px", borderRadius: 6, border: "1px solid rgba(127,127,127,0.35)", background: "transparent", color: "inherit" };
-const systemBarStyle: React.CSSProperties = { display: "flex", gap: "8px 16px", flexWrap: "wrap", padding: "8px 10px", borderRadius: 7, background: "rgba(127,127,127,0.07)", fontSize: 11 };
-const mailboxPillStyle: React.CSSProperties = { padding: "2px 7px", borderRadius: 12, border: "1px solid rgba(127,127,127,0.3)", fontSize: 10, opacity: 0.8 };
+const thStyle: CSSProperties = { padding: "7px 8px", fontWeight: 650, opacity: 0.72, whiteSpace: "nowrap" };
+const tdStyle: CSSProperties = { padding: "8px" };
+const badgeStyle: CSSProperties = { display: "inline-block", padding: "2px 7px", borderRadius: 4, fontSize: 11, fontWeight: 650 };
+const buttonStyle: CSSProperties = { padding: "6px 12px", borderRadius: 6, border: "1px solid rgba(127,127,127,0.4)", cursor: "pointer", background: "transparent", fontWeight: 600 };
+const filterButtonStyle: CSSProperties = { padding: "4px 10px", borderRadius: 6, border: "1px solid rgba(127,127,127,0.3)", cursor: "pointer", fontSize: 12 };
+const searchStyle: CSSProperties = { minWidth: 280, flex: "1 1 320px", padding: "7px 9px", borderRadius: 6, border: "1px solid rgba(127,127,127,0.35)", background: "transparent", color: "inherit" };
+const selectStyle: CSSProperties = { padding: "7px 9px", borderRadius: 6, border: "1px solid rgba(127,127,127,0.35)", background: "transparent", color: "inherit" };
+const systemBarStyle: CSSProperties = { display: "flex", gap: "8px 16px", flexWrap: "wrap", padding: "8px 10px", borderRadius: 7, background: "rgba(127,127,127,0.07)", fontSize: 11 };
+const mailboxPillStyle: CSSProperties = { padding: "2px 7px", borderRadius: 12, border: "1px solid rgba(127,127,127,0.3)", fontSize: 10, opacity: 0.8 };
