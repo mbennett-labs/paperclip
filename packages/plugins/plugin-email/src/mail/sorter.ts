@@ -21,10 +21,6 @@
 import type { IntakeMetadata, RecordCompleteness } from "./intake-metadata.js";
 import type { MessageClassHint, SourceDetection } from "./normalize.js";
 
-// ---------------------------------------------------------------------------
-// Classification result contract
-// ---------------------------------------------------------------------------
-
 export type IntakeSortCategory =
   | "store_submission"
   | "general_email"
@@ -36,40 +32,19 @@ export type IntakeSortCategory =
   | "unknown";
 
 export interface IntakeSortResult {
-  /** Primary classification. */
   category: IntakeSortCategory;
-
-  /** Source detection from normalize.ts (always preserved). */
   sourceType: string;
   sourceForm: string;
   sourcePage: string;
   brand: string;
-
-  /** Classification confidence 0–1. Mirrors SourceDetection.confidence. */
   classificationConfidence: number;
-
-  /** Form completeness from intake metadata (always preserved). */
   formCompleteness: RecordCompleteness | null;
-
-  /** Duplicate match strength from the duplicate engine (always preserved). */
   duplicateMatchStrength: string | null;
-
-  /** Human review verdict if one exists (always preserved). */
   humanReviewStatus: string | null;
-
-  /** Whether a reply draft exists or is needed. */
   replyActionStatus: "none" | "draft_ready" | "draft_needed" | "draft_blocked";
-
-  /** Human-readable explanation of the classification. */
   reason: string;
-
-  /** Which rules were matched, for auditability. */
   rulesMatched: string[];
 }
-
-// ---------------------------------------------------------------------------
-// Sorting logic
-// ---------------------------------------------------------------------------
 
 export interface SortInput {
   sourceDetection: SourceDetection | null;
@@ -80,6 +55,24 @@ export interface SortInput {
   hasReplyDraft: boolean;
   inReplyTo: string | null;
   hasReferences: boolean;
+}
+
+function isKnownTherapistIndexOperationalNotification(
+  sourceDetection: SourceDetection | null,
+): boolean {
+  if (
+    sourceDetection?.sourceForm !== "therapist_index" ||
+    sourceDetection.sourceType !== "contact"
+  ) {
+    return false;
+  }
+
+  // These pages are assigned by normalize.ts only when a message matches
+  // known operational/account patterns. Generic TherapistIndex contact keeps
+  // sourcePage="unknown" and must remain actionable until a more specific
+  // WordPress event contract is proven from representative messages.
+  return sourceDetection.sourcePage === "/moderation" ||
+    sourceDetection.sourcePage === "/account";
 }
 
 export function sortIntakeRecord(input: SortInput): IntakeSortResult {
@@ -109,7 +102,7 @@ export function sortIntakeRecord(input: SortInput): IntakeSortResult {
     rulesMatched: [],
   };
 
-  // 1. Provider marketing — highest priority, never a real submission
+  // 1. Provider marketing — highest priority, never a real submission.
   if (sourceDetection?.sourceType === "provider_marketing") {
     result.category = "spam_irrelevant";
     result.replyActionStatus = "draft_blocked";
@@ -118,7 +111,7 @@ export function sortIntakeRecord(input: SortInput): IntakeSortResult {
     return result;
   }
 
-  // 2. Duplicate — already-seen Message-ID; no action needed
+  // 2. Duplicate — already-seen Message-ID; no action needed.
   if (duplicateMatchStrength === "strong") {
     result.category = "duplicate";
     result.replyActionStatus = "draft_blocked";
@@ -127,9 +120,8 @@ export function sortIntakeRecord(input: SortInput): IntakeSortResult {
     return result;
   }
 
-  // 3. Reply or continuation — explicit thread evidence wins over notification
-  //    routing because a real human reply may arrive from an otherwise
-  //    system-shaped source.
+  // 3. Reply or continuation — explicit thread evidence always wins over
+  // notification routing because a real human may reply to an automated event.
   if (inReplyTo || hasReferences) {
     result.category = "reply_continuation";
     result.replyActionStatus = hasReplyDraft ? "draft_ready" : "draft_needed";
@@ -139,13 +131,16 @@ export function sortIntakeRecord(input: SortInput): IntakeSortResult {
   }
 
   // 4. Deterministic system / operational notifications — preserve as evidence
-  //    and operational signal, but do not create reply work. Corrections and
-  //    removal requests are intentionally excluded because normalize.ts emits
-  //    them as sourceType=correction and they remain actionable.
+  // and operational signal, but do not manufacture reply work.
+  //
+  // TherapistIndex is intentionally conservative: only normalize.ts patterns
+  // that resolve to a known account/moderation page are notification-safe.
+  // Generic TherapistIndex contact remains general_email until representative
+  // WordPress registration/office-event messages prove a narrower rule.
   if (
     sourceDetection?.sourceType === "alert_signup" ||
     sourceDetection?.sourceType === "newsletter_signup" ||
-    (sourceDetection?.sourceForm === "therapist_index" && sourceDetection.sourceType === "contact")
+    isKnownTherapistIndexOperationalNotification(sourceDetection)
   ) {
     result.category = "system_notification";
     result.replyActionStatus = "none";
@@ -155,18 +150,16 @@ export function sortIntakeRecord(input: SortInput): IntakeSortResult {
   }
 
   // 5. Store submission — recognized form with essential fields present.
-  //    A store submission is "incomplete" only if the expected form fields
-  //    are actually missing from the message; "partial" completeness from
-  //    email_notification transport does not by itself indicate an incomplete
-  //    form — it means the source is less authoritative than a webhook.
+  // A store submission is incomplete only when expected fields are actually
+  // missing or the evidence requires source verification.
   if (
     sourceDetection?.sourceType === "store_submission" &&
     sourceDetection.sourceForm !== "unknown"
   ) {
     const essentialMissing =
       intakeMetadata?.missingFields &&
-      ["storeName", "address", "city", "state"].some(
-        (f) => intakeMetadata.missingFields.includes(f),
+      ["storeName", "address", "city", "state"].some((field) =>
+        intakeMetadata.missingFields.includes(field),
       );
 
     if (
@@ -183,8 +176,7 @@ export function sortIntakeRecord(input: SortInput): IntakeSortResult {
 
     result.category = "store_submission";
     result.replyActionStatus = "none";
-    result.reason =
-      "Store submission from recognized form with all essential fields.";
+    result.reason = "Store submission from recognized form with all essential fields.";
     result.rulesMatched.push("sorter:store_complete");
     return result;
   }
@@ -208,8 +200,8 @@ export function sortIntakeRecord(input: SortInput): IntakeSortResult {
   }
 
   // Legacy/fallback signup hints without a recognized source still remain
-  // non-reply notifications. This prevents a source-detection template change
-  // from silently turning a subscription event into reply work.
+  // non-reply notifications. This prevents a source-template change from
+  // silently turning a subscription event into reply work.
   if (classHint === "store_alert_signup" || classHint === "newsletter_signup") {
     result.category = "system_notification";
     result.replyActionStatus = "none";
@@ -218,8 +210,7 @@ export function sortIntakeRecord(input: SortInput): IntakeSortResult {
     return result;
   }
 
-  // 7. Spam — obvious junk via classHint (already handled by step 2 for
-  //    duplicateMatchStrength, but catch remaining spam classHints here)
+  // 7. Spam heuristic fallback.
   if (classHint === "spam_irrelevant") {
     result.category = "spam_irrelevant";
     result.replyActionStatus = "draft_blocked";
@@ -228,19 +219,14 @@ export function sortIntakeRecord(input: SortInput): IntakeSortResult {
     return result;
   }
 
-  // 8. Unknown — cannot determine; requires human review
+  // 8. Unknown — cannot determine; requires human review.
   result.category = "unknown";
   result.replyActionStatus = "draft_blocked";
-  result.reason =
-    "Cannot determine message category with confidence; human review required.";
+  result.reason = "Cannot determine message category with confidence; human review required.";
   result.rulesMatched.push("sorter:unknown_fallback");
   return result;
 }
 
-/**
- * Sort a normalized message before evidence/intake metadata is fully populated.
- * Used for early routing decisions during ingestion.
- */
 export interface EarlySortInput {
   sourceDetection: SourceDetection | null;
   classHint: MessageClassHint;
