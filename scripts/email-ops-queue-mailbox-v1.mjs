@@ -193,10 +193,21 @@ replaceOnce(uiPath,
                 <th style={thStyle}>Sorted as</th>`);
 
 replaceOnce(uiPath,
-`                    </td>
+`                    <td style={tdStyle}>
+                      <span style={{ fontSize: 11, fontWeight: 600, opacity: brand === "unknown" ? 0.5 : 1 }}>
+                        {BRAND_LABELS[brand]}
+                      </span>
+                    </td>
                     <td style={tdStyle}>
-                      <span style={categoryStyle(item.sortCategory)}>{item.sortLabel || "Unsorted"}</span>`,
-`                    </td>
+                      <span style={{ ...badgeStyle, ...categoryStyle(item.sortCategory) }}>
+                        {item.sortLabel || item.sortCategory?.replace(/_/g, " ") || item.sourceType?.replace(/_/g, " ") || "Unsorted"}
+                      </span>
+                    </td>`,
+`                    <td style={tdStyle}>
+                      <span style={{ fontSize: 11, fontWeight: 600, opacity: brand === "unknown" ? 0.5 : 1 }}>
+                        {BRAND_LABELS[brand]}
+                      </span>
+                    </td>
                     <td style={tdStyle}>
                       <div style={{ fontSize: 11, fontWeight: 600 }} title={item.mailboxUsername || item.profileKey || undefined}>
                         {item.mailboxUsername || item.profileKey || "Unknown"}
@@ -206,7 +217,10 @@ replaceOnce(uiPath,
                       ) : null}
                     </td>
                     <td style={tdStyle}>
-                      <span style={categoryStyle(item.sortCategory)}>{item.sortLabel || "Unsorted"}</span>`);
+                      <span style={{ ...badgeStyle, ...categoryStyle(item.sortCategory) }}>
+                        {item.sortLabel || item.sortCategory?.replace(/_/g, " ") || item.sourceType?.replace(/_/g, " ") || "Unsorted"}
+                      </span>
+                    </td>`);
 
 replaceOnce(uiPath,
 `                      <div style={{ marginTop: 2, fontSize: 10, opacity: 0.55 }}>
