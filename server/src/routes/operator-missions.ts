@@ -192,12 +192,27 @@ export function operatorMissionRoutes(db: Db) {
 
       const normalizedMissionId = typeof missionId === "string" ? missionId.trim() : "";
       const normalizedIssueId = typeof issueId === "string" ? issueId.trim() : "";
+      const normalizedAuthorityScope =
+        authorityScope == null
+          ? "autonomous"
+          : typeof authorityScope === "string"
+            ? authorityScope.trim()
+            : "";
       if (!normalizedMissionId) {
         res.status(400).json({ error: "missionId is required" });
         return;
       }
       if (!normalizedIssueId) {
         res.status(400).json({ error: "issueId is required for native mission dispatch" });
+        return;
+      }
+      if (
+        normalizedAuthorityScope !== "autonomous" &&
+        normalizedAuthorityScope !== "human_required"
+      ) {
+        res.status(400).json({
+          error: "authorityScope must be autonomous or human_required",
+        });
         return;
       }
 
@@ -232,7 +247,7 @@ export function operatorMissionRoutes(db: Db) {
         companyId,
         issueId: issue.id,
         missionId: normalizedMissionId,
-        authorityScope,
+        authorityScope: normalizedAuthorityScope,
         provider,
         model,
         credentialRefType,
@@ -240,6 +255,51 @@ export function operatorMissionRoutes(db: Db) {
       });
       if (!record) {
         res.status(500).json({ error: "Failed to create mission record" });
+        return;
+      }
+
+      // Guardian authority gate: a mission explicitly classified as requiring
+      // human authority is durable evidence, not permission to run. Persist the
+      // escalation and withhold the implementation heartbeat entirely.
+      if (normalizedAuthorityScope === "human_required") {
+        const authorityEvidence = mergeMissionEvidence(record.evidence, {
+          authorityGate: {
+            status: "human_required",
+            dispatch: "withheld",
+            reason: "human_approval_required",
+          },
+        });
+        await svc.updateFields(record.id, {
+          terminalStatus: "human_approval_required",
+          escalations: "1",
+          evidence: authorityEvidence,
+        });
+        const gatedRecord = await svc.updateStatus(
+          record.id,
+          "escalated",
+          authorityEvidence,
+        );
+
+        await logActivity(db, {
+          companyId,
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId,
+          runId: actor.runId,
+          agentApiKeyId: actor.agentApiKeyId,
+          action: "operator_mission.authority_escalated",
+          entityType: "operator_mission",
+          entityId: record.id,
+          details: {
+            missionId: normalizedMissionId,
+            issueId: issue.id,
+            authorityScope: normalizedAuthorityScope,
+            dispatch: "withheld",
+            reason: "human_approval_required",
+          },
+        });
+
+        res.status(202).json(gatedRecord ?? record);
         return;
       }
 
