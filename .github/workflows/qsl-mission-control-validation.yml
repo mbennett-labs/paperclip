@@ -1,0 +1,75 @@
+name: QSL Mission Control Validation
+
+on:
+  push:
+    branches:
+      - feat/qsl-native-mission-orchestration-v0-1
+  pull_request:
+    branches:
+      - feat/qsl-current-upstream-integration
+    paths:
+      - "server/src/routes/operator-missions.ts"
+      - "server/src/services/operator-mission*.ts"
+      - "server/src/services/operator-review-dispatch.ts"
+      - "server/src/__tests__/operator-mission-service.test.ts"
+      - "server/src/__tests__/qsl-operator-mission*.test.ts"
+      - "server/src/__tests__/qsl-operator-review-dispatch.test.ts"
+      - "server/src/__tests__/qsl-mission-contract-retry.test.ts"
+      - "packages/db/src/migrations/0183_operator_missions.sql"
+      - "packages/db/src/schema/operator_missions.ts"
+      - "packages/shared/src/types/operator-mission.ts"
+      - ".github/workflows/qsl-mission-control-validation.yml"
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          version: 9.15.4
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck server
+        run: pnpm --filter @paperclipai/server typecheck
+
+      - name: Run focused Mission Control tests
+        run: >-
+          pnpm exec vitest run
+          server/src/__tests__/operator-mission-service.test.ts
+          server/src/__tests__/qsl-operator-mission-dispatch.test.ts
+          server/src/__tests__/qsl-operator-mission-reconcile.test.ts
+          server/src/__tests__/qsl-operator-review-dispatch.test.ts
+          server/src/__tests__/qsl-operator-mission-native-boundary.test.ts
+          server/src/__tests__/qsl-operator-mission-receipt-agent.test.ts
+          server/src/__tests__/qsl-operator-mission-evidence-retention.test.ts
+          server/src/__tests__/qsl-mission-contract-retry.test.ts
+
+      - name: Build server
+        run: pnpm --filter @paperclipai/server build
+
+      - name: Prove native Mission Control boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if grep -nE 'node:child_process|run-mission\.sh|spawn\("bash"' server/src/routes/operator-missions.ts; then
+            echo "FAIL: shell orchestration leaked into Mission Control."
+            exit 41
+          fi
+
+          grep -nE 'heartbeat\.wakeup|reconcileOperatorMission|operator_review_dispatch_not_queued' server/src/routes/operator-missions.ts
+          echo "PASS: native Mission Control boundary intact."
