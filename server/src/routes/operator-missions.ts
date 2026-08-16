@@ -277,7 +277,7 @@ export function operatorMissionRoutes(db: Db) {
         const gatedRecord = await svc.updateStatus(
           record.id,
           "escalated",
-          authorityEvidence,
+          authorityEvidence ?? undefined,
         );
 
         await logActivity(db, {
