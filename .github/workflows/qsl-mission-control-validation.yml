@@ -16,6 +16,8 @@ on:
       - "server/src/__tests__/qsl-operator-review-dispatch.test.ts"
       - "server/src/__tests__/qsl-mission-contract-retry.test.ts"
       - "packages/db/src/migrations/0183_operator_missions.sql"
+      - "packages/db/src/migrations/0184_operator_mission_company_mission_unique.sql"
+      - "packages/db/src/migrations/meta/_journal.json"
       - "packages/db/src/schema/operator_missions.ts"
       - "packages/shared/src/types/operator-mission.ts"
       - ".github/workflows/qsl-mission-control-validation.yml"
@@ -42,6 +44,9 @@ jobs:
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+
+      - name: Validate database migration numbering and safety
+        run: pnpm --filter @paperclipai/db check:migrations
 
       - name: Typecheck server
         run: pnpm --filter @paperclipai/server typecheck
@@ -73,3 +78,13 @@ jobs:
 
           grep -nE 'heartbeat\.wakeup|reconcileOperatorMission|operator_review_dispatch_not_queued' server/src/routes/operator-missions.ts
           echo "PASS: native Mission Control boundary intact."
+
+      - name: Prove operator mission identity uniqueness boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -F 'uniqueIndex("operator_missions_company_mission_id_uq")' packages/db/src/schema/operator_missions.ts
+          grep -F 'CREATE UNIQUE INDEX IF NOT EXISTS "operator_missions_company_mission_id_uq"' packages/db/src/migrations/0184_operator_mission_company_mission_unique.sql
+          grep -F 'DROP INDEX IF EXISTS "operator_missions_company_mission_id_idx"' packages/db/src/migrations/0184_operator_mission_company_mission_unique.sql
+          grep -F '"tag": "0184_operator_mission_company_mission_unique"' packages/db/src/migrations/meta/_journal.json
+          echo "PASS: operator mission identity uniqueness boundary intact."
