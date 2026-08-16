@@ -6,11 +6,12 @@
  * every dimension as a separate field.
  *
  * This is the authoritative sorting contract for the governed intake pipeline.
- * It separates records into seven distinct categories:
+ * It separates records into eight distinct categories:
  *
  *   store_submission     – legitimate store intake via recognized form
  *   general_email        – ordinary inbound message (contact, inquiry, etc.)
  *   reply_continuation   – reply or follow-up to an existing thread
+ *   system_notification  – deterministic operational event; no reply expected
  *   spam_irrelevant      – provider marketing, unsubscribe, obvious junk
  *   duplicate            – already-seen record (by Message-ID fingerprint)
  *   incomplete           – store submission with missing essential fields
@@ -28,6 +29,7 @@ export type IntakeSortCategory =
   | "store_submission"
   | "general_email"
   | "reply_continuation"
+  | "system_notification"
   | "spam_irrelevant"
   | "duplicate"
   | "incomplete"
@@ -125,7 +127,9 @@ export function sortIntakeRecord(input: SortInput): IntakeSortResult {
     return result;
   }
 
-  // 3. Reply or continuation — has inReplyTo or references
+  // 3. Reply or continuation — explicit thread evidence wins over notification
+  //    routing because a real human reply may arrive from an otherwise
+  //    system-shaped source.
   if (inReplyTo || hasReferences) {
     result.category = "reply_continuation";
     result.replyActionStatus = hasReplyDraft ? "draft_ready" : "draft_needed";
@@ -134,7 +138,23 @@ export function sortIntakeRecord(input: SortInput): IntakeSortResult {
     return result;
   }
 
-  // 4. Store submission — recognized form with essential fields present.
+  // 4. Deterministic system / operational notifications — preserve as evidence
+  //    and operational signal, but do not create reply work. Corrections and
+  //    removal requests are intentionally excluded because normalize.ts emits
+  //    them as sourceType=correction and they remain actionable.
+  if (
+    sourceDetection?.sourceType === "alert_signup" ||
+    sourceDetection?.sourceType === "newsletter_signup" ||
+    (sourceDetection?.sourceForm === "therapist_index" && sourceDetection.sourceType === "contact")
+  ) {
+    result.category = "system_notification";
+    result.replyActionStatus = "none";
+    result.reason = "Deterministic operational/system notification; no reply expected.";
+    result.rulesMatched.push("sorter:system_notification");
+    return result;
+  }
+
+  // 5. Store submission — recognized form with essential fields present.
   //    A store submission is "incomplete" only if the expected form fields
   //    are actually missing from the message; "partial" completeness from
   //    email_notification transport does not by itself indicate an incomplete
@@ -169,7 +189,7 @@ export function sortIntakeRecord(input: SortInput): IntakeSortResult {
     return result;
   }
 
-  // 5. General email — contact, inquiry, support, claim, alert, newsletter, etc.
+  // 6. General email — correspondence or work that may need a reply.
   if (
     classHint === "contact_general" ||
     classHint === "customer_inquiry" ||
@@ -178,18 +198,27 @@ export function sortIntakeRecord(input: SortInput): IntakeSortResult {
     classHint === "partnership_affiliate" ||
     classHint === "correction" ||
     classHint === "listing_claim" ||
-    classHint === "intelligence_request" ||
-    classHint === "store_alert_signup" ||
-    classHint === "newsletter_signup"
+    classHint === "intelligence_request"
   ) {
     result.category = "general_email";
     result.replyActionStatus = hasReplyDraft ? "draft_ready" : "draft_needed";
-    result.reason = "General inbound email not matching any submission form.";
+    result.reason = "General inbound correspondence requiring operational review.";
     result.rulesMatched.push("sorter:general_email");
     return result;
   }
 
-  // 6. Spam — obvious junk via classHint (already handled by step 2 for
+  // Legacy/fallback signup hints without a recognized source still remain
+  // non-reply notifications. This prevents a source-detection template change
+  // from silently turning a subscription event into reply work.
+  if (classHint === "store_alert_signup" || classHint === "newsletter_signup") {
+    result.category = "system_notification";
+    result.replyActionStatus = "none";
+    result.reason = "Subscription/alert event; retain as operational evidence without reply work.";
+    result.rulesMatched.push("sorter:system_notification_hint");
+    return result;
+  }
+
+  // 7. Spam — obvious junk via classHint (already handled by step 2 for
   //    duplicateMatchStrength, but catch remaining spam classHints here)
   if (classHint === "spam_irrelevant") {
     result.category = "spam_irrelevant";
@@ -199,7 +228,7 @@ export function sortIntakeRecord(input: SortInput): IntakeSortResult {
     return result;
   }
 
-  // 7. Unknown — cannot determine; requires human review
+  // 8. Unknown — cannot determine; requires human review
   result.category = "unknown";
   result.replyActionStatus = "draft_blocked";
   result.reason =
@@ -236,6 +265,7 @@ export const ALL_INTAKE_CATEGORIES: IntakeSortCategory[] = [
   "store_submission",
   "general_email",
   "reply_continuation",
+  "system_notification",
   "spam_irrelevant",
   "duplicate",
   "incomplete",
@@ -246,6 +276,7 @@ export const CATEGORY_LABELS: Record<IntakeSortCategory, string> = {
   store_submission: "Store Submission",
   general_email: "General Email",
   reply_continuation: "Reply / Continuation",
+  system_notification: "System Notification",
   spam_irrelevant: "Spam / Irrelevant",
   duplicate: "Duplicate",
   incomplete: "Incomplete Submission",
