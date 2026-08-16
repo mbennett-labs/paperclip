@@ -40,7 +40,8 @@ jobs:
         run: pnpm --filter @qsl/plugin-email typecheck
 
       - name: Email plugin tests
-        run: pnpm exec vitest run packages/plugins/plugin-email/tests
+        working-directory: packages/plugins/plugin-email
+        run: pnpm exec vitest run
 
       - name: Email plugin build
         run: pnpm --filter @qsl/plugin-email build
