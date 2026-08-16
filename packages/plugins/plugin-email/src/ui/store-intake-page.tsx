@@ -51,6 +51,7 @@ type WorkflowFilter =
   | "needs_review"
   | "submissions"
   | "correspondence"
+  | "notifications"
   | "data_quality"
   | "suppressed"
   | "reviewed";
@@ -64,6 +65,7 @@ const FILTERS: Array<{ key: WorkflowFilter; label: string }> = [
   { key: "needs_review", label: "Needs Review" },
   { key: "submissions", label: "Submissions" },
   { key: "correspondence", label: "Correspondence" },
+  { key: "notifications", label: "Notifications" },
   { key: "data_quality", label: "Data Quality" },
   { key: "suppressed", label: "Suppressed" },
   { key: "reviewed", label: "Reviewed" },
@@ -130,6 +132,7 @@ function hasDraftWork(item: QueueItem): boolean {
 }
 
 function hasDataQualityWork(item: QueueItem): boolean {
+  if (item.sortCategory === "system_notification") return false;
   return item.recordCompleteness !== "complete" || item.missingFields.length > 0 || item.conflictingFields.length > 0;
 }
 
@@ -142,11 +145,13 @@ function matchesWorkflow(item: QueueItem, filter: WorkflowFilter): boolean {
     case "drafts":
       return !isSuppressed(item) && hasDraftWork(item);
     case "needs_review":
-      return !isSuppressed(item) && !item.latestVerdict && item.hasEvidence;
+      return !isSuppressed(item) && item.sortCategory !== "system_notification" && !item.latestVerdict && item.hasEvidence;
     case "submissions":
       return item.sortCategory === "store_submission" || item.sortCategory === "incomplete";
     case "correspondence":
       return item.sortCategory === "general_email" || item.sortCategory === "reply_continuation";
+    case "notifications":
+      return item.sortCategory === "system_notification";
     case "data_quality":
       return hasDataQualityWork(item);
     case "suppressed":
@@ -165,7 +170,7 @@ function attentionScore(item: QueueItem): number {
   if (item.sortCategory === "unknown") score += 20;
   if (item.sortCategory === "incomplete") score += 15;
   if (item.replyActionStatus === "draft_needed") score += 10;
-  if (item.recordCompleteness === "needs_source_verification") score += 8;
+  if (item.recordCompleteness === "needs_source_verification" && item.sortCategory !== "system_notification") score += 8;
   if (item.conflictingFields.length > 0) score += 5;
   if (item.latestVerdict) score -= 30;
   if (isSuppressed(item)) score -= 100;
@@ -175,6 +180,7 @@ function attentionScore(item: QueueItem): number {
 function nextAction(item: QueueItem): string {
   if (item.sortCategory === "spam_irrelevant") return "No action — suppressed";
   if (item.sortCategory === "duplicate") return "No action — duplicate";
+  if (item.sortCategory === "system_notification") return item.priority === "high" ? "Review operational event" : "Route / monitor";
   if (item.sortCategory === "unknown") return "Human triage";
   if (item.sortCategory === "incomplete") {
     return item.draftCandidateKind ? "Review clarification draft" : "Request missing information";
@@ -215,6 +221,7 @@ function parseMailboxProfiles(config: EmailPluginConfigView | null | undefined):
 function categoryStyle(category: string | null): React.CSSProperties {
   if (category === "store_submission") return { color: "#2980b9", background: "rgba(41,128,185,0.12)" };
   if (category === "reply_continuation" || category === "general_email") return { color: "#7d3c98", background: "rgba(125,60,152,0.12)" };
+  if (category === "system_notification") return { color: "#2874a6", background: "rgba(52,152,219,0.10)" };
   if (category === "incomplete" || category === "unknown") return { color: "#b45f06", background: "rgba(230,126,34,0.14)" };
   if (category === "spam_irrelevant" || category === "duplicate") return { color: "#666", background: "rgba(127,127,127,0.12)" };
   return { color: "#555", background: "rgba(127,127,127,0.08)" };
@@ -246,6 +253,7 @@ export function StoreIntakePage({ context }: PluginPageProps) {
       needs_review: 0,
       submissions: 0,
       correspondence: 0,
+      notifications: 0,
       data_quality: 0,
       suppressed: 0,
       reviewed: 0,
@@ -331,7 +339,7 @@ export function StoreIntakePage({ context }: PluginPageProps) {
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 8 }}>
         <SummaryCard label="Needs attention" value={counts.attention} detail="Escalate or act" emphasis />
         <SummaryCard label="Draft work" value={counts.drafts} detail="Candidates or replies" />
-        <SummaryCard label="Needs review" value={counts.needs_review} detail="No human verdict yet" />
+        <SummaryCard label="Notifications" value={counts.notifications} detail="Operational events" />
         <SummaryCard label="Suppressed" value={counts.suppressed} detail="Spam + duplicates" />
       </div>
 
@@ -432,12 +440,16 @@ export function StoreIntakePage({ context }: PluginPageProps) {
                       ) : null}
                     </td>
                     <td style={tdStyle}>
-                      <span style={{ ...badgeStyle, ...completenessStyle(item.recordCompleteness) }}>
-                        {COMPLETENESS_LABELS[item.recordCompleteness] || item.recordCompleteness}
-                      </span>
+                      {item.sortCategory === "system_notification" ? (
+                        <span style={{ ...badgeStyle, color: "#2874a6", background: "rgba(52,152,219,0.10)" }}>Operational event</span>
+                      ) : (
+                        <span style={{ ...badgeStyle, ...completenessStyle(item.recordCompleteness) }}>
+                          {COMPLETENESS_LABELS[item.recordCompleteness] || item.recordCompleteness}
+                        </span>
+                      )}
                       <div style={{ marginTop: 3, fontSize: 10, opacity: 0.58 }}>
                         {TRANSPORT_LABELS[item.intakeTransport] || item.intakeTransport}
-                        {item.missingFields.length ? ` · ${item.missingFields.length} missing` : ""}
+                        {item.sortCategory !== "system_notification" && item.missingFields.length ? ` · ${item.missingFields.length} missing` : ""}
                         {item.conflictingFields.length ? ` · ${item.conflictingFields.length} conflict` : ""}
                       </div>
                     </td>
@@ -446,6 +458,8 @@ export function StoreIntakePage({ context }: PluginPageProps) {
                         <span style={{ fontWeight: 600, fontSize: 11 }}>
                           {VERDICT_LABELS[item.latestVerdict] || item.latestVerdict}
                         </span>
+                      ) : item.sortCategory === "system_notification" ? (
+                        <span style={{ opacity: 0.55, fontSize: 11 }}>No verdict required</span>
                       ) : (
                         <span style={{ opacity: 0.45, fontSize: 11 }}>Not reviewed</span>
                       )}
