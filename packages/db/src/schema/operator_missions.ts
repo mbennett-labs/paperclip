@@ -1,5 +1,6 @@
 import {
   index,
+  uniqueIndex,
   jsonb,
   pgTable,
   text,
@@ -52,7 +53,7 @@ export const operatorMissions = pgTable(
       .defaultNow(),
   },
   (table) => ({
-    companyMissionIdIdx: index("operator_missions_company_mission_id_idx").on(
+    companyMissionIdUq: uniqueIndex("operator_missions_company_mission_id_uq").on(
       table.companyId,
       table.missionId,
     ),
