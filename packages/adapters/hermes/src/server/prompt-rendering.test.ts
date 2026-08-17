@@ -246,3 +246,116 @@ test("preserves custom prompt templates while exposing runtime and wake variable
   expect(prompt).toContain("Issue description:\n```text\nUse the wake payload as runtime authority.\n```");
   expect(prompt).not.toContain("Paperclip runtime identity:");
 });
+
+test("renders safely without any wake payload or task markdown (generic on-demand invocation)", () => {
+  const ctx = {
+    agent: {
+      id: "agent-1",
+      name: "Hermes Engineer",
+      companyId: "company-1",
+    },
+    runId: "run-1",
+    config: {},
+    context: {},
+  } as any;
+  const prompt = buildPrompt(ctx, {});
+
+  expect(prompt).toContain('You are "Hermes Engineer"');
+  expect(prompt).toContain("Paperclip runtime identity:");
+  expect(prompt).toContain("- Agent ID: agent-1");
+  expect(prompt).toContain("You are agent agent-1 (Hermes Engineer). Continue your Paperclip work.");
+  expect(prompt).toContain("clear final disposition");
+  expect(prompt).not.toContain("## Paperclip Wake Payload");
+  expect(prompt).not.toContain("Paperclip task context:");
+  expect(prompt).not.toContain("Issue description:");
+  expect(prompt).not.toContain("PAPERCLIP_API_KEY: sk-");
+  expect(prompt).not.toContain("bearer");
+});
+
+test("no hardcoded Paperclip API token leaks into the prompt", () => {
+  const prompt = buildPrompt(baseContext(), {
+    paperclipApiUrl: "http://paperclip.local/api",
+  });
+
+  expect(prompt).not.toContain("sk-");
+  expect(prompt).not.toContain("Bearer sk-");
+  expect(prompt).not.toContain("PAPERCLIP_API_KEY=sk-");
+  expect(prompt).toContain("Authorization: Bearer $PAPERCLIP_API_KEY");
+});
+
+test("openclaw dialect prompt preserves execution contract without granting API access", () => {
+  const prompt = buildPrompt(baseContext(), {}, { resumedSession: false });
+
+  expect(prompt).toContain("clear final disposition");
+  expect(prompt).toContain("keep `in_progress` only when a live continuation path exists");
+  expect(prompt).toContain("Use child issues for parallel or long delegated work instead of polling agents, sessions, or processes.");
+  expect(prompt).not.toContain("allowPaperclipApiAccess");
+  expect(prompt).not.toContain("PAPERCLIP_API_KEY=");
+});
+
+
+test("quarantines stale runtime session handles carried by continuation summaries", () => {
+  const staleSessionId = "d8c60dcf-5cc7-4944-a8fe-9e0a4a9bba86";
+  const prompt = buildPrompt(baseContext({
+    paperclipWake: {
+      reason: "issue_assigned",
+      issue: {
+        id: "issue-1",
+        identifier: "QSL-1",
+        title: "Finish Operator Loop V0.1",
+        status: "todo",
+        priority: "medium",
+        workMode: "standard",
+      },
+      continuationSummary: {
+        body: `Prior run ${staleSessionId} failed; inspect session status before continuing.`,
+        bodyTruncated: false,
+      },
+      checkedOutByHarness: true,
+      commentWindow: { requestedCount: 0, includedCount: 0, missingCount: 0 },
+      comments: [],
+      fallbackFetchNeeded: false,
+    },
+  }), {});
+
+  expect(prompt).toContain("Issue continuation summary (historical evidence):");
+  expect(prompt).toContain("Runtime/session handles named in this summary belong to prior runs and are non-actionable");
+  expect(prompt).toContain("Do not call `session_status` or any `sessions_*` tool with an identifier copied from this summary");
+  expect(prompt).toContain("durable Paperclip issue/run evidence and the Paperclip API");
+  expect(prompt).toContain(staleSessionId);
+});
+
+
+
+test("recovery wake keeps minimal disposition API guidance while suppressing generic deliverable workflow", () => {
+  const prompt = buildPrompt(baseContext({
+    paperclipWake: {
+      reason: "source_scoped_recovery_action",
+      issue: {
+        id: "issue-1",
+        identifier: "QSL-1",
+        title: "Finish Operator Loop V0.1",
+        status: "blocked",
+        priority: "medium",
+        workMode: "standard",
+      },
+      checkedOutByHarness: true,
+      commentWindow: { requestedCount: 0, includedCount: 0, missingCount: 0 },
+      comments: [],
+      fallbackFetchNeeded: false,
+    },
+  }), {
+    paperclipApiUrl: "http://127.0.0.1:3101/api",
+  });
+
+  expect(prompt).toContain("Recovery contract: your job is to RECOVER this task, not to do the work.");
+  expect(prompt).toContain("Paperclip recovery API guidance:");
+  expect(prompt).toContain("A narrative response is not a disposition.");
+  expect(prompt).toContain("$PAPERCLIP_API_URL");
+  expect(prompt).toContain("Authorization: Bearer $PAPERCLIP_API_KEY");
+  expect(prompt).toContain("X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID");
+  expect(prompt).toContain('PATCH \"$api/issues/issue-1\"');
+  expect(prompt).toContain("`in_progress` only when a live continuation path actually exists");
+  expect(prompt).not.toContain("Safe multiline update pattern:");
+  expect(prompt).not.toContain('You are "Hermes Engineer", an AI agent employee in a Paperclip-managed company.');
+});

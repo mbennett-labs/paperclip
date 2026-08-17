@@ -3502,6 +3502,25 @@ export function agentRoutes(
       return;
     }
 
+    const issuesSvc = issueService(db);
+    let resolvedIssueId: string | undefined;
+    let resolvedIssueIdentifier: string | undefined;
+    if (!req.body?.issueId) {
+      const assigned = await issuesSvc.list(agent.companyId, {
+        assigneeAgentId: id,
+        status: ["todo", "in_progress"],
+        limit: 1,
+        sortField: "updated",
+        sortDir: "desc",
+      });
+      if (assigned.length > 0) {
+        resolvedIssueId = assigned[0].id;
+        resolvedIssueIdentifier = assigned[0].identifier ?? undefined;
+      }
+    } else {
+      resolvedIssueId = String(req.body.issueId);
+    }
+
     const body = (req.body ?? {}) as Partial<{
       reason: unknown;
       payload: unknown;
@@ -3513,6 +3532,10 @@ export function agentRoutes(
       triggeredBy: req.actor.type,
       actorId: req.actor.type === "agent" ? req.actor.agentId : req.actor.userId,
     };
+    if (resolvedIssueId) {
+      contextSnapshot.issueId = resolvedIssueId;
+      (contextSnapshot as Record<string, unknown>).paperclipIssueIdentifier = resolvedIssueIdentifier;
+    }
     if (body.forceFreshSession === true) {
       contextSnapshot.forceFreshSession = true;
     }

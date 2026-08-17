@@ -5,9 +5,9 @@ const manifest: PaperclipPluginManifestV1 = {
   id: PLUGIN_ID,
   apiVersion: 1,
   version: PLUGIN_VERSION,
-  displayName: "Email Connector (QSL)",
+  displayName: "Email Operations (QSL)",
   description:
-    "Governed email intake and reply for the QSL Email Company. IMAP poll creates triage issues from inbound mail; the Board sends approved drafts via a Board-invoked action. Agents have no send capability by construction.",
+    "Governed portfolio email intake and reply operations. IMAP intake creates reviewable work, deterministic sorting suppresses low-value traffic, and outbound effects remain human-authorized.",
   author: "QuantumShield Labs",
   categories: ["connector", "automation"],
   capabilities: [
@@ -36,7 +36,7 @@ const manifest: PaperclipPluginManifestV1 = {
   },
   instanceConfigSchema: {
     type: "object",
-    description: "Company-scoped connector settings. Configure once per company that operates email (set via plugin settings for the Email company).",
+    description: "Company-scoped Email Operations settings. Configure independently for each portfolio company that operates email.",
     properties: {
       enabled: {
         type: "boolean",
@@ -73,15 +73,98 @@ const manifest: PaperclipPluginManifestV1 = {
         description: "Billing code stamped on intake issues for per-mission cost attribution.",
         default: DEFAULTS.billingCode,
       },
+      mailboxProfiles: {
+        type: "array",
+        title: "Mailbox Profiles",
+        description:
+          "Preferred multi-mailbox configuration. Model each owned company mailbox as active, standby, or reserved. Active mailboxes require their own secret binding; standby and reserved mailboxes can be planned without credentials or polling.",
+        items: {
+          type: "object",
+          properties: {
+            key: {
+              type: "string",
+              title: "Mailbox Key",
+              description: "Stable unique key within this company, for example michael, info, support, or research.",
+            },
+            username: {
+              type: "string",
+              title: "Mailbox Address",
+              description: "Full IMAP/SMTP mailbox address.",
+            },
+            status: {
+              type: "string",
+              title: "Operational Status",
+              enum: ["active", "standby", "reserved"],
+              default: "standby",
+              description:
+                "active = eligible for governed intake/send; standby = modeled for near-term use but not polled; reserved = owned for future or special-purpose use.",
+            },
+            credentialSecretRef: {
+              type: "object",
+              title: "Mailbox Credential",
+              description: "Per-mailbox secret binding. Required by runtime validation before this mailbox can be active.",
+              format: "secret-ref",
+              properties: {
+                type: { type: "string", const: "secret_ref" },
+                secretId: { type: "string" },
+                version: { type: ["string", "number"] },
+              },
+              required: ["type", "secretId"],
+            },
+            imapHost: {
+              type: "string",
+              title: "IMAP Host Override",
+              description: "Optional. Empty inherits the company-level IMAP host.",
+            },
+            imapPort: {
+              type: "integer",
+              title: "IMAP Port Override",
+              description: "Optional. Empty inherits the company-level IMAP port.",
+            },
+            smtpHost: {
+              type: "string",
+              title: "SMTP Host Override",
+              description: "Optional. Empty inherits the company-level SMTP host.",
+            },
+            smtpPort: {
+              type: "integer",
+              title: "SMTP Port Override",
+              description: "Optional. Empty inherits the company-level SMTP port.",
+            },
+            pollFolder: {
+              type: "string",
+              title: "Poll Folder Override",
+              description: "Optional. Empty inherits the company-level poll folder.",
+            },
+            archiveFolder: {
+              type: "string",
+              title: "Archive Folder Override",
+              description: "Optional. Empty inherits the company-level archive folder.",
+            },
+            maxMessagesPerPoll: {
+              type: "integer",
+              title: "Max Messages Per Poll Override",
+              description: "Optional. Empty inherits the company-level poll limit.",
+            },
+            intakeSince: {
+              type: "string",
+              title: "Intake Since Override",
+              description: "Optional YYYY-MM-DD boundary for this mailbox. Empty inherits the company-level boundary.",
+              format: "date",
+            },
+          },
+          required: ["key", "username", "status"],
+        },
+      },
       username: {
         type: "string",
-        title: "Mailbox Username",
-        description: "IMAP/SMTP username (for Gmail: the full address).",
+        title: "Legacy Primary Mailbox Username",
+        description: "Backward-compatible primary IMAP/SMTP username. Existing deployments may keep this while migrating to Mailbox Profiles.",
       },
       credentialSecretRef: {
         type: "object",
-        title: "Mailbox Credential",
-        description: "Secret binding holding the mailbox password (for Gmail: an app password). Resolved at execution time only.",
+        title: "Legacy Shared Mailbox Credential",
+        description: "Backward-compatible company-level secret binding for the legacy primary/alias path. Structured Mailbox Profiles use their own secret bindings instead.",
         format: "secret-ref",
         properties: {
           type: { type: "string", const: "secret_ref" },
@@ -119,9 +202,9 @@ const manifest: PaperclipPluginManifestV1 = {
       },
       extraProfilesJson: {
         type: "string",
-        title: "Additional Connector Profiles (JSON)",
+        title: "Legacy Additional Mailbox Profiles (JSON)",
         description:
-          "Optional JSON array of additional mailbox profiles (same fields as above plus `key`). Future multi-mailbox capability; the engine and loop are identical per profile.",
+          "Backward-compatible alias/same-credential profile list. These entries share the legacy company-level credential. Use Mailbox Profiles for independent real inboxes.",
         default: DEFAULTS.extraProfilesJson,
       },
       storeExportPath: {
@@ -166,7 +249,7 @@ const manifest: PaperclipPluginManifestV1 = {
       {
         type: "page",
         id: SLOT_IDS.storeIntakePage,
-        displayName: "Store Intake Review",
+        displayName: "Email Operations",
         exportName: EXPORT_NAMES.storeIntakePage,
       },
       {

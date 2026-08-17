@@ -417,4 +417,30 @@ describe("issue validators", () => {
 
     expect(parsed.success).toBe(false);
   });
+  it("preserves a structured QSL mission contract on primary issues", () => {
+    const parsed = createIssueSchema.parse({
+      title: "Bounded mission",
+      executionPolicy: {
+        missionContract: {
+          version: 1,
+          objective: "Return verified evidence or one meaningful escalation.",
+          authorityLevel: "L1",
+          acceptanceCriteria: [
+            { id: "AC-1", text: "Canonical workspace is resolved before diagnosis." },
+          ],
+          maxRepairRetries: 1,
+          requiredStages: ["implementation", "verification", "sentinel_review", "provenance_receipt"],
+          provider: "openrouter",
+          model: "openrouter/deepseek/deepseek-chat",
+          productionIsolationRequired: true,
+        },
+      },
+    });
+
+    expect(parsed.executionPolicy?.missionContract?.acceptanceCriteria).toEqual([
+      { id: "AC-1", text: "Canonical workspace is resolved before diagnosis." },
+    ]);
+    expect(parsed.executionPolicy?.missionContract?.maxRepairRetries).toBe(1);
+  });
+
 });

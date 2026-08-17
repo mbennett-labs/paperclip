@@ -1702,7 +1702,10 @@ export function renderPaperclipWakePrompt(
   if (normalized.continuationSummary) {
     lines.push(
       "",
-      "Issue continuation summary:",
+      "Issue continuation summary (historical evidence):",
+      "- Runtime/session handles named in this summary belong to prior runs and are non-actionable on the current run.",
+      "- Do not call `session_status` or any `sessions_*` tool with an identifier copied from this summary. Inspect prior execution through durable Paperclip issue/run evidence and the Paperclip API instead.",
+      "- Only the current run's runtime session is live unless current-run metadata explicitly provides a resumable session.",
       normalized.continuationSummary.body,
     );
     if (normalized.continuationSummary.bodyTruncated) {

@@ -140,9 +140,9 @@ fi
 
 # ── 5. Required branch and commit ──────────────────────────────────────────
 
-check "on required branch (feat/hermes-synthetic-poc-v0)" \
+check "on required branch (feat/hermes-synthetic-poc-v0 or feat/qsl-current-upstream-integration)" \
   "$(git branch --show-current 2>/dev/null || echo "unknown")" \
-  test "$(git branch --show-current 2>/dev/null)" = "feat/hermes-synthetic-poc-v0"
+  bash -c 'b="$(git branch --show-current 2>/dev/null)"; test "$b" = "feat/hermes-synthetic-poc-v0" -o "$b" = "feat/qsl-current-upstream-integration"'
 
 HEAD_COMMIT="$(git rev-parse HEAD 2>/dev/null || echo "unknown")"
 echo "  HEAD: $HEAD_COMMIT"
@@ -169,10 +169,19 @@ else
   PASSED=$((PASSED + 1))
 fi
 
-# ── 7. Workspace can be created ────────────────────────────────────────────
+# ── 7. Workspace can be created (disposable probe — MUST NOT leave residue) ─
+#
+# The real run workspace (${SANDBOX_PARENT}/paperclip-hermes-sandbox-${RUN_ID})
+# is created by the Paperclip server at execution time, under the server's own
+# UID.  If preflight creates it here (as root), the staging service (UID 997)
+# cannot later mkdir inside it and Hermes execution fails with EACCES.
+#
+# So this step proves the sandbox parent is writable using a disposable probe
+# directory that is created and removed in the same command.  It never touches
+# the real run workspace.
 
-check "workspace dir can be created: $WORKSPACE_DIR" "" \
-  bash -c 'mkdir -p "$0" 2>/dev/null && test -d "$0" && test -w "$0"' "$WORKSPACE_DIR"
+check "workspace dir can be created and removed under $SANDBOX_PARENT" "" \
+  bash -c 'd="$(mktemp -d "${1}/paperclip-hermes-preflight-XXXXXX")" && rmdir "$d"' _ "$SANDBOX_PARENT"
 
 # ── 8. Sufficient resources ────────────────────────────────────────────────
 
@@ -279,65 +288,147 @@ for script in preflight.sh verify-evidence.sh cleanup.sh; do
   fi
 done
 
-# ── 15. Hermes executable check (fail-closed) ───────────────────────────────
+# ── 15. Hermes/OpenClaw executable check (fail-closed) ─────────────────────
 #
-# Resolves the configured Hermes command exactly as execute.ts does:
+# Resolves the configured command exactly as execute.ts does:
 #   resolveHermesCommand: config.hermesCommand → config.command → "hermes"
 #   resolveCommandPath: absolute path or PATH walk with X_OK check
 #
-# Does NOT start an agent, call a provider, or execute Hermes.
+# Does NOT start an agent, call a provider, or execute Hermes/OpenClaw.
+#
+# When the binary is under /home/openclaw (OpenClaw installation), the
+# version probe runs as the openclaw user because the binary requires
+# Node >=22.12.0 which is only available in the openclaw user's PATH.
 
 HERMES_CMD="${HERMES_COMMAND:-hermes}"
 HERMES_PATH="$(command -v "$HERMES_CMD" 2>/dev/null || true)"
 
 if [[ -z "$HERMES_PATH" ]]; then
-  echo "FAIL: Hermes CLI '$HERMES_CMD' not found in PATH" >&2
-  echo "  BLOCKED: Hermes must be installed before POC execution." >&2
-  echo "  Install: pip install hermes-agent" >&2
-  echo "  Or configure the path via HERMES_COMMAND= env var" >&2
-  echo "  Or use the full path in Paperclip agent config: containment.command" >&2
+  echo "FAIL: Hermes/OpenClaw CLI '$HERMES_CMD' not found in PATH" >&2
+  echo "  BLOCKED: The Hermes/OpenClaw CLI must be installed before POC execution." >&2
+  echo "  If using OpenClaw: set HERMES_COMMAND=/home/openclaw/.local/bin/openclaw" >&2
+  echo "  Or configure the path in Paperclip agent config: config.hermesCommand" >&2
   FAILED=$((FAILED + 1))
 else
-  check "Hermes CLI found and executable" "$HERMES_PATH" \
+  check "Hermes/OpenClaw CLI found and executable" "$HERMES_PATH" \
     test -x "$HERMES_PATH"
 
-  if "$HERMES_PATH" --version >/dev/null 2>&1; then
-    HERMES_VERSION="$("$HERMES_PATH" --version 2>&1 | head -1 || true)"
-    echo "  Hermes version: $HERMES_VERSION"
+  # Probe --version in the intended execution context.
+  # If the binary is under /home/openclaw, run as the openclaw user
+  # because that user's environment has the correct Node runtime.
+  HERMES_VERSION=""
+  VERSION_OK=0
+
+  if [[ "$HERMES_PATH" = /home/openclaw/* ]] && command -v sudo >/dev/null 2>&1; then
+    if sudo -u openclaw env \
+      HOME=/home/openclaw \
+      PATH="/home/openclaw/.local/bin:/usr/local/bin:/usr/bin:/bin" \
+      "$HERMES_PATH" --version >/dev/null 2>&1; then
+      HERMES_VERSION="$(sudo -u openclaw env \
+        HOME=/home/openclaw \
+        PATH="/home/openclaw/.local/bin:/usr/local/bin:/usr/bin:/bin" \
+        "$HERMES_PATH" --version 2>&1 | head -1 || true)"
+      VERSION_OK=1
+    fi
   else
-    echo "  WARN: $HERMES_CMD --version failed (binary exists at $HERMES_PATH but may need Python or configuration)"
-    echo "  This is non-fatal for preflight but may indicate an incomplete Hermes installation."
+    if "$HERMES_PATH" --version >/dev/null 2>&1; then
+      HERMES_VERSION="$("$HERMES_PATH" --version 2>&1 | head -1 || true)"
+      VERSION_OK=1
+    fi
+  fi
+
+  if [[ $VERSION_OK -eq 1 ]]; then
+    echo "PASS: $HERMES_CMD --version succeeded"
+    echo "  Version: $HERMES_VERSION"
+    PASSED=$((PASSED + 1))
+  else
+    echo "  WARN: $HERMES_CMD --version failed (binary exists at $HERMES_PATH but may need runtime dependencies)"
+    if [[ "$HERMES_PATH" = /home/openclaw/* ]]; then
+      echo "  The OpenClaw binary requires Node >=22.12.0, available in the"
+      echo "  openclaw user's environment. Paperclip will execute through bwrap"
+      echo "  with the configured containment.executionUid and HOME."
+    fi
+    echo "  This is non-fatal for preflight but should be verified before POC execution."
   fi
 fi
 
 # ── 16. UID/GID contract ─────────────────────────────────────────────────────
+#
+# The UID of the preflight shell is NOT the same thing as:
+#   - the Paperclip server UID
+#   - the contained Hermes/OpenClaw child UID
+#
+# Invariant:
+#   Paperclip/preflight MAY run as root.
+#   A contained Hermes/OpenClaw child MUST NEVER execute as root (UID 0).
+#
+# Runtime enforcement (local-process-sandbox.ts):
+#   containmentRequired=true + no executionUid + host UID 0 → REJECT
+#
+# This preflight cannot mechanically inspect the Paperclip agent config
+# (containment.executionUid is set there). It detects the host environment
+# and reports whether a suitable non-root UID exists for configuration.
+# Final verification that containment.executionUid is actually set in the
+# agent config belongs to the runtime/API/operator step.
 
 CURRENT_UID="$(id -u 2>/dev/null || echo 0)"
 CURRENT_GID="$(id -g 2>/dev/null || echo 0)"
 
-echo "  Current UID: $CURRENT_UID, GID: $CURRENT_GID"
+echo "  Preflight shell UID: $CURRENT_UID, GID: $CURRENT_GID"
 
-if [[ "$CURRENT_UID" == "0" ]]; then
-  echo "WARN: Running as root (UID 0)"
-  echo "  Bubblewrap containment REJECTS executionUid=0."
-  echo "  REQUIRED OPERATOR ACTION: Configure a non-zero containment.executionUid"
-  echo "  (e.g., 1000 or 1001) in the Hermes agent config."
-  echo "  Without --unshare-user, bwrap runs the child as the invoking UID."
-  echo "  With --unshare-user (non-zero UID), bwrap creates a new user namespace"
-  echo "  and the child runs as the configured UID/GID."
-  echo "  The workspace (/tmp/paperclip-hermes-sandbox-<runId>) is mounted with"
-  echo "  --bind inside the sandbox, which maps the host directory to the"
-  echo "  configured UID inside the sandbox's tmpfs root."
+# Detect the OpenClaw execution identity on this host.
+# This must be a real, non-root system user because the workspace is mounted
+# via --bind inside the bwrap sandbox and filesystem ownership maps to that UID.
+# Prefer the owner of the resolved OpenClaw binary (the identity that actually
+# executes Hermes/OpenClaw), falling back to the `openclaw` system account.
+CONTAINMENT_UID_NUM=""
+CONTAINMENT_GID_NUM=""
+CONTAINMENT_UID_CANDIDATE=""
+if [[ -n "$HERMES_PATH" && -f "$HERMES_PATH" ]]; then
+  CONTAINMENT_UID_NUM="$(stat -c '%u' "$HERMES_PATH" 2>/dev/null || true)"
+  CONTAINMENT_GID_NUM="$(stat -c '%g' "$HERMES_PATH" 2>/dev/null || true)"
+fi
+if [[ -z "$CONTAINMENT_UID_NUM" || "$CONTAINMENT_UID_NUM" == "0" ]]; then
+  CONTAINMENT_UID_NUM="$(getent passwd openclaw 2>/dev/null | cut -d: -f3 || true)"
+  CONTAINMENT_GID_NUM="$(getent passwd openclaw 2>/dev/null | cut -d: -f4 || true)"
+fi
+if [[ -n "$CONTAINMENT_UID_NUM" && "$CONTAINMENT_UID_NUM" != "0" ]]; then
+  CONTAINMENT_UID_CANDIDATE="$(getent passwd "$CONTAINMENT_UID_NUM" 2>/dev/null | cut -d: -f1 || true)"
+  if [[ -z "$CONTAINMENT_GID_NUM" ]]; then
+    CONTAINMENT_GID_NUM="$CONTAINMENT_UID_NUM"
+  fi
 fi
 
-# Check available UIDs for the operator
-if command -v getent >/dev/null 2>&1; then
-  FIRST_USER="$(getent passwd 1000 2>/dev/null | cut -d: -f1 || true)"
-  if [[ -n "$FIRST_USER" ]]; then
-    echo "  Detected user: $FIRST_USER (UID 1000) — suitable for containment.executionUid"
+if [[ "$CURRENT_UID" == "0" ]]; then
+  # Paperclip/preflight running as root is permitted.
+  # But the contained child must never be root — containment.executionUid is mandatory.
+  echo "INFO: Preflight shell is running as root (UID 0)."
+  echo "  Running Paperclip or preflight as root is permitted."
+  echo "  A contained Hermes/OpenClaw child MUST NEVER execute as root."
+  echo "  When the host process is root, containment.executionUid is MANDATORY."
+  echo "  Runtime enforcement REJECTS containmentRequired=true without executionUid."
+  if [[ -n "$CONTAINMENT_UID_CANDIDATE" ]]; then
+    check "suitable containment UID available" \
+      "$CONTAINMENT_UID_CANDIDATE (UID $CONTAINMENT_UID_NUM, GID $CONTAINMENT_GID_NUM)" \
+      test -n "$CONTAINMENT_UID_CANDIDATE"
+    echo "  REQUIRED OPERATOR ACTION: Set containment.executionUid=$CONTAINMENT_UID_NUM"
+    echo "  and containment.executionGid=$CONTAINMENT_GID_NUM in the Hermes agent config."
+    echo "  This offline preflight detects the OpenClaw identity from the host; it"
+    echo "  does NOT inspect the live Paperclip agent config — final verification"
+    echo "  that the value is actually set belongs to runtime/API/operator."
   else
-    echo "  No user at UID 1000. Suggested: containment.executionUid=1000 (numeric only)"
+    echo "FAIL: No non-root system user detected on this host." >&2
+    echo "  A non-root user must exist before containment.executionUid can be configured." >&2
+    FAILED=$((FAILED + 1))
   fi
+elif [[ -z "$CONTAINMENT_UID_CANDIDATE" ]]; then
+  echo "WARN: No non-root OpenClaw/system user detected on this host."
+  echo "  When the host process is non-root (UID $CURRENT_UID), the child inherits that UID."
+  echo "  An explicit containment.executionUid is still recommended for defense-in-depth."
+else
+  check "suitable containment UID available" \
+    "$CONTAINMENT_UID_CANDIDATE (UID $CONTAINMENT_UID_NUM, GID $CONTAINMENT_GID_NUM)" \
+    test -n "$CONTAINMENT_UID_CANDIDATE"
 fi
 
 echo ""

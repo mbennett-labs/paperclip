@@ -8,9 +8,12 @@
  * Safety invariants:
  * - Duplicate messages do not generate duplicate reply drafts.
  * - Spam does not generate reply drafts.
+ * - System notifications do not generate reply drafts.
  * - Uncertain recipient/thread relationships fail closed (no draft).
  * - Incomplete submissions can generate a clarification-draft candidate.
  * - Final send remains a separate Board/human-approved action.
+ * - Default draft copy is portfolio-neutral; venture-specific voice belongs
+ *   in an explicitly selected company template, never a hidden hard-code.
  */
 
 import type { IntakeSortCategory } from "./sorter.js";
@@ -51,6 +54,7 @@ const DRAFT_BLOCKED_CATEGORIES: Set<IntakeSortCategory> = new Set([
   "spam_irrelevant",
   "duplicate",
   "unknown",
+  "system_notification",
 ]);
 
 const DRAFT_NEEDED_CATEGORIES: Set<IntakeSortCategory> = new Set([
@@ -133,7 +137,7 @@ function buildDraftCandidate(
         `Could you please provide the missing details so we can process your submission? A team member will follow up shortly.`,
         ``,
         `Best,`,
-        `TheBinMap Team`,
+        `Operations Team`,
       ].join("\n");
 
       return {
@@ -154,7 +158,7 @@ function buildDraftCandidate(
         `If we need any additional information, we will reach out.`,
         ``,
         `Best,`,
-        `TheBinMap Team`,
+        `Operations Team`,
       ].join("\n");
 
       return {
@@ -170,12 +174,12 @@ function buildDraftCandidate(
       const body = [
         `Hi,`,
         ``,
-        `Thank you for reaching out to TheBinMap. We have received your message and a team member will get back to you as soon as possible.`,
+        `Thank you for reaching out. We have received your message and a team member will get back to you as soon as possible.`,
         ``,
         `If this is urgent, please let us know.`,
         ``,
         `Best,`,
-        `TheBinMap Team`,
+        `Operations Team`,
       ].join("\n");
 
       return {

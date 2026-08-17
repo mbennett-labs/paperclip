@@ -301,22 +301,23 @@ describe("preflight.sh", () => {
     }
   });
 
-  // Workspace creation test — validate preflight can create workspace
-  it("creates workspace directory on disk", () => {
-    const runId = "poc-create-test";
+  // Workspace lifecycle test — preflight must NOT leave a real run workspace.
+  // The real workspace is created by the Paperclip server (under the server's
+  // own UID). If preflight created it here as root, the staging service
+  // (non-root) could not later mkdir inside it and Hermes would fail EACCES.
+  it("does not leave the real run workspace behind", () => {
+    const runId = "poc-workspace-probe";
     const expectedDir = path.join(os.tmpdir(), `paperclip-hermes-sandbox-${runId}`);
     cleanupDirs.push(expectedDir);
-    // Ensure clean state
+    // Ensure clean state before the run.
     try { fs.rmSync(expectedDir, { recursive: true, force: true }); } catch { /* ok */ }
 
-    // Run just the workspace check portion — try creating the dir
-    fs.mkdirSync(expectedDir, { recursive: true });
-    expect(fs.existsSync(expectedDir)).toBe(true);
-    expect(fs.statSync(expectedDir).isDirectory()).toBe(true);
+    // Run preflight for this run-id. The workspace check uses a disposable
+    // mktemp probe, so the real workspace dir must NOT be created.
+    const r = runScript(PREFLIGHT, ["--run-id", runId]);
 
-    // Cleanup
-    fs.rmSync(expectedDir, { recursive: true, force: true });
     expect(fs.existsSync(expectedDir)).toBe(false);
+    expect(r.stdout).toContain("created and removed");
   });
 
   // Run ID validation
@@ -356,7 +357,7 @@ describe("preflight.sh", () => {
     });
     expect(r.status).not.toBe(0);
     const combined = `${r.stdout}\n${r.stderr}`;
-    expect(combined).toContain("Hermes CLI");
+    expect(combined).toContain("Hermes/OpenClaw CLI");
     expect(combined).toContain("not found");
     expect(combined).toContain("BLOCKED");
   });
@@ -369,18 +370,20 @@ describe("preflight.sh", () => {
     });
     // Should at least find the executable
     const combined = `${r.stdout}\n${r.stderr}`;
-    expect(combined).toMatch(/Hermes CLI found/);
+    expect(combined).toMatch(/Hermes\/OpenClaw CLI found/);
   });
 
-  // Root UID detection
-  it("warns when running as root", () => {
-    const r = runScript(PREFLIGHT, ["--run-id", "root-check"]);
-    // If running as root (which we are), should warn
+  // Root UID advisory (not failure)
+  it("reports root advisory without failing preflight", () => {
+    const r = runScript(PREFLIGHT, ["--run-id", "root-advisory"]);
+    // If running as root (which we are), should report advisory but not FAIL
     if (process.getuid?.() === 0) {
       const combined = `${r.stdout}\n${r.stderr}`;
-      expect(combined).toContain("Running as root");
+      expect(combined).toContain("Preflight shell is running as root");
+      expect(combined).toContain("preflight as root is permitted");
       expect(combined).toContain("REQUIRED OPERATOR ACTION");
       expect(combined).toContain("containment.executionUid");
+      expect(combined).not.toContain("FAIL: Running as root");
     }
   });
 

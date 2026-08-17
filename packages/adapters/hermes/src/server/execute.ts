@@ -33,6 +33,8 @@ import {
   buildPaperclipEnv,
   renderTemplate,
   ensureAbsoluteDirectory,
+  asString,
+  parseObject,
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
   joinPromptSections,
   renderPaperclipWakePrompt,
@@ -81,6 +83,198 @@ export function resolveHermesCommand(config: Record<string, unknown>): string {
   return cfgString(config.hermesCommand) || cfgString(config.command) || HERMES_CLI;
 }
 
+export type HermesCommandDialect = "hermes" | "openclaw";
+
+/**
+ * Resolve the CLI dialect used to build the child argv.
+ *
+ * The adapter historically only spoke the Python `hermes` CLI (`chat -q ...`).
+ * When `hermesCommand` points at an OpenClaw binary (which has no `chat`
+ * subcommand), operators opt in via `commandDialect: "openclaw"` so the adapter
+ * emits OpenClaw's embedded/headless `agent --local` invocation instead.
+ *
+ * This is explicit configuration, not a basename heuristic, so a Hermes-compatible
+ * wrapper named `openclaw` (or vice-versa) never changes behavior implicitly.
+ */
+export function resolveHermesCommandDialect(
+  config: Record<string, unknown>,
+): HermesCommandDialect {
+  return cfgString(config.commandDialect) === "openclaw" ? "openclaw" : "hermes";
+}
+
+export interface HermesCommandArgsInput {
+  dialect: HermesCommandDialect;
+  prompt: string;
+  runId: string;
+  model: string;
+  resolvedProvider: string;
+  timeoutSec: number;
+  useQuiet: boolean;
+  toolsets: string | undefined;
+  maxTurns: number | undefined;
+  worktreeMode: boolean;
+  checkpoints: boolean;
+  verbose: boolean;
+  dangerousYolo: boolean;
+  persistSession: boolean;
+  prevSessionId: string | undefined;
+  extraArgs: string[] | undefined;
+}
+
+/**
+ * Build the child argv for the configured dialect.
+ *
+ * Hermes dialect (default) preserves the historical `chat -q` argv.
+ * OpenClaw dialect emits OpenClaw 2026.2.17's embedded, non-interactive
+ * `agent --local --session-id <runId> --message <prompt> --json --timeout <sec>`.
+ * Model selection for OpenClaw is driven by writing a minimal `openclaw.json`
+ * into the sandbox home (agents.defaults.model.primary). The `agent --local`
+ * CLI does not accept --model; the sandbox config file is the selection method
+ * supported by this installed version.
+ */
+export function buildHermesCommandArgs(input: HermesCommandArgsInput): string[] {
+  if (input.dialect === "openclaw") {
+    const args: string[] = [
+      "agent",
+      "--local",
+      "--session-id",
+      input.runId,
+      "--message",
+      input.prompt,
+      "--json",
+      "--timeout",
+      String(Math.max(1, Math.floor(input.timeoutSec))),
+    ];
+    return args;
+  }
+
+  const args: string[] = ["chat", "-q", input.prompt];
+  if (input.useQuiet) args.push("-Q");
+  if (input.model) args.push("-m", input.model);
+  if (input.resolvedProvider !== "auto") args.push("--provider", input.resolvedProvider);
+  if (input.toolsets) args.push("-t", input.toolsets);
+  if (input.maxTurns && input.maxTurns > 0) args.push("--max-turns", String(input.maxTurns));
+  if (input.worktreeMode) args.push("-w");
+  if (input.checkpoints) args.push("--checkpoints");
+  if (input.verbose) args.push("-v");
+  args.push("--source", "tool");
+  if (input.dangerousYolo) args.push("--yolo");
+  if (input.persistSession && input.prevSessionId) args.push("--resume", input.prevSessionId);
+  if (input.extraArgs?.length) args.push(...input.extraArgs);
+  return args;
+}
+
+/**
+ * Resolve the Hermes child working directory using the canonical Paperclip
+ * workspace model (shared with the other local adapters).
+ *
+ * Precedence:
+ *   1. The run workspace supplied by the execution context
+ *      (`context.paperclipWorkspace.cwd`) — always an absolute path.
+ *   2. An explicit `config.cwd` override (when the workspace source is
+ *      `agent_home`, a configured cwd wins over the fallback agent home).
+ *   3. The host process cwd (`process.cwd()`), which Node always returns as
+ *      an absolute path.
+ *
+ * The result is guaranteed absolute; a relative "." is never produced because
+ * the sandbox (local-process-sandbox) rejects non-absolute mount paths.
+ */
+export function resolveHermesWorkingDirectory(
+  config: Record<string, unknown>,
+  context: Record<string, unknown>,
+): string {
+  const workspaceContext = parseObject(context.paperclipWorkspace);
+  const workspaceCwd = asString(workspaceContext.cwd, "");
+  const workspaceSource = asString(workspaceContext.source, "");
+  const configuredCwd = cfgString(config.cwd);
+  const useConfiguredInsteadOfAgentHome =
+    workspaceSource === "agent_home" && Boolean(configuredCwd);
+  const effectiveWorkspaceCwd = useConfiguredInsteadOfAgentHome ? "" : workspaceCwd;
+  return effectiveWorkspaceCwd || configuredCwd || process.cwd();
+}
+
+/**
+ * Resolve the contained sandbox workspace root.
+ *
+ * `containment.workspaceDir` is an optional persistent-config override; when it
+ * is unset (the normal case) the workspace is derived per-run from the run ID,
+ * so a new POC run never depends on a stale poc-001/poc-002 directory embedded
+ * in the persistent agent configuration.
+ */
+export function resolveHermesSandboxWorkspaceDir(
+  config: Record<string, unknown>,
+  runId: string,
+): string {
+  return (
+    cfgString(config["containment.workspaceDir"]) ||
+    path.join(os.tmpdir(), `paperclip-hermes-sandbox-${runId}`)
+  );
+}
+
+export async function resolveContainedHermesCwdAccess(
+  config: Record<string, unknown>,
+  cwd: string,
+): Promise<"ro" | "rw"> {
+  const requested = cfgString(config["containment.cwdAccess"]) || "ro";
+  if (requested === "ro") return "ro";
+  if (requested !== "rw") {
+    throw new Error(`Invalid containment.cwdAccess "${requested}". Must be "ro" or "rw".`);
+  }
+
+  const configuredRoot = cfgString(config["containment.cwdWriteRoot"]);
+  if (!configuredRoot || !path.isAbsolute(configuredRoot)) {
+    throw new Error("containment.cwdAccess=rw requires an absolute containment.cwdWriteRoot.");
+  }
+
+  const [realCwd, realRoot] = await Promise.all([
+    fs.realpath(cwd),
+    fs.realpath(configuredRoot),
+  ]);
+  if (realRoot === path.parse(realRoot).root) {
+    throw new Error("containment.cwdWriteRoot may not be the filesystem root.");
+  }
+  if (realCwd !== realRoot && !realCwd.startsWith(realRoot + path.sep)) {
+    throw new Error("Contained writable cwd escapes containment.cwdWriteRoot.");
+  }
+  return "rw";
+}
+
+/**
+ * Apply the contained execution identity to the child environment.
+ *
+ * The Hermes/OpenClaw CLI is an .mjs file with a `#!/usr/bin/env node` shebang,
+ * so `node` must resolve from the child PATH.  On hosts where OpenClaw ships
+ * its own Node >=22.12 runtime in the same bin directory (e.g.
+ * /home/openclaw/.local/bin/node -> /usr/local/bin/node22), that directory
+ * must precede the inherited system PATH or the shebang resolves the wrong
+ * (too-old) node.  We prepend the command's own directory rather than the
+ * inherited PATH.
+ *
+ * HOME is pointed at the contained (rw) sandbox home so the child writes
+ * config/cache inside the workspace instead of a non-existent default.
+ */
+export function applyContainedExecutionIdentity(
+  env: Record<string, string>,
+  hermesCommand: string,
+  sandboxHomeDir: string | null | undefined,
+): Record<string, string> {
+  const next: Record<string, string> = { ...env };
+
+  if (path.isAbsolute(hermesCommand)) {
+    const commandDir = path.dirname(hermesCommand);
+    const inheritedPath = next.PATH ?? "";
+    next.PATH = inheritedPath
+      ? `${commandDir}${path.delimiter}${inheritedPath}`
+      : commandDir;
+  }
+
+  if (sandboxHomeDir) {
+    next.HOME = sandboxHomeDir;
+  }
+
+  return next;
+}
+
 // ---------------------------------------------------------------------------
 // Wake-up prompt builder
 // ---------------------------------------------------------------------------
@@ -124,6 +318,42 @@ const HERMES_DEFAULT_PROMPT_TEMPLATE = [
   "",
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
 ].join("\n");
+
+const HERMES_RECOVERY_PROMPT_TEMPLATE = [
+  'You are "{{agent.name}}", the recovery owner for a Paperclip-managed issue.',
+  "",
+  "Paperclip runtime identity:",
+  "- Agent ID: {{agent.id}}",
+  "- Company ID: {{agent.companyId}}",
+  "- Run ID: {{run.id}}",
+  "- API base: {{paperclipApiUrl}}",
+  "",
+  "Paperclip recovery API guidance:",
+  "- This is a recovery heartbeat. Recover the issue state; do not perform the deliverable work.",
+  "- Before returning, persist exactly one valid issue disposition through the Paperclip API. A narrative response is not a disposition.",
+  "- Use `curl` from the terminal and the existing `$PAPERCLIP_API_URL`, `$PAPERCLIP_API_KEY`, and `$PAPERCLIP_RUN_ID` environment variables.",
+  "- Include the Authorization and X-Paperclip-Run-Id headers on the mutating issue request.",
+  "- Valid dispositions are `done`, `in_review`, `blocked`, or `in_progress` only when a live continuation path actually exists.",
+  "- If work is incomplete and no live continuation path exists, use `blocked` with a concise blocker owner and next action.",
+  "- Do not copy transcript text into the disposition comment; summarize only the durable state and next action.",
+  "",
+  "Recovery disposition update pattern:",
+  "```bash",
+  "api=\"${PAPERCLIP_API_URL%/}\"",
+  "case \"$api\" in */api) ;; *) api=\"$api/api\" ;; esac",
+  "status=blocked  # deliberately replace only if another valid disposition is actually supported",
+  "body=$(cat <<'MD'",
+  "Recovery disposition: <concise durable state, blocker/owner if any, and next action>",
+  "MD",
+  ")",
+  "jq -n --arg status \"$status\" --arg comment \"$body\" '{status:$status, comment:$comment}' | \\",
+  "  curl -sS -X PATCH \"$api/issues/{{context.issueId}}\" \\",
+  "    -H \"Authorization: Bearer $PAPERCLIP_API_KEY\" \\",
+  "    -H \"X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID\" \\",
+  "    -H \"Content-Type: application/json\" \\",
+  "    --data-binary @-",
+  "```",
+].join("\\n");
 
 function renderConditionalSections(template: string, vars: Record<string, unknown>): string {
   const isTruthy = (key: string) => {
@@ -198,15 +428,33 @@ export function buildPrompt(
     paperclipRunIdEnv: "PAPERCLIP_RUN_ID",
   };
 
-  const rendered = isPaperclipRecoveryWakePayload(context.paperclipWake)
-    ? ""
-    : renderTemplate(renderConditionalSections(template, vars), vars);
+  const recoveryWake = isPaperclipRecoveryWakePayload(context.paperclipWake);
+  const renderedTemplate = recoveryWake ? HERMES_RECOVERY_PROMPT_TEMPLATE : template;
+  const rendered = renderTemplate(renderConditionalSections(renderedTemplate, vars), vars);
   return joinPromptSections([
     wakePrompt,
     sessionHandoffMarkdown,
     paperclipTaskMarkdown,
     rendered,
   ]);
+}
+
+export function resolveContainedPaperclipApiAllowlistTarget(apiUrl: string): string {
+  let parsed: URL;
+  try {
+    parsed = new URL(apiUrl);
+  } catch {
+    throw new Error("Contained Paperclip API URL must be a valid loopback HTTP URL.");
+  }
+  const hostname = parsed.hostname.toLowerCase();
+  if (parsed.protocol !== "http:" || (hostname !== "127.0.0.1" && hostname !== "localhost")) {
+    throw new Error("Contained Paperclip API access is restricted to loopback HTTP staging endpoints.");
+  }
+  if (parsed.username || parsed.password) {
+    throw new Error("Contained Paperclip API URL must not contain credentials.");
+  }
+  const port = parsed.port || "80";
+  return `${hostname}:${port}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -326,6 +574,89 @@ function parseHermesOutput(stdout: string, stderr: string): ParsedOutput {
   return result;
 }
 
+/**
+ * Parse OpenClaw `agent --json` output.
+ *
+ * OpenClaw 2026.2.17 `agent --local --json` prints a JSON object of the shape
+ * `{ payloads: [...], meta: { agentMeta: { sessionId, provider, model, ... } } }`
+ * on stdout, possibly interleaved with ANSI banner/logger lines. We scan for the
+ * last JSON object carrying a `meta` key and extract the assistant text from
+ * `payloads[].text`. There is no `session_id:`/`tokens:`/`cost:` Hermes markup.
+ */
+function parseOpenClawOutput(stdout: string, stderr: string): ParsedOutput {
+  const result: ParsedOutput = {};
+  const combined = stdout + "\n" + stderr;
+
+  let parsed: Record<string, unknown> | null = null;
+  const candidates = stdout.match(/\{[\s\S]*\}/g) ?? [];
+  for (let i = candidates.length - 1; i >= 0; i--) {
+    try {
+      const value = JSON.parse(candidates[i]);
+      if (value && typeof value === "object" && "meta" in value) {
+        parsed = value as Record<string, unknown>;
+        break;
+      }
+    } catch {
+      // skip non-JSON fragments
+    }
+  }
+
+  if (parsed) {
+    const meta = parseObject(parsed.meta);
+    const agentMeta = parseObject(meta.agentMeta);
+    result.sessionId = asString(agentMeta.sessionId, "") || undefined;
+
+    const payloads = Array.isArray(parsed.payloads) ? parsed.payloads : [];
+    const texts: string[] = [];
+    for (const payload of payloads) {
+      if (!payload || typeof payload !== "object") continue;
+      const text = asString((payload as Record<string, unknown>).text, "");
+      if (text.trim()) texts.push(text);
+    }
+    if (texts.length > 0) {
+      result.response = texts.join("\n");
+    }
+  }
+
+  const usageMatch = combined.match(TOKEN_USAGE_REGEX);
+  if (usageMatch) {
+    result.usage = {
+      inputTokens: parseInt(usageMatch[1], 10) || 0,
+      outputTokens: parseInt(usageMatch[2], 10) || 0,
+    };
+  }
+
+  const costMatch = combined.match(COST_REGEX);
+  if (costMatch?.[1]) {
+    result.costUsd = parseFloat(costMatch[1]);
+  }
+
+  if (stderr.trim()) {
+    const errorLines = stderr
+      .split("\n")
+      .filter((line) => /error|exception|traceback|failed/i.test(line))
+      .filter((line) => !/INFO|DEBUG|warn/i.test(line));
+    if (errorLines.length > 0) {
+      result.errorMessage = errorLines.slice(0, 5).join("\n");
+    }
+  }
+
+  return result;
+}
+
+/**
+ * Parse adapter stdout/stderr into a structured result for the given dialect.
+ */
+export function parseCommandOutput(
+  stdout: string,
+  stderr: string,
+  dialect: HermesCommandDialect,
+): ParsedOutput {
+  return dialect === "openclaw"
+    ? parseOpenClawOutput(stdout, stderr)
+    : parseHermesOutput(stdout, stderr);
+}
+
 // ---------------------------------------------------------------------------
 // Main execute
 // ---------------------------------------------------------------------------
@@ -417,34 +748,6 @@ export async function execute(
   // ── Build command args ─────────────────────────────────────────────────
   // Use -Q (quiet) to get clean output: just response + session_id line
   const useQuiet = cfgBoolean(config.quiet) === true; // default false
-  const args: string[] = ["chat", "-q", prompt];
-  if (useQuiet) args.push("-Q");
-
-  if (model) {
-    args.push("-m", model);
-  }
-
-  // Always pass --provider when we have a resolved one (not "auto").
-  // "auto" means Hermes will decide on its own — no need to pass it.
-  if (resolvedProvider !== "auto") {
-    args.push("--provider", resolvedProvider);
-  }
-
-  if (toolsets) {
-    args.push("-t", toolsets);
-  }
-
-  if (maxTurns && maxTurns > 0) {
-    args.push("--max-turns", String(maxTurns));
-  }
-
-  if (worktreeMode) args.push("-w");
-  if (checkpoints) args.push("--checkpoints");
-  if (cfgBoolean(config.verbose) === true) args.push("-v");
-
-  // Tag sessions as "tool" source so they don't clutter the user's session history.
-  // Requires hermes-agent >= PR #3255 (feat/session-source-tag).
-  args.push("--source", "tool");
 
   // --yolo is NOT passed by default.
   // Paperclip agents run as non-interactive subprocesses with no TTY;
@@ -452,17 +755,26 @@ export async function execute(
   // to fail.  Operators who need the old behaviour must explicitly enable
   // dangerouslySkipHermesApprovals.
   const dangerousYolo = cfgBoolean(config.dangerouslySkipHermesApprovals) === true;
-  if (dangerousYolo) {
-    args.push("--yolo");
-  }
 
-  if (persistSession && prevSessionId) {
-    args.push("--resume", prevSessionId);
-  }
-
-  if (extraArgs?.length) {
-    args.push(...extraArgs);
-  }
+  const dialect = resolveHermesCommandDialect(config);
+  const args = buildHermesCommandArgs({
+    dialect,
+    prompt,
+    runId: ctx.runId,
+    model,
+    resolvedProvider,
+    timeoutSec,
+    useQuiet,
+    toolsets,
+    maxTurns,
+    worktreeMode,
+    checkpoints,
+    verbose: cfgBoolean(config.verbose) === true,
+    dangerousYolo,
+    persistSession,
+    prevSessionId,
+    extraArgs,
+  });
 
   // ── Build environment ──────────────────────────────────────────────────
   // envMode: "replace" — the child process does NOT inherit any parent
@@ -494,8 +806,10 @@ export async function execute(
   }
 
   // ── Resolve working directory ──────────────────────────────────────────
-  const cwd =
-    cfgString(config.cwd) || cfgString(ctx.config?.workspaceDir) || ".";
+  // Canonical model: run workspace from execution context, then config.cwd
+  // override, then process.cwd(). Never a relative "." — the sandbox requires
+  // absolute paths and a relative cwd is unrelated to the contained workspace.
+  const cwd = resolveHermesWorkingDirectory(config, ctxContext);
   try {
     await ensureAbsoluteDirectory(cwd);
   } catch {
@@ -506,9 +820,7 @@ export async function execute(
   const containmentEnabled = cfgBoolean(config.containment) === true;
   let sandboxOpts: LocalProcessSandboxOptions | null = null;
   if (containmentEnabled) {
-    const sandboxWorkspaceDir =
-      cfgString(config["containment.workspaceDir"]) ||
-      path.join(os.tmpdir(), `paperclip-hermes-sandbox-${ctx.runId}`);
+    const sandboxWorkspaceDir = resolveHermesSandboxWorkspaceDir(config, ctx.runId);
     const sandboxHomeDir =
       cfgString(config["containment.homeDir"]) ||
       path.join(sandboxWorkspaceDir, "home");
@@ -527,17 +839,56 @@ export async function execute(
       networkScope = "allowlist";
       networkAllowlist = ["openrouter.ai:443"];
     }
+    if (allowApiAccess) {
+      const configuredPaperclipApiUrl =
+        cfgString(config.paperclipApiUrl) ||
+        process.env.PAPERCLIP_API_URL ||
+        "http://127.0.0.1:3100/api";
+      const paperclipApiTarget = resolveContainedPaperclipApiAllowlistTarget(configuredPaperclipApiUrl);
+      networkScope = "allowlist";
+      if (!networkAllowlist.includes(paperclipApiTarget)) networkAllowlist.push(paperclipApiTarget);
+    }
 
     await fs.mkdir(sandboxWorkspaceDir, { recursive: true });
     await fs.mkdir(sandboxHomeDir, { recursive: true });
 
-    const extraPaths: { path: string; access: "ro" | "rw" }[] = [{ path: cwd, access: "ro" }];
+    // ── OpenClaw dialect: seed model config so OpenClaw resolves the
+    //    Paperclip-configured model instead of falling back to hardcoded
+    //    defaults (anthropic/claude-opus-4-6).  The `agent --local` CLI
+    //    does not accept --model; model selection is driven by the agent
+    //    config file ($HOME/.openclaw/openclaw.json).
+    if (dialect === "openclaw" && model) {
+      const openclawConfigDir = path.join(sandboxHomeDir, ".openclaw");
+      await fs.mkdir(openclawConfigDir, { recursive: true });
+      const configPayload: Record<string, unknown> = {
+        agents: {
+          defaults: {
+            model: { primary: model },
+          },
+        },
+      };
+      await fs.writeFile(
+        path.join(openclawConfigDir, "openclaw.json"),
+        JSON.stringify(configPayload),
+        { mode: 0o600 },
+      );
+    }
+
+    const cwdAccess = await resolveContainedHermesCwdAccess(config, cwd);
+    const extraPaths: { path: string; access: "ro" | "rw" }[] = [{ path: cwd, access: cwdAccess }];
     if (instructionsFilePath) {
       extraPaths.push({ path: path.dirname(instructionsFilePath), access: "ro" });
     }
     if (sandboxHomeDir) {
       extraPaths.push({ path: sandboxHomeDir, access: "rw" });
     }
+// Mount OpenClaw installation directory when running the openclaw dialect.
+// The openclaw CLI (whether invoked directly at /home/openclaw/.local/bin/openclaw
+// or through a wrapper that delegates to it) needs its symlink target and
+// node_modules readable inside the bubblewrap sandbox.
+if (dialect === "openclaw") {
+  extraPaths.push({ path: "/home/openclaw/.local", access: "ro" });
+}
 
     sandboxOpts = {
       workspaceDir: sandboxWorkspaceDir,
@@ -552,6 +903,12 @@ export async function execute(
     if (networkAllowlist.length > 0) {
       sandboxOpts.networkAllowlist = networkAllowlist;
     }
+
+    // ── Contained execution identity: PATH + HOME ──────────────────────
+    Object.assign(
+      env,
+      applyContainedExecutionIdentity(env, hermesCmd, sandboxOpts?.homeDir),
+    );
   }
 
   // ── Log start ──────────────────────────────────────────────────────────
@@ -603,7 +960,7 @@ export async function execute(
   });
 
   // ── Parse output ───────────────────────────────────────────────────────
-  const parsed = parseHermesOutput(result.stdout || "", result.stderr || "");
+  const parsed = parseCommandOutput(result.stdout || "", result.stderr || "", dialect);
 
   await ctx.onLog(
     "stdout",

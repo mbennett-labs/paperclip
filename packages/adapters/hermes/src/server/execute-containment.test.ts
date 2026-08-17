@@ -16,13 +16,14 @@ import fs from "node:fs/promises";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { runChildProcess, buildPaperclipEnv } from "@paperclipai/adapter-utils/server-utils";
 import {
   buildLocalProcessSandboxSpawnTarget,
   parseLocalProcessNetworkAllowlist,
 } from "@paperclipai/adapter-utils/local-process-sandbox";
 import { buildHermesChildEnv } from "./child-env.js";
+import { applyContainedExecutionIdentity } from "./execute.js";
 
 const cleanup: string[] = [];
 
@@ -191,6 +192,125 @@ describe("Hermes containment identity validation", () => {
     expect(uidIdx).not.toBe(-1);
     expect(gidIdx).not.toBe(-1);
     expect(target.args[gidIdx - 1]).toBe("--gid");
+  });
+});
+
+// ── Root host + missing executionUid fail-closed ─────────────────────────
+
+describe("Hermes containment root-host missing executionUid", () => {
+  let originalGetuid: (() => number) | undefined;
+
+  beforeEach(() => {
+    originalGetuid = process.getuid;
+  });
+
+  afterEach(() => {
+    if (originalGetuid) {
+      Object.defineProperty(process, "getuid", { value: originalGetuid, configurable: true, writable: true });
+    }
+  });
+
+  function mockUid(uid: number) {
+    Object.defineProperty(process, "getuid", { value: () => uid, configurable: true, writable: true });
+  }
+
+  it("rejects containmentRequired=true + root host + missing executionUid", async () => {
+    mockUid(0);
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-ctn-rootmiss-"));
+    cleanup.push(root);
+    await expect(
+      buildLocalProcessSandboxSpawnTarget({
+        executable: process.execPath,
+        args: ["-e", "process.exit(0)"],
+        cwd: root,
+        options: {
+          workspaceDir: root,
+          filesystemScope: "workspace",
+          networkScope: "deny",
+          containmentRequired: true,
+        },
+      }),
+    ).rejects.toThrow("Host process is running as root but no executionUid was configured");
+  });
+
+  it("rejects containmentRequired=true + root host + executionUid=0", async () => {
+    mockUid(0);
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-ctn-rootzero-"));
+    cleanup.push(root);
+    await expect(
+      buildLocalProcessSandboxSpawnTarget({
+        executable: process.execPath,
+        args: ["-e", "process.exit(0)"],
+        cwd: root,
+        options: {
+          workspaceDir: root,
+          filesystemScope: "workspace",
+          networkScope: "deny",
+          containmentRequired: true,
+          executionUid: 0,
+        },
+      }),
+    ).rejects.toThrow("Root executionUid is rejected");
+  });
+
+  it("permits containmentRequired=true + root host + non-zero executionUid", async () => {
+    mockUid(0);
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-ctn-rootok-"));
+    cleanup.push(root);
+    const target = await buildLocalProcessSandboxSpawnTarget({
+      executable: process.execPath,
+      args: ["-e", "process.exit(0)"],
+      cwd: root,
+      options: {
+        workspaceDir: root,
+        filesystemScope: "workspace",
+        networkScope: "deny",
+        containmentRequired: true,
+        executionUid: 1000,
+      },
+    });
+    expect(target.args).toContain("--unshare-user");
+    expect(target.args).toContain("--uid");
+    expect(target.args).toContain("1000");
+  });
+
+  it("permits containmentRequired=true + non-root host + missing executionUid", async () => {
+    mockUid(1000);
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-ctn-nonroot-"));
+    cleanup.push(root);
+    await expect(
+      buildLocalProcessSandboxSpawnTarget({
+        executable: process.execPath,
+        args: ["-e", "process.exit(0)"],
+        cwd: root,
+        options: {
+          workspaceDir: root,
+          filesystemScope: "workspace",
+          networkScope: "deny",
+          containmentRequired: true,
+        },
+      }),
+    ).resolves.toBeDefined();
+  });
+
+  it("non-zero executionUid produces --unshare-user --uid --gid", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-ctn-uidargs-"));
+    cleanup.push(root);
+    const target = await buildLocalProcessSandboxSpawnTarget({
+      executable: process.execPath,
+      args: ["-e", "process.exit(0)"],
+      cwd: root,
+      options: {
+        workspaceDir: root,
+        filesystemScope: "workspace",
+        networkScope: "deny",
+        executionUid: 1000,
+      },
+    });
+    expect(target.args).toContain("--unshare-user");
+    expect(target.args).toContain("--uid");
+    expect(target.args).toContain("1000");
+    expect(target.args).toContain("--gid");
   });
 });
 
@@ -523,6 +643,58 @@ setTimeout(() => process.exit(42), 500);
     });
   },
 );
+
+// ── Contained execution identity (PATH + HOME) ───────────────────────────
+
+describe("applyContainedExecutionIdentity", () => {
+  it("prepends the command directory to PATH for an absolute command", () => {
+    const result = applyContainedExecutionIdentity(
+      { PATH: "/usr/local/bin:/usr/bin:/bin" },
+      "/home/openclaw/.local/bin/openclaw",
+      undefined,
+    );
+    expect(result.PATH).toBe("/home/openclaw/.local/bin:/usr/local/bin:/usr/bin:/bin");
+  });
+
+  it("preserves an empty inherited PATH without a leading delimiter", () => {
+    const result = applyContainedExecutionIdentity({}, "/home/openclaw/.local/bin/openclaw", undefined);
+    expect(result.PATH).toBe("/home/openclaw/.local/bin");
+  });
+
+  it("does not modify PATH for a relative command", () => {
+    const result = applyContainedExecutionIdentity(
+      { PATH: "/usr/bin:/bin" },
+      "openclaw",
+      undefined,
+    );
+    expect(result.PATH).toBe("/usr/bin:/bin");
+  });
+
+  it("points HOME at the contained sandbox home", () => {
+    const result = applyContainedExecutionIdentity(
+      { PATH: "/usr/bin:/bin", HOME: "/home/hermes-agent" },
+      "/home/openclaw/.local/bin/openclaw",
+      "/tmp/paperclip-hermes-sandbox-poc-001/home",
+    );
+    expect(result.HOME).toBe("/tmp/paperclip-hermes-sandbox-poc-001/home");
+  });
+
+  it("leaves HOME untouched when no sandbox home is provided", () => {
+    const result = applyContainedExecutionIdentity(
+      { PATH: "/usr/bin:/bin", HOME: "/home/hermes-agent" },
+      "/home/openclaw/.local/bin/openclaw",
+      null,
+    );
+    expect(result.HOME).toBe("/home/hermes-agent");
+  });
+
+  it("does not mutate the input env object", () => {
+    const input = { PATH: "/usr/bin:/bin", HOME: "/home/hermes-agent" };
+    applyContainedExecutionIdentity(input, "/home/openclaw/.local/bin/openclaw", "/tmp/home");
+    expect(input.PATH).toBe("/usr/bin:/bin");
+    expect(input.HOME).toBe("/home/hermes-agent");
+  });
+});
 
 // ── Fail-closed tests ────────────────────────────────────────────────────
 

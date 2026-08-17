@@ -314,11 +314,16 @@ function nextAssigneeIds(input: {
 export function stripMonitorFromExecutionPolicy(policy: IssueExecutionPolicy | null): IssueExecutionPolicy | null {
   if (!policy) return null;
   if (!policy.monitor) return policy;
-  if (policy.stages.length === 0) return null;
+  const hasNonMonitorPolicy = policy.stages.length > 0 || Boolean(policy.reviewPreset) ||
+    Boolean(policy.authorizationPolicy) || Boolean(policy.missionContract);
+  if (!hasNonMonitorPolicy) return null;
   return {
     mode: policy.mode,
     commentRequired: policy.commentRequired,
     stages: policy.stages,
+    ...(policy.reviewPreset ? { reviewPreset: policy.reviewPreset } : {}),
+    ...(policy.authorizationPolicy ? { authorizationPolicy: policy.authorizationPolicy } : {}),
+    ...(policy.missionContract ? { missionContract: policy.missionContract } : {}),
   };
 }
 
@@ -389,8 +394,9 @@ export function normalizeIssueExecutionPolicy(input: unknown): IssueExecutionPol
 
   const reviewPreset = parsed.data.reviewPreset;
   const authorizationPolicy = parsed.data.authorizationPolicy;
+  const missionContract = parsed.data.missionContract;
 
-  if (stages.length === 0 && !monitor && !reviewPreset && !authorizationPolicy) return null;
+  if (stages.length === 0 && !monitor && !reviewPreset && !authorizationPolicy && !missionContract) return null;
 
   return {
     mode: parsed.data.mode ?? "normal",
@@ -399,6 +405,7 @@ export function normalizeIssueExecutionPolicy(input: unknown): IssueExecutionPol
     ...(monitor ? { monitor } : {}),
     ...(reviewPreset ? { reviewPreset } : {}),
     ...(authorizationPolicy ? { authorizationPolicy } : {}),
+    ...(missionContract ? { missionContract } : {}),
   };
 }
 

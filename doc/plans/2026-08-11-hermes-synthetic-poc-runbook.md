@@ -1,9 +1,9 @@
 # Hermes Synthetic POC Runbook
 
 **Date:** 2026-08-11
-**Branch:** `feat/hermes-synthetic-poc-v0`
+**Branch:** `feat/qsl-current-upstream-integration` (post-merge staging) or `feat/hermes-synthetic-poc-v0` (pre-merge worktree)
 **Base:** `origin/feat/qsl-current-upstream-integration`
-**Status:** Ready for human-approved execution (blocked: Hermes not installed on this host)
+**Status:** Ready for human-approved execution (blocked: containment.executionUid must be configured; see section 2.1a)
 
 ---
 
@@ -41,11 +41,11 @@ This is a **synthetic** POC: Hermes is instructed to write `3` to `./hermes-poc.
 | Condition | How to verify |
 |---|---|
 | Linux host | `uname -s` outputs `Linux` |
-| Hermes CLI installed | `hermes --version` succeeds |
+| Hermes/OpenClaw CLI installed | `HERMES_COMMAND=/home/openclaw/.local/bin/openclaw bash scripts/hermes-poc/preflight.sh --run-id poc-001` finds the binary |
 | Bubblewrap >= 0.4.0 | `bwrap --version` |
 | User namespaces enabled | `bwrap --unshare-user --ro-bind / / /bin/true` |
-| Non-root UID for containment | `id -u` is not 0, OR configure `containment.executionUid` to a non-zero value |
-| Branch `feat/hermes-synthetic-poc-v0` | `git branch --show-current` |
+| Non-root UID for containment | When the Paperclip host process is root, `containment.executionUid` must be set to a non-zero value (e.g., `1000`) in the Hermes agent config. Runtime enforcement in `local-process-sandbox.ts` REJECTS containmentRequired=true without executionUid when host UID is 0. Preflight does NOT fail simply because it runs as root. |
+| Branch `feat/qsl-current-upstream-integration` or `feat/hermes-synthetic-poc-v0` | `git branch --show-current` |
 | Base `feat/qsl-current-upstream-integration` reachable | `git merge-base HEAD origin/feat/qsl-current-upstream-integration` succeeds |
 | OPENROUTER_API_KEY available as Paperclip company secret | Key exists in Paperclip secrets with a **$1 hard account/key limit** |
 | Agent config binds secret via `secret_ref` | `config.env.OPENROUTER_API_KEY` uses `type: "secret_ref"`, not plaintext |
@@ -53,17 +53,24 @@ This is a **synthetic** POC: Hermes is instructed to write `3` to `./hermes-poc.
 | `--yolo` disabled | The Hermes adapter config has `dangerouslySkipHermesApprovals: false` |
 | Paperclip service running and deployed from merged branch | `curl http://localhost:3100/api/health` returns 200; service built from merged containment branch |
 
+**Note:** This host uses OpenClaw (not the Python `hermes` CLI). The `hermes_local` adapter works with OpenClaw by setting `config.hermesCommand` to `/home/openclaw/.local/bin/openclaw` in the agent config. The preflight accepts any executable via the `HERMES_COMMAND` env var.
+
 ### 2.1a UID/GID Contract
 
-The Paperclip server on this host runs as **root (UID 0)**. Bubblewrap containment **rejects** `executionUid=0`. The operator MUST:
+**Paperclip/server MAY run as root. Preflight MAY run as root.**
+**A contained Hermes/OpenClaw child MUST NEVER execute as root (UID 0).**
+
+When the Paperclip host process is UID 0, `containment.executionUid` is **mandatory** — the runtime (`local-process-sandbox.ts`) will REJECT `containmentRequired=true` without a non-zero `executionUid`.
+
+The operator MUST:
 
 - Configure `containment.executionUid` to a non-zero value (e.g., `1000` — user `ubuntu`)
 - Optionally configure `containment.executionGid` (defaults to `executionUid` if unset)
 - The workspace directory (`/tmp/paperclip-hermes-sandbox-<runId>`) is mounted via `--bind` inside the sandbox; ownership inside the tmpfs root maps to the configured UID
 
-Without `--unshare-user`, bwrap runs the child as the invoking UID (root). With `--unshare-user` and a non-zero UID, bwrap creates a new user namespace where the child runs as the configured UID/GID.
+With `--unshare-user` and a non-zero UID, bwrap creates a new user namespace where the child runs as the configured UID/GID. Runtime enforcement (not merely preflight prose) prevents unsafe execution — the sandbox fails closed before spawning the child if the configuration would result in root-contained execution.
 
-The preflight script detects the current UID and reports the required operator action.
+The preflight script detects the host environment and reports whether a suitable non-root UID exists, but cannot mechanically inspect the Paperclip agent config. Final verification that `containment.executionUid` is actually set belongs to the runtime/API/operator step.
 
 ### 2.2 Governed Secret Delivery
 
@@ -113,12 +120,15 @@ All scripts are in `scripts/hermes-poc/`:
 
 ## 4. Execution Procedure
 
-### 4.1 Preflight (offline, no Hermes)
+### 4.1 Preflight (offline, no Hermes/OpenClaw execution)
 
 ```bash
 export OPENROUTER_API_KEY="<your-key>"
-./scripts/hermes-poc/preflight.sh --run-id poc-001
+HERMES_COMMAND=/home/openclaw/.local/bin/openclaw \
+  bash scripts/hermes-poc/preflight.sh --run-id poc-001
 ```
+
+The `HERMES_COMMAND` env var points to the actual OpenClaw binary on this host. The preflight will probe `--version` using the openclaw user's environment (which has the required Node >=22.12.0).
 
 Expected: `VERDICT: PREFLIGHT PASSED` with zero failures. If any check fails, resolve before proceeding.
 
@@ -130,12 +140,15 @@ Create or use a Hermes agent in Paperclip with these settings:
 
 | Config key | Value |
 |---|---|
+| `hermesCommand` | `/home/openclaw/.local/bin/openclaw` |
 | `allowPaperclipApiAccess` | `false` |
 | `dangerouslySkipHermesApprovals` | `false` |
 | `containment` | `true` |
 | `containment.providerPreset` | `openrouter` |
 | `containment.workspaceDir` | `/tmp/paperclip-hermes-sandbox-poc-001` |
-| `containment.executionUid` | A non-root UID (e.g., 1000) |
+| `containment.executionUid` | A non-root UID (e.g., `1000`) |
+
+The `hermesCommand` field tells the hermes_local adapter to use OpenClaw instead of the default `hermes` CLI. The preflight's `HERMES_COMMAND` env var mirrors this config key.
 
 ### 4.3 Execute Synthetic Task
 
@@ -267,3 +280,61 @@ After successful execution and verification:
 3. Run cleanup
 4. Document any issues or surprises
 5. Proceed to the approval-gated POC if this one succeeds
+
+---
+
+## Operator-Mission UUID Incident — Resolved — 2026-08-14
+
+### Verdict
+
+**RESOLVED — invalid caller/test input, not a database or migration defect.**
+
+### Verified API Contract
+
+Operator Mission routes require the canonical Paperclip company UUID:
+
+`/api/companies/:companyId/...`
+
+TheBinMap staging company UUID:
+
+`f5609cfe-37ff-4061-a3c7-35ae55dbcc2b`
+
+Verified behavior:
+
+- Correct UUID request → normal `404 Operator mission not found`
+- Invalid slug `thebinmap` → `500 Internal Server Error`
+- Database error: `invalid input syntax for type uuid: "thebinmap"`
+
+### Root Cause
+
+A caller/test supplied the company slug `thebinmap` where the UUID-only API
+contract requires the canonical company UUID.
+
+### Explicitly Disproven
+
+The incident was not caused by:
+
+- database schema incompatibility
+- missing migration
+- staging environment configuration
+- systemd environment injection
+- a requirement for slug-to-UUID resolution
+
+### Operational Rule
+
+Operator Mission submissions MUST use the canonical company UUID:
+
+`f5609cfe-37ff-4061-a3c7-35ae55dbcc2b`
+
+Do not substitute `thebinmap`.
+
+### Follow-Up Hardening
+
+Malformed/non-UUID `:companyId` values should return `400 Bad Request`
+instead of reaching PostgreSQL and producing `500 Internal Server Error`.
+
+This is defensive hardening and is not a V0.1 blocker.
+
+### Verification Principle
+
+**Observe the value before repairing the value.**
