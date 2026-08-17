@@ -39,6 +39,7 @@ export type MessageClassHint =
   | "listing_claim"
   | "store_alert_signup"
   | "newsletter_signup"
+  | "intelligence_signup"
   | "intelligence_request"
   | "contact_general"
   | "partnership_affiliate"
@@ -59,6 +60,7 @@ export type SourceType =
   | "contact"
   | "alert_signup"
   | "newsletter_signup"
+  | "intelligence_signup"
   | "qsl_security_review"
   | "qsl_risk_calculator"
   | "therapist_index_message"
@@ -72,6 +74,7 @@ export type SourceForm =
   | "thebinmap_contact"
   | "thebinmap_alert"
   | "thebinmap_newsletter"
+  | "thebinmap_intelligence"
   | "qsl_risk_calc"
   | "qsl_security_review_form"
   | "therapist_index"
@@ -125,6 +128,7 @@ const THEBINMAP_SUBMIT_SUBJECT = "New store submission — TheBinMap";
 const THEBINMAP_CLAIM_SUBJECT = "Listing claim — TheBinMap";
 const THEBINMAP_CONTACT_SUBJECT = "Contact form — TheBinMap";
 const THEBINMAP_NEWSLETTER_SUBJECT = "Stay in the loop — TheBinMap";
+const THEBINMAP_INTELLIGENCE_SUBJECT = "Intelligence waitlist signup";
 const THEBINMAP_ALERT_PREFIX = "New alert signup — TheBinMap";
 const THEBINMAP_FOOTER = "https://thebinmap.com/";
 
@@ -159,6 +163,14 @@ function isProviderMarketing(subject: string, fromAddress: string): boolean {
   const f = fromAddress.toLowerCase();
   if (!f.includes("web3forms.com") && !f.includes("formspree.io")) return false;
   return PROVIDER_MARKETING_SUBJECT_PATTERNS.some((p) => p.test(subject));
+}
+
+function detectTheBinMapAlertSourcePage(body: string): string {
+  const source = /\bsource\s+(homepage|city-page|store-page)\b/i.exec(body)?.[1]?.toLowerCase();
+  if (source === "homepage") return "/";
+  if (source === "city-page") return "/city";
+  if (source === "store-page") return "/store";
+  return "unknown";
 }
 
 function detectBrand(subject: string, fromAddress: string, body: string): IntakeBrand {
@@ -251,6 +263,30 @@ export function detectSource(
     return detection;
   }
 
+  if (isWeb3Forms && subject === THEBINMAP_INTELLIGENCE_SUBJECT) {
+    detection.sourceType = "intelligence_signup";
+    detection.sourceForm = "thebinmap_intelligence";
+    detection.sourcePage = "/intelligence";
+    detection.brand = "thebinmap";
+    detection.confidence = 0.95;
+    detection.evidence.push("Web3Forms + exact Intelligence waitlist subject");
+    detection.rulesMatched.push("subject-exact:thebinmap_intelligence_signup");
+    detection.requiresHumanReview = false;
+    return detection;
+  }
+
+  if (isWeb3Forms && s.includes("intelligence") && b.includes("intelligence page")) {
+    detection.sourceType = "intelligence_signup";
+    detection.sourceForm = "thebinmap_intelligence";
+    detection.sourcePage = "/intelligence";
+    detection.brand = "thebinmap";
+    detection.confidence = 0.85;
+    detection.evidence.push("Web3Forms + Intelligence Page source evidence");
+    detection.rulesMatched.push("web3forms:thebinmap_intelligence_signup");
+    detection.requiresHumanReview = false;
+    return detection;
+  }
+
   if (subject === THEBINMAP_NEWSLETTER_SUBJECT) {
     detection.sourceType = "newsletter_signup";
     detection.sourceForm = "thebinmap_newsletter";
@@ -279,7 +315,7 @@ export function detectSource(
   if (isWeb3Forms && (s.includes("alert signup") || s.startsWith("alert signup"))) {
     detection.sourceType = "alert_signup";
     detection.sourceForm = "thebinmap_alert";
-    detection.sourcePage = "unknown";
+    detection.sourcePage = detectTheBinMapAlertSourcePage(body);
     detection.brand = "thebinmap";
     detection.confidence = 0.8;
     detection.evidence.push("Web3Forms sender + alert signup subject pattern");
@@ -606,6 +642,7 @@ function classify(subject: string, fromAddress: string, body: string): MessageCl
   if (detection.sourceType === "listing_claim") return "listing_claim";
   if (detection.sourceType === "alert_signup") return "store_alert_signup";
   if (detection.sourceType === "newsletter_signup") return "newsletter_signup";
+  if (detection.sourceType === "intelligence_signup") return "intelligence_signup";
   if (detection.sourceType === "qsl_security_review") return "support_request";
   if (detection.sourceType === "qsl_risk_calculator") return "sales_opportunity";
   if (detection.sourceType === "contact") return "contact_general";
@@ -712,6 +749,7 @@ export function issueTitleFor(msg: NormalizedMessage): string {
     : detection.sourceType === "listing_claim" ? "[Listing Claim]"
     : detection.sourceType === "alert_signup" ? "[Alert Signup]"
     : detection.sourceType === "newsletter_signup" ? "[Newsletter]"
+    : detection.sourceType === "intelligence_signup" ? "[Intelligence Signup]"
     : detection.sourceType === "qsl_security_review" ? "[QSL Security Review]"
     : detection.sourceType === "qsl_risk_calculator" ? "[QSL Risk Lead]"
     : detection.sourceType === "provider_marketing" ? "[Marketing]"
