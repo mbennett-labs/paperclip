@@ -140,6 +140,7 @@ export function sortIntakeRecord(input: SortInput): IntakeSortResult {
   if (
     sourceDetection?.sourceType === "alert_signup" ||
     sourceDetection?.sourceType === "newsletter_signup" ||
+    sourceDetection?.sourceType === "intelligence_signup" ||
     isKnownTherapistIndexOperationalNotification(sourceDetection)
   ) {
     result.category = "system_notification";
@@ -202,7 +203,11 @@ export function sortIntakeRecord(input: SortInput): IntakeSortResult {
   // Legacy/fallback signup hints without a recognized source still remain
   // non-reply notifications. This prevents a source-template change from
   // silently turning a subscription event into reply work.
-  if (classHint === "store_alert_signup" || classHint === "newsletter_signup") {
+  if (
+    classHint === "store_alert_signup" ||
+    classHint === "newsletter_signup" ||
+    classHint === "intelligence_signup"
+  ) {
     result.category = "system_notification";
     result.replyActionStatus = "none";
     result.reason = "Subscription/alert event; retain as operational evidence without reply work.";
