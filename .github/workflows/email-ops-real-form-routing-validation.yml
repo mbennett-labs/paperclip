@@ -1,0 +1,63 @@
+name: Email Ops Real Form Routing Validation
+
+on:
+  push:
+    branches:
+      - feat/email-intake-real-form-sorting-v1
+
+permissions:
+  contents: write
+
+jobs:
+  patch-validate-commit:
+    if: ${{ !contains(github.event.head_commit.message, '[real-form-routing-validated]') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout feature branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Setup pnpm
+        run: |
+          corepack enable
+          corepack prepare pnpm@9.15.4 --activate
+
+      - name: Install workspace
+        run: pnpm install --frozen-lockfile
+
+      - name: Apply bounded real-form routing patch
+        run: node scripts/email-ops-real-form-routing-patch.mjs
+
+      - name: Email plugin typecheck
+        run: pnpm --filter @qsl/plugin-email typecheck
+
+      - name: Email plugin tests
+        working-directory: packages/plugins/plugin-email
+        run: pnpm exec vitest run
+
+      - name: Email plugin build
+        run: pnpm --filter @qsl/plugin-email build
+
+      - name: Paperclip UI build
+        run: pnpm --filter @paperclipai/ui build
+
+      - name: Verify diff, remove harness, and commit validated change
+        run: |
+          git diff --check
+          git rm scripts/email-ops-real-form-routing-patch.mjs .github/workflows/email-ops-real-form-routing-validation.yml
+          git add packages/plugins/plugin-email/src/mail/normalize.ts \
+                  packages/plugins/plugin-email/src/mail/sorter.ts \
+                  packages/plugins/plugin-email/tests/real-form-routing.spec.ts
+          git diff --cached --check
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "fix(email): route real form signups without reply work [real-form-routing-validated]"
+          git push origin HEAD:feat/email-intake-real-form-sorting-v1
