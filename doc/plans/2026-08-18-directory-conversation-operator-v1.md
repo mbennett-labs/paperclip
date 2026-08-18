@@ -238,3 +238,22 @@ with deterministic evidence-preserving output and no live outbound effect.
 ## Next implementation target
 
 Start from the existing Email Operations queue and sorter. Implement the smallest schema/state extension necessary to represent one real TherapistIndex removal/correction case and one real TheBinMap submission/correction case end-to-end. Then generalize only what both cases prove reusable.
+
+## Milestone 2 evidence — shadow evaluation + operator visibility
+
+Completed on 2026-08-18 on `feat/directory-conversation-operator-v1` after Milestone 1 commit `988f6c928`.
+
+- Added deterministic shadow-only evaluation for structured conversation records.
+- Persisted `conversation-shadow-evaluation` beside `conversation-record` during Email Operations ingestion.
+- Exposed conversation/shadow fields in the existing Email Operations queue and issue detail tab.
+- Added bounded batch evaluation reporting for received/classified/conversation-created/no-human/human-review/draft/commercial/uncertain metrics.
+- Expanded historical replay coverage to 16 representative cases: 8 TheBinMap and 8 TherapistIndex.
+- Verified that automatic outcomes remain shadow-only or draft-only; directory changes, identity-sensitive changes, commercial commitments, uncertain cases, and follow-ups remain human-gated.
+
+Milestone 2 verification:
+
+- `..\..\..\node_modules\.bin\vitest.CMD run` from `packages/plugins/plugin-email`: 23 files passed, 522 tests passed.
+- `node_modules\.bin\tsc.CMD --noEmit -p packages/plugins/plugin-email/tsconfig.json`: passed.
+- `node esbuild.config.mjs` from `packages/plugins/plugin-email`: passed.
+
+Repo-wide `pnpm -r typecheck` was attempted but pnpm repeatedly entered a dependency-recreation path and stalled after `Recreating ...\node_modules`; direct plugin typecheck/build/tests were used for completed milestone verification.

@@ -124,8 +124,12 @@ function inferRelationship(body: string, fromAddress: string): StructuredConvers
 
 function inferIntent(input: ConversationRecordInput, tenant: IntakeBrand): string {
   const text = `${input.msg.subject}\n${input.msg.bodyText}`.toLowerCase();
+  if (/\b(unsubscribe|stop emailing|remove me from (?:your )?(?:list|emails)|do not contact|don't contact)\b/.test(text)) return "unsubscribe";
+  if (/\b(no thanks|not interested|do not want|don't want|please stop|not a fit)\b/.test(text)) return "negative_not_interested";
+  if (input.msg.inReplyTo && /\b(yes|interested|sounds good|send details|tell me more|let's talk|lets talk)\b/.test(text)) return "positive_response";
   if (tenant === "therapist_index" && /\b(remove|delete|take down|delist)\b/.test(text)) return "listing_removal";
   if (/\b(correction|correct|wrong|update|change|edit|fix)\b/.test(text)) return "correction";
+  if (/\b(claim|verify ownership|ownership|own this (?:profile|listing)|my profile|my listing)\b/.test(text)) return "listing_claim";
   if (input.detection.sourceType === "store_submission") return "store_submission";
   if (input.detection.sourceType === "listing_claim") return "listing_claim";
   if (input.detection.sourceType === "contact") return "contact";
@@ -219,6 +223,9 @@ function requestSummary(intent: string, entityName: string | null): string {
   if (intent === "listing_removal") return `Review listing removal request${entityName ? ` for ${entityName}` : ""}.`;
   if (intent === "correction") return `Review requested directory correction${entityName ? ` for ${entityName}` : ""}.`;
   if (intent === "listing_claim") return `Review listing claim${entityName ? ` for ${entityName}` : ""}.`;
+  if (intent === "positive_response") return "Prepare human-reviewed follow-up to positive response.";
+  if (intent === "negative_not_interested") return "Close negative response without outbound follow-up.";
+  if (intent === "unsubscribe") return "Suppress unsubscribe/do-not-contact request without outbound follow-up.";
   return "Review inbound conversation.";
 }
 
@@ -241,7 +248,12 @@ export function createConversationRecord(input: ConversationRecordInput): Struct
   const entity = inferEntity(input, tenant, facts);
   const missingInformation = [...new Set([
     ...(input.sortResult.category === "incomplete" ? input.intakeMetadata?.missingFields ?? [] : []),
-    ...(tenant === "therapist_index" && !entity.entityName && !entity.entityLocator ? ["listing_identity"] : []),
+    ...(tenant === "therapist_index" &&
+      ["listing_removal", "correction", "listing_claim"].includes(intent) &&
+      !entity.entityName &&
+      !entity.entityLocator
+      ? ["listing_identity"]
+      : []),
   ])];
   const commercialSignal = inferCommercialSignal(input.msg.bodyText);
   const policy = decideConversationPolicy({

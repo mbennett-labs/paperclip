@@ -82,6 +82,10 @@ import {
   type StructuredConversationRecord,
 } from "./mail/conversation.js";
 import {
+  createShadowEvaluation,
+  type ShadowConversationEvaluation,
+} from "./mail/conversation-evaluation.js";
+import {
   activeMailboxProfiles,
   buildMailboxProfiles,
   hasActiveMailboxConfig,
@@ -515,12 +519,39 @@ async function ingestMessage(
       storeIntake,
       draftCandidate: draftCandidate?.candidate ?? null,
     });
+    const shadowEvaluation = createShadowEvaluation(conversationRecord);
     await ctx.state.set({
       scopeKind: "issue",
       scopeId: issue.id,
       namespace: STATE_NS_INTAKE,
       stateKey: "conversation-record",
     }, conversationRecord);
+    await ctx.state.set({
+      scopeKind: "issue",
+      scopeId: issue.id,
+      namespace: STATE_NS_INTAKE,
+      stateKey: "conversation-shadow-evaluation",
+    }, shadowEvaluation);
+    await ctx.metrics.write("conversation_record_created", 1, {
+      profile: profile.key,
+      tenant: conversationRecord.tenant,
+      state: conversationRecord.state,
+      nextAction: conversationRecord.nextAction.kind,
+    });
+    await ctx.metrics.write(shadowEvaluation.humanAttentionRequired ? "conversation_human_review" : "conversation_no_human_action", 1, {
+      profile: profile.key,
+      tenant: conversationRecord.tenant,
+      shadowAction: shadowEvaluation.shadowActionKind,
+    });
+    if (conversationRecord.output.mode === "draft" && conversationRecord.output.draft) {
+      await ctx.metrics.write("conversation_draft_ready", 1, { profile: profile.key, tenant: conversationRecord.tenant });
+    }
+    if (conversationRecord.riskAuthorityClass === "commercial_opportunity") {
+      await ctx.metrics.write("conversation_commercial_opportunity", 1, { profile: profile.key, tenant: conversationRecord.tenant });
+    }
+    if (conversationRecord.riskAuthorityClass === "uncertain") {
+      await ctx.metrics.write("conversation_uncertain", 1, { profile: profile.key, tenant: conversationRecord.tenant });
+    }
 
     if (draftCandidate) {
       await ctx.state.set({
@@ -822,6 +853,8 @@ const plugin = definePlugin({
         const duplicates = await ctx.state.get({ scopeKind: "issue", scopeId: issueId, namespace: STATE_NS_INTAKE, stateKey: "intake-duplicates" });
         const notification = await ctx.state.get({ scopeKind: "issue", scopeId: issueId, namespace: STATE_NS_INTAKE, stateKey: "intake-notification" });
         const intakeMetadata = await ctx.state.get({ scopeKind: "issue", scopeId: issueId, namespace: STATE_NS_INTAKE, stateKey: "intake-metadata" });
+        const conversationRecord = await ctx.state.get({ scopeKind: "issue", scopeId: issueId, namespace: STATE_NS_INTAKE, stateKey: "conversation-record" });
+        const shadowEvaluation = await ctx.state.get({ scopeKind: "issue", scopeId: issueId, namespace: STATE_NS_INTAKE, stateKey: "conversation-shadow-evaluation" });
 
         // Gather analyses from unique keys (D3: safe per-record keys)
         const analyses: AnalysisRecord[] = [];
@@ -869,6 +902,8 @@ const plugin = definePlugin({
           latestOutcome: getLatestOutcome(reviews),
           notification,
           intakeMetadata: intakeMetadata ?? null,
+          conversationRecord: conversationRecord ?? null,
+          shadowEvaluation: shadowEvaluation ?? null,
           sortResult: sortResult ?? null,
           draftCandidate: draftCandidate ?? null,
         };
@@ -931,6 +966,7 @@ const plugin = definePlugin({
             const sortData = await ctx.state.get({ scopeKind: "issue", scopeId: issue.id, namespace: STATE_NS_INTAKE, stateKey: "intake-sort-result" }) as IntakeSortResult | undefined;
             const draftData = await ctx.state.get({ scopeKind: "issue", scopeId: issue.id, namespace: STATE_NS_INTAKE, stateKey: "intake-draft-candidate" }) as Record<string, unknown> | undefined;
             const conversationData = await ctx.state.get({ scopeKind: "issue", scopeId: issue.id, namespace: STATE_NS_INTAKE, stateKey: "conversation-record" }) as StructuredConversationRecord | undefined;
+            const shadowData = await ctx.state.get({ scopeKind: "issue", scopeId: issue.id, namespace: STATE_NS_INTAKE, stateKey: "conversation-shadow-evaluation" }) as ShadowConversationEvaluation | undefined;
             items.push({
               issueId: issue.id,
               identifier: issue.identifier,
@@ -969,6 +1005,14 @@ const plugin = definePlugin({
               conversationNextAction: conversationData?.nextAction.kind ?? null,
               conversationHumanGate: conversationData?.nextAction.humanApprovalRequired ?? null,
               conversationRiskAuthorityClass: conversationData?.riskAuthorityClass ?? null,
+              conversationOutputMode: conversationData?.output.mode ?? null,
+              conversationCommercialSignal: conversationData?.commercialSignal.present ?? null,
+              conversationConfidence: conversationData?.intent.confidence ?? null,
+              conversationEntityName: conversationData?.entityContext.entityName ?? null,
+              conversationEntityType: conversationData?.entityContext.entityType ?? null,
+              shadowActionKind: shadowData?.shadowActionKind ?? null,
+              shadowHumanAttentionRequired: shadowData?.humanAttentionRequired ?? null,
+              shadowReason: shadowData?.reason ?? null,
             });
           } catch { /* skip problematic issues */ }
         }

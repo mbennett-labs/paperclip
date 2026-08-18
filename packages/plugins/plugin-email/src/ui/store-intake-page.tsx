@@ -37,6 +37,19 @@ type QueueItem = {
   to: string | null;
   messageSubject: string | null;
   messageDate: string | null;
+  conversationState: string | null;
+  conversationIntent: string | null;
+  conversationNextAction: string | null;
+  conversationHumanGate: boolean | null;
+  conversationRiskAuthorityClass: string | null;
+  conversationOutputMode: string | null;
+  conversationCommercialSignal: boolean | null;
+  conversationConfidence: number | null;
+  conversationEntityName: string | null;
+  conversationEntityType: string | null;
+  shadowActionKind: string | null;
+  shadowHumanAttentionRequired: boolean | null;
+  shadowReason: string | null;
 };
 
 type EmailPluginConfigView = {
@@ -130,17 +143,23 @@ function brandOf(item: QueueItem): BrandFilter {
 }
 
 function isSuppressed(item: QueueItem): boolean {
-  return item.sortCategory === "spam_irrelevant" || item.sortCategory === "duplicate";
+  return item.conversationState === "suppressed" ||
+    item.conversationState === "closed_not_interested" ||
+    item.sortCategory === "spam_irrelevant" ||
+    item.sortCategory === "duplicate";
 }
 
 function needsAttention(item: QueueItem): boolean {
   if (isSuppressed(item) || item.status !== "todo") return false;
+  if (item.shadowHumanAttentionRequired === true || item.conversationHumanGate === true) return true;
+  if (item.conversationRiskAuthorityClass === "uncertain") return true;
   if (item.sortCategory === "unknown" || item.sortCategory === "incomplete") return true;
   if (item.priority === "high" && !item.latestVerdict) return true;
   return item.replyActionStatus === "draft_needed";
 }
 
 function hasDraftWork(item: QueueItem): boolean {
+  if (item.conversationOutputMode === "draft") return true;
   return Boolean(item.draftCandidateKind) ||
     item.replyActionStatus === "draft_needed" ||
     item.replyActionStatus === "draft_ready";
@@ -184,6 +203,8 @@ function matchesWorkflow(item: QueueItem, filter: WorkflowFilter): boolean {
 function attentionScore(item: QueueItem): number {
   let score = 0;
   if (needsAttention(item)) score += 100;
+  if (item.shadowHumanAttentionRequired === true) score += 20;
+  if (item.conversationRiskAuthorityClass === "commercial_opportunity") score += 16;
   if (item.priority === "high") score += 25;
   if (item.sortCategory === "unknown") score += 20;
   if (item.sortCategory === "incomplete") score += 15;
@@ -196,6 +217,9 @@ function attentionScore(item: QueueItem): number {
 }
 
 function nextAction(item: QueueItem): string {
+  if (item.conversationNextAction) {
+    return item.conversationNextAction.replace(/_/g, " ");
+  }
   switch (item.sortCategory) {
     case "spam_irrelevant":
       return "No action — suppressed";
@@ -217,6 +241,13 @@ function nextAction(item: QueueItem): string {
     default:
       return item.latestVerdict ? "Reviewed" : "Review";
   }
+}
+
+function operatorStatus(item: QueueItem): string {
+  if (item.shadowHumanAttentionRequired === true) return "Human gate";
+  if (item.shadowHumanAttentionRequired === false) return "Automatic";
+  if (item.conversationHumanGate === true) return "Human gate";
+  return "Unscored";
 }
 
 function parseMailboxProfiles(
@@ -274,6 +305,16 @@ function categoryStyle(category: string | null): CSSProperties {
   return { color: "#555", background: "rgba(127,127,127,0.08)" };
 }
 
+function operatorStyle(item: QueueItem): CSSProperties {
+  if (item.shadowHumanAttentionRequired === true || item.conversationHumanGate === true) {
+    return { color: "#b45f06", background: "rgba(230,126,34,0.14)" };
+  }
+  if (item.shadowHumanAttentionRequired === false) {
+    return { color: "#1e8449", background: "rgba(39,174,96,0.12)" };
+  }
+  return { color: "#666", background: "rgba(127,127,127,0.12)" };
+}
+
 function completenessStyle(value: string): CSSProperties {
   if (value === "complete") return { color: "#1e8449", background: "rgba(39,174,96,0.12)" };
   if (value === "partial") return { color: "#b45f06", background: "rgba(230,126,34,0.12)" };
@@ -318,6 +359,14 @@ export function StoreIntakePage({ context }: PluginPageProps) {
     return result;
   }, [items]);
 
+  const operatorCounts = useMemo(() => ({
+    human: items.filter((item) => item.shadowHumanAttentionRequired === true || item.conversationHumanGate === true).length,
+    automatic: items.filter((item) => item.shadowHumanAttentionRequired === false && item.conversationHumanGate !== true).length,
+    draft: items.filter((item) => item.conversationOutputMode === "draft" || Boolean(item.draftCandidateKind)).length,
+    commercial: items.filter((item) => item.conversationCommercialSignal === true || item.conversationRiskAuthorityClass === "commercial_opportunity").length,
+    uncertain: items.filter((item) => item.conversationRiskAuthorityClass === "uncertain" || item.conversationState === "human_review").length,
+  }), [items]);
+
   const filtered = useMemo(() => {
     const needle = search.trim().toLowerCase();
     return items
@@ -338,6 +387,11 @@ export function StoreIntakePage({ context }: PluginPageProps) {
           item.mailboxUsername,
           item.fromAddress,
           item.to,
+          item.conversationIntent,
+          item.conversationState,
+          item.conversationNextAction,
+          item.shadowActionKind,
+          item.conversationEntityName,
         ]
           .filter((value): value is string => typeof value === "string")
           .join(" ")
@@ -394,10 +448,11 @@ export function StoreIntakePage({ context }: PluginPageProps) {
       ) : null}
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 8 }}>
-        <SummaryCard label="Needs attention" value={counts.attention} detail="Escalate or act" emphasis />
-        <SummaryCard label="Draft work" value={counts.drafts} detail="Candidates or replies" />
-        <SummaryCard label="Notifications" value={counts.notifications} detail="Operational events" />
-        <SummaryCard label="Suppressed" value={counts.suppressed} detail="Spam + duplicates" />
+        <SummaryCard label="Human gated" value={operatorCounts.human} detail="Review before action" emphasis />
+        <SummaryCard label="Automatic" value={operatorCounts.automatic} detail="No human action" />
+        <SummaryCard label="Draft ready" value={operatorCounts.draft} detail="Evidence preserved" />
+        <SummaryCard label="Commercial" value={operatorCounts.commercial} detail="Human-owned" />
+        <SummaryCard label="Uncertain" value={operatorCounts.uncertain} detail="Escalate" />
       </div>
 
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
@@ -452,6 +507,7 @@ export function StoreIntakePage({ context }: PluginPageProps) {
                 <th style={thStyle}>Portfolio</th>
                 <th style={thStyle}>Mailbox</th>
                 <th style={thStyle}>Sorted as</th>
+                <th style={thStyle}>Conversation</th>
                 <th style={thStyle}>Subject / entity</th>
                 <th style={thStyle}>Next action</th>
                 <th style={thStyle}>Evidence</th>
@@ -496,17 +552,33 @@ export function StoreIntakePage({ context }: PluginPageProps) {
                         {item.sortLabel || item.sortCategory?.replace(/_/g, " ") || item.sourceType?.replace(/_/g, " ") || "Unsorted"}
                       </span>
                     </td>
+                    <td style={tdStyle}>
+                      <div style={{ display: "grid", gap: 3 }}>
+                        <span style={{ ...badgeStyle, ...operatorStyle(item) }}>
+                          {operatorStatus(item)}
+                        </span>
+                        <span style={{ fontSize: 10, opacity: 0.62 }}>
+                          {(item.conversationIntent || "unknown").replace(/_/g, " ")}
+                          {item.conversationState ? ` · ${item.conversationState.replace(/_/g, " ")}` : ""}
+                        </span>
+                      </div>
+                    </td>
                     <td style={{ ...tdStyle, maxWidth: 280 }}>
                       <div style={{ fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={displayTitle}>
-                        {displayTitle || "—"}
+                        {item.conversationEntityName || displayTitle || "—"}
                       </div>
                       <div style={{ marginTop: 2, fontSize: 10, opacity: 0.55 }}>
+                        {item.conversationEntityName && displayTitle !== item.conversationEntityName ? displayTitle + " · " : ""}
                         {item.fromAddress ? "from " + item.fromAddress : item.sourceForm || item.sourceType || "unknown source"}
                       </div>
                     </td>
                     <td style={tdStyle}>
                       <div style={{ fontWeight: needsAttention(item) ? 700 : 500 }}>{nextAction(item)}</div>
-                      {item.draftCandidateKind ? (
+                      {item.shadowActionKind ? (
+                        <div style={{ marginTop: 2, fontSize: 10, opacity: 0.6 }} title={item.shadowReason || undefined}>
+                          shadow: {item.shadowActionKind.replace(/^would_/, "").replace(/_/g, " ")}
+                        </div>
+                      ) : item.draftCandidateKind ? (
                         <div style={{ marginTop: 2, fontSize: 10, opacity: 0.6 }}>draft: {item.draftCandidateKind.replace(/_/g, " ")}</div>
                       ) : null}
                     </td>

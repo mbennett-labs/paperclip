@@ -87,6 +87,53 @@ type DraftCandidateData = {
   reason: string;
 } | null;
 
+type ConversationRecordData = {
+  tenant: string;
+  sender: { relationship: string };
+  entityContext: {
+    entityType: string;
+    entityName: string | null;
+    entityLocator: string | null;
+    matchConfidence: number;
+    matchReason: string;
+  };
+  intent: {
+    category: string;
+    confidence: number;
+  };
+  extraction: {
+    request: { summary: string };
+    missingInformation: string[];
+  };
+  commercialSignal: { present: boolean; reason: string | null };
+  riskAuthorityClass: string;
+  state: string;
+  nextAction: {
+    kind: string;
+    label: string;
+    reason: string;
+    humanApprovalRequired: boolean;
+  };
+  output: {
+    mode: string;
+    draft: { kind: string; to: string; subject: string; reason: string } | null;
+  };
+  evidenceRefs: Array<{ kind: string; ref: string; note: string }>;
+} | null;
+
+type ShadowEvaluationData = {
+  mode: "shadow_only";
+  shadowActionKind: string;
+  humanAttentionRequired: boolean;
+  humanApprovalRequired: boolean;
+  outputMode: string;
+  confidence: number;
+  entityMatched: boolean;
+  evidenceRef: string;
+  reason: string;
+  evaluatedAt: string;
+} | null;
+
 type StoreIntakeData = {
   evidence: {
     sourceDetection: {
@@ -138,6 +185,8 @@ type StoreIntakeData = {
     rulesMatched: string[];
   } | null;
   draftCandidate: DraftCandidateData;
+  conversationRecord: ConversationRecordData;
+  shadowEvaluation: ShadowEvaluationData;
 } | null;
 
 const VERDICT_LABELS: Record<string, string> = {
@@ -210,7 +259,7 @@ export function StoreIntakeTab({ context }: PluginDetailTabProps) {
     return <div style={box(10, 12)}><span style={{ opacity: 0.7 }}>No store intake record linked to this issue.</span></div>;
   }
 
-  const { evidence, duplicates, analyses, reviews, latestAnalysis, latestReview, intakeMetadata, sortResult, draftCandidate } = data;
+  const { evidence, duplicates, analyses, reviews, latestAnalysis, latestReview, intakeMetadata, sortResult, draftCandidate, conversationRecord, shadowEvaluation } = data;
   const intake = evidence.storeIntake;
 
   async function handleReview() {
@@ -256,6 +305,32 @@ export function StoreIntakeTab({ context }: PluginDetailTabProps) {
           {latestReview.notes && (
             <div style={row()}><span style={labelStyle()}>Notes</span><span>{latestReview.notes}</span></div>
           )}
+        </div>
+      )}
+
+      {conversationRecord && (
+        <div style={{ ...cardStyle(), borderLeft: `3px solid ${shadowEvaluation?.humanAttentionRequired ? "#e67e22" : "#27ae60"}` }}>
+          <div style={{ fontWeight: 700, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+            Conversation Operator
+            <span style={tag(shadowEvaluation?.humanAttentionRequired ? "#e67e22" : "#27ae60")}>
+              {shadowEvaluation?.humanAttentionRequired ? "Human gated" : "No human action"}
+            </span>
+            <span style={{ fontSize: 10, opacity: 0.6, fontWeight: 400 }}>shadow only</span>
+          </div>
+          <div style={row()}><span style={labelStyle()}>Tenant</span><span>{conversationRecord.tenant}</span></div>
+          <div style={row()}><span style={labelStyle()}>Intent</span><span>{conversationRecord.intent.category.replace(/_/g, " ")} ({Math.round(conversationRecord.intent.confidence * 100)}%)</span></div>
+          <div style={row()}><span style={labelStyle()}>State</span><span>{conversationRecord.state.replace(/_/g, " ")}</span></div>
+          <div style={row()}><span style={labelStyle()}>Next action</span><span>{conversationRecord.nextAction.label}</span></div>
+          <div style={row()}><span style={labelStyle()}>Shadow action</span><span>{(shadowEvaluation?.shadowActionKind || "not evaluated").replace(/^would_/, "").replace(/_/g, " ")}</span></div>
+          <div style={row()}><span style={labelStyle()}>Risk</span><span>{conversationRecord.riskAuthorityClass.replace(/_/g, " ")}</span></div>
+          <div style={row()}><span style={labelStyle()}>Entity</span><span>{conversationRecord.entityContext.entityName || conversationRecord.entityContext.entityLocator || "unmatched"} · {Math.round(conversationRecord.entityContext.matchConfidence * 100)}%</span></div>
+          {conversationRecord.extraction.missingInformation.length > 0 && (
+            <div style={row()}><span style={labelStyle()}>Missing</span><span>{conversationRecord.extraction.missingInformation.join(", ")}</span></div>
+          )}
+          <div style={row()}><span style={labelStyle()}>Output</span><span>{conversationRecord.output.mode.replace(/_/g, " ")}{conversationRecord.output.draft ? ` · ${conversationRecord.output.draft.kind}` : ""}</span></div>
+          <div style={{ fontSize: 11, opacity: 0.65 }}>
+            Evidence: {conversationRecord.evidenceRefs.slice(0, 4).map((ref) => `${ref.kind}:${ref.ref}`).join(" · ")}
+          </div>
         </div>
       )}
 
