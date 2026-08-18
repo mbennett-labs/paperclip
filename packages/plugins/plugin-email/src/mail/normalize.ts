@@ -344,6 +344,21 @@ export function detectSource(
     detection.rulesMatched.push("web3forms:thebinmap_claim_pattern");
     return detection;
   }
+
+  if (
+    brand === "thebinmap" &&
+    (s.includes("correction") || /\b(wrong|update|change|edit|fix)\b/.test(b))
+  ) {
+    detection.sourceType = "correction";
+    detection.sourceForm = "thebinmap_contact";
+    detection.sourcePage = "unknown";
+    detection.brand = "thebinmap";
+    detection.confidence = 0.75;
+    detection.evidence.push("TheBinMap brand + correction/update language");
+    detection.rulesMatched.push("brand:thebinmap_correction");
+    return detection;
+  }
+
   if (isWeb3Forms && (s.includes("stay in the loop") || s.includes("newsletter"))) {
     detection.sourceType = "newsletter_signup";
     detection.sourceForm = "thebinmap_newsletter";
@@ -645,6 +660,7 @@ function classify(subject: string, fromAddress: string, body: string): MessageCl
   if (detection.sourceType === "intelligence_signup") return "intelligence_signup";
   if (detection.sourceType === "qsl_security_review") return "support_request";
   if (detection.sourceType === "qsl_risk_calculator") return "sales_opportunity";
+  if (detection.sourceType === "correction") return "correction";
   if (detection.sourceType === "contact") return "contact_general";
 
   if (detection.brand === "therapist_index") return "contact_general";

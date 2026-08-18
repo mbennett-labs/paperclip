@@ -78,6 +78,10 @@ import {
   type DraftCandidate,
 } from "./mail/drafts.js";
 import {
+  createConversationRecord,
+  type StructuredConversationRecord,
+} from "./mail/conversation.js";
+import {
   activeMailboxProfiles,
   buildMailboxProfiles,
   hasActiveMailboxConfig,
@@ -503,6 +507,21 @@ async function ingestMessage(
     );
     await ctx.state.set({ scopeKind: "issue", scopeId: issue.id, namespace: STATE_NS_INTAKE, stateKey: "intake-sort-result" }, sortResult);
 
+    const conversationRecord = createConversationRecord({
+      msg,
+      detection,
+      sortResult,
+      intakeMetadata: storeIntake?.intakeMetadata ?? null,
+      storeIntake,
+      draftCandidate: draftCandidate?.candidate ?? null,
+    });
+    await ctx.state.set({
+      scopeKind: "issue",
+      scopeId: issue.id,
+      namespace: STATE_NS_INTAKE,
+      stateKey: "conversation-record",
+    }, conversationRecord);
+
     if (draftCandidate) {
       await ctx.state.set({
         scopeKind: "issue",
@@ -911,6 +930,7 @@ const plugin = definePlugin({
             const intakeMetadata = await ctx.state.get({ scopeKind: "issue", scopeId: issue.id, namespace: STATE_NS_INTAKE, stateKey: "intake-metadata" });
             const sortData = await ctx.state.get({ scopeKind: "issue", scopeId: issue.id, namespace: STATE_NS_INTAKE, stateKey: "intake-sort-result" }) as IntakeSortResult | undefined;
             const draftData = await ctx.state.get({ scopeKind: "issue", scopeId: issue.id, namespace: STATE_NS_INTAKE, stateKey: "intake-draft-candidate" }) as Record<string, unknown> | undefined;
+            const conversationData = await ctx.state.get({ scopeKind: "issue", scopeId: issue.id, namespace: STATE_NS_INTAKE, stateKey: "conversation-record" }) as StructuredConversationRecord | undefined;
             items.push({
               issueId: issue.id,
               identifier: issue.identifier,
@@ -944,6 +964,11 @@ const plugin = definePlugin({
               sortLabel: sortData ? CATEGORY_LABELS[sortData.category] : null,
               replyActionStatus: sortData?.replyActionStatus ?? null,
               draftCandidateKind: draftData?.candidate ? (draftData.candidate as DraftCandidate).kind : null,
+              conversationState: conversationData?.state ?? null,
+              conversationIntent: conversationData?.intent.category ?? null,
+              conversationNextAction: conversationData?.nextAction.kind ?? null,
+              conversationHumanGate: conversationData?.nextAction.humanApprovalRequired ?? null,
+              conversationRiskAuthorityClass: conversationData?.riskAuthorityClass ?? null,
             });
           } catch { /* skip problematic issues */ }
         }
