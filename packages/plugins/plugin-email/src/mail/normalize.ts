@@ -347,7 +347,7 @@ export function detectSource(
 
   if (
     brand === "thebinmap" &&
-    (s.includes("correction") || /\b(wrong|update|change|edit|fix)\b/.test(b))
+    (s.includes("correction") || /\b(correction|wrong|update|change|edit|fix)\b/.test(b))
   ) {
     detection.sourceType = "correction";
     detection.sourceForm = "thebinmap_contact";

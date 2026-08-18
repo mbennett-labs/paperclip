@@ -50,6 +50,16 @@ type QueueItem = {
   shadowActionKind: string | null;
   shadowHumanAttentionRequired: boolean | null;
   shadowReason: string | null;
+  conversationId: string | null;
+  continuityLinkageStatus: string | null;
+  continuityLinkageMethod: string | null;
+  continuityPriorMessageCount: number | null;
+  continuityPreviousState: string | null;
+  continuityCurrentState: string | null;
+  continuityFollowUpStatus: string | null;
+  continuityFollowUpAction: string | null;
+  continuityUncertaintyCount: number | null;
+  continuityHumanAttentionRequired: boolean | null;
 };
 
 type EmailPluginConfigView = {
@@ -151,6 +161,7 @@ function isSuppressed(item: QueueItem): boolean {
 
 function needsAttention(item: QueueItem): boolean {
   if (isSuppressed(item) || item.status !== "todo") return false;
+  if (item.continuityHumanAttentionRequired === true || (item.continuityUncertaintyCount ?? 0) > 0) return true;
   if (item.shadowHumanAttentionRequired === true || item.conversationHumanGate === true) return true;
   if (item.conversationRiskAuthorityClass === "uncertain") return true;
   if (item.sortCategory === "unknown" || item.sortCategory === "incomplete") return true;
@@ -203,6 +214,7 @@ function matchesWorkflow(item: QueueItem, filter: WorkflowFilter): boolean {
 function attentionScore(item: QueueItem): number {
   let score = 0;
   if (needsAttention(item)) score += 100;
+  if ((item.continuityPriorMessageCount ?? 0) > 0) score += 4;
   if (item.shadowHumanAttentionRequired === true) score += 20;
   if (item.conversationRiskAuthorityClass === "commercial_opportunity") score += 16;
   if (item.priority === "high") score += 25;
@@ -244,6 +256,8 @@ function nextAction(item: QueueItem): string {
 }
 
 function operatorStatus(item: QueueItem): string {
+  if ((item.continuityUncertaintyCount ?? 0) > 0) return "Uncertain";
+  if (item.continuityHumanAttentionRequired === true) return "Human gate";
   if (item.shadowHumanAttentionRequired === true) return "Human gate";
   if (item.shadowHumanAttentionRequired === false) return "Automatic";
   if (item.conversationHumanGate === true) return "Human gate";
@@ -364,6 +378,8 @@ export function StoreIntakePage({ context }: PluginPageProps) {
     automatic: items.filter((item) => item.shadowHumanAttentionRequired === false && item.conversationHumanGate !== true).length,
     draft: items.filter((item) => item.conversationOutputMode === "draft" || Boolean(item.draftCandidateKind)).length,
     commercial: items.filter((item) => item.conversationCommercialSignal === true || item.conversationRiskAuthorityClass === "commercial_opportunity").length,
+    linked: items.filter((item) => item.continuityLinkageStatus === "deterministic").length,
+    followUp: items.filter((item) => item.continuityFollowUpStatus === "follow_up_due").length,
     uncertain: items.filter((item) => item.conversationRiskAuthorityClass === "uncertain" || item.conversationState === "human_review").length,
   }), [items]);
 
@@ -392,6 +408,9 @@ export function StoreIntakePage({ context }: PluginPageProps) {
           item.conversationNextAction,
           item.shadowActionKind,
           item.conversationEntityName,
+          item.conversationId,
+          item.continuityFollowUpStatus,
+          item.continuityLinkageStatus,
         ]
           .filter((value): value is string => typeof value === "string")
           .join(" ")
@@ -452,6 +471,8 @@ export function StoreIntakePage({ context }: PluginPageProps) {
         <SummaryCard label="Automatic" value={operatorCounts.automatic} detail="No human action" />
         <SummaryCard label="Draft ready" value={operatorCounts.draft} detail="Evidence preserved" />
         <SummaryCard label="Commercial" value={operatorCounts.commercial} detail="Human-owned" />
+        <SummaryCard label="Linked" value={operatorCounts.linked} detail="Prior context" />
+        <SummaryCard label="Follow-up" value={operatorCounts.followUp} detail="Shadow due" />
         <SummaryCard label="Uncertain" value={operatorCounts.uncertain} detail="Escalate" />
       </div>
 
@@ -559,8 +580,13 @@ export function StoreIntakePage({ context }: PluginPageProps) {
                         </span>
                         <span style={{ fontSize: 10, opacity: 0.62 }}>
                           {(item.conversationIntent || "unknown").replace(/_/g, " ")}
-                          {item.conversationState ? ` · ${item.conversationState.replace(/_/g, " ")}` : ""}
+                          {item.continuityCurrentState || item.conversationState ? ` · ${(item.continuityCurrentState || item.conversationState || "").replace(/_/g, " ")}` : ""}
                         </span>
+                        {item.continuityPriorMessageCount != null ? (
+                          <span style={{ fontSize: 10, opacity: 0.52 }} title={item.conversationId || undefined}>
+                            {item.continuityLinkageStatus || "new"} · {item.continuityPriorMessageCount} prior
+                          </span>
+                        ) : null}
                       </div>
                     </td>
                     <td style={{ ...tdStyle, maxWidth: 280 }}>
@@ -580,6 +606,11 @@ export function StoreIntakePage({ context }: PluginPageProps) {
                         </div>
                       ) : item.draftCandidateKind ? (
                         <div style={{ marginTop: 2, fontSize: 10, opacity: 0.6 }}>draft: {item.draftCandidateKind.replace(/_/g, " ")}</div>
+                      ) : null}
+                      {item.continuityFollowUpStatus ? (
+                        <div style={{ marginTop: 2, fontSize: 10, opacity: 0.55 }}>
+                          follow-up: {item.continuityFollowUpStatus.replace(/_/g, " ")}
+                        </div>
                       ) : null}
                     </td>
                     <td style={tdStyle}>

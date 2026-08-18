@@ -86,6 +86,11 @@ import {
   type ShadowConversationEvaluation,
 } from "./mail/conversation-evaluation.js";
 import {
+  createConversationContinuityRecord,
+  type ConversationContinuityRecord,
+  type PriorConversationContext,
+} from "./mail/conversation-continuity.js";
+import {
   activeMailboxProfiles,
   buildMailboxProfiles,
   hasActiveMailboxConfig,
@@ -304,6 +309,41 @@ async function getStatus(ctx: PluginContext, companyId: string): Promise<Mailbox
   return { lastPollAt: null, lastDurationMs: 0, totals: { polls: 0, ingested: 0, sent: 0 }, profiles: [] };
 }
 
+async function loadPriorConversationContexts(
+  ctx: PluginContext,
+  companyId: string,
+  currentIssueId: string,
+): Promise<PriorConversationContext[]> {
+  const issues = await ctx.issues.list({
+    companyId,
+    originKindPrefix: ORIGIN_KIND_INTAKE,
+    limit: 200,
+  });
+  const contexts: PriorConversationContext[] = [];
+  for (const issue of issues) {
+    if (issue.id === currentIssueId) continue;
+    try {
+      const record = await ctx.state.get({
+        scopeKind: "issue",
+        scopeId: issue.id,
+        namespace: STATE_NS_INTAKE,
+        stateKey: "conversation-record",
+      }) as StructuredConversationRecord | undefined;
+      if (!record) continue;
+      const continuity = await ctx.state.get({
+        scopeKind: "issue",
+        scopeId: issue.id,
+        namespace: STATE_NS_INTAKE,
+        stateKey: "conversation-continuity",
+      }) as ConversationContinuityRecord | undefined;
+      contexts.push({ issueId: issue.id, record, continuity: continuity ?? null });
+    } catch {
+      // Prior continuity is advisory; current ingestion must not fail because an older issue is unreadable.
+    }
+  }
+  return contexts;
+}
+
 async function ingestMessage(
   ctx: PluginContext,
   config: EmailPluginConfig,
@@ -520,6 +560,13 @@ async function ingestMessage(
       draftCandidate: draftCandidate?.candidate ?? null,
     });
     const shadowEvaluation = createShadowEvaluation(conversationRecord);
+    const priorConversationContexts = await loadPriorConversationContexts(ctx, companyId, issue.id);
+    const continuityRecord = createConversationContinuityRecord({
+      currentIssueId: issue.id,
+      currentRecord: conversationRecord,
+      currentShadowRecommendation: shadowEvaluation.shadowActionKind,
+      priorRecords: priorConversationContexts,
+    });
     await ctx.state.set({
       scopeKind: "issue",
       scopeId: issue.id,
@@ -532,6 +579,12 @@ async function ingestMessage(
       namespace: STATE_NS_INTAKE,
       stateKey: "conversation-shadow-evaluation",
     }, shadowEvaluation);
+    await ctx.state.set({
+      scopeKind: "issue",
+      scopeId: issue.id,
+      namespace: STATE_NS_INTAKE,
+      stateKey: "conversation-continuity",
+    }, continuityRecord);
     await ctx.metrics.write("conversation_record_created", 1, {
       profile: profile.key,
       tenant: conversationRecord.tenant,
@@ -551,6 +604,15 @@ async function ingestMessage(
     }
     if (conversationRecord.riskAuthorityClass === "uncertain") {
       await ctx.metrics.write("conversation_uncertain", 1, { profile: profile.key, tenant: conversationRecord.tenant });
+    }
+    if (continuityRecord.linkage.status === "deterministic") {
+      await ctx.metrics.write("conversation_linked", 1, { profile: profile.key, tenant: conversationRecord.tenant, method: continuityRecord.linkage.method });
+    }
+    if (continuityRecord.linkage.status === "uncertain") {
+      await ctx.metrics.write("conversation_link_uncertain", 1, { profile: profile.key, tenant: conversationRecord.tenant });
+    }
+    if (continuityRecord.followUp.status === "follow_up_due") {
+      await ctx.metrics.write("conversation_follow_up_due", 1, { profile: profile.key, tenant: conversationRecord.tenant });
     }
 
     if (draftCandidate) {
@@ -855,6 +917,7 @@ const plugin = definePlugin({
         const intakeMetadata = await ctx.state.get({ scopeKind: "issue", scopeId: issueId, namespace: STATE_NS_INTAKE, stateKey: "intake-metadata" });
         const conversationRecord = await ctx.state.get({ scopeKind: "issue", scopeId: issueId, namespace: STATE_NS_INTAKE, stateKey: "conversation-record" });
         const shadowEvaluation = await ctx.state.get({ scopeKind: "issue", scopeId: issueId, namespace: STATE_NS_INTAKE, stateKey: "conversation-shadow-evaluation" });
+        const continuityRecord = await ctx.state.get({ scopeKind: "issue", scopeId: issueId, namespace: STATE_NS_INTAKE, stateKey: "conversation-continuity" });
 
         // Gather analyses from unique keys (D3: safe per-record keys)
         const analyses: AnalysisRecord[] = [];
@@ -904,6 +967,7 @@ const plugin = definePlugin({
           intakeMetadata: intakeMetadata ?? null,
           conversationRecord: conversationRecord ?? null,
           shadowEvaluation: shadowEvaluation ?? null,
+          continuityRecord: continuityRecord ?? null,
           sortResult: sortResult ?? null,
           draftCandidate: draftCandidate ?? null,
         };
@@ -967,6 +1031,7 @@ const plugin = definePlugin({
             const draftData = await ctx.state.get({ scopeKind: "issue", scopeId: issue.id, namespace: STATE_NS_INTAKE, stateKey: "intake-draft-candidate" }) as Record<string, unknown> | undefined;
             const conversationData = await ctx.state.get({ scopeKind: "issue", scopeId: issue.id, namespace: STATE_NS_INTAKE, stateKey: "conversation-record" }) as StructuredConversationRecord | undefined;
             const shadowData = await ctx.state.get({ scopeKind: "issue", scopeId: issue.id, namespace: STATE_NS_INTAKE, stateKey: "conversation-shadow-evaluation" }) as ShadowConversationEvaluation | undefined;
+            const continuityData = await ctx.state.get({ scopeKind: "issue", scopeId: issue.id, namespace: STATE_NS_INTAKE, stateKey: "conversation-continuity" }) as ConversationContinuityRecord | undefined;
             items.push({
               issueId: issue.id,
               identifier: issue.identifier,
@@ -1013,6 +1078,16 @@ const plugin = definePlugin({
               shadowActionKind: shadowData?.shadowActionKind ?? null,
               shadowHumanAttentionRequired: shadowData?.humanAttentionRequired ?? null,
               shadowReason: shadowData?.reason ?? null,
+              conversationId: continuityData?.conversationId ?? null,
+              continuityLinkageStatus: continuityData?.linkage.status ?? null,
+              continuityLinkageMethod: continuityData?.linkage.method ?? null,
+              continuityPriorMessageCount: continuityData?.linkage.priorMessageCount ?? null,
+              continuityPreviousState: continuityData?.previousState ?? null,
+              continuityCurrentState: continuityData?.currentState ?? null,
+              continuityFollowUpStatus: continuityData?.followUp.status ?? null,
+              continuityFollowUpAction: continuityData?.followUp.shadowAction ?? null,
+              continuityUncertaintyCount: continuityData?.uncertaintyReasons.length ?? null,
+              continuityHumanAttentionRequired: continuityData?.humanAttentionRequired ?? null,
             });
           } catch { /* skip problematic issues */ }
         }

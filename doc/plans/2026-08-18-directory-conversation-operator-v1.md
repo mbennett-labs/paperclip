@@ -257,3 +257,24 @@ Milestone 2 verification:
 - `node esbuild.config.mjs` from `packages/plugins/plugin-email`: passed.
 
 Repo-wide `pnpm -r typecheck` was attempted but pnpm repeatedly entered a dependency-recreation path and stalled after `Recreating ...\node_modules`; direct plugin typecheck/build/tests were used for completed milestone verification.
+
+## Milestone 3 evidence — conversation continuity + outcome replay
+
+Completed on 2026-08-18 on `feat/directory-conversation-operator-v1` after Milestone 2 commit `b40b43b51`.
+
+- Added deterministic `conversation-continuity` records that span multiple issue/message records.
+- Linkage uses exact message references, thread keys, entity identity, or subject+sender evidence; ambiguous linkage fails closed with candidates and uncertainty reasons.
+- Later deterministic replies can inherit prior entity context with provenance; contradictory new entity evidence is preserved as uncertainty instead of overriding prior facts.
+- Added bounded follow-up representation: waiting, follow-up due, resolved, closed not interested, suppressed, and human-policy-required.
+- Added outcome comparison for shadow recommendation vs known/human outcome: agreement, disagreement, or unknown/no evidence.
+- Exposed continuity in the existing Email Operations queue and Store Intake detail tab: conversation ID, prior-message count, current/previous state, transition, follow-up status, human attention, and uncertainty.
+- Expanded replay tests with multi-message scenarios for TheBinMap and TherapistIndex, including positive replies, no-interest replies, unsubscribe, owner corrections, listing removal clarification, and profile-claim identity follow-up.
+
+Milestone 3 verification:
+
+- `..\..\..\node_modules\.bin\vitest.CMD run tests/conversation-replay.spec.ts tests/conversation-continuity.spec.ts` from `packages/plugins/plugin-email`: 2 files passed, 26 tests passed.
+- `..\..\..\node_modules\.bin\vitest.CMD run` from `packages/plugins/plugin-email`: 24 files passed, 530 tests passed.
+- `node_modules\.bin\tsc.CMD --noEmit -p packages/plugins/plugin-email/tsconfig.json`: passed.
+- `node esbuild.config.mjs` from `packages/plugins/plugin-email`: passed.
+
+Repo-wide pnpm verification was not repeated for Milestone 3 because the same workspace repeatedly stalled after `Recreating ...\node_modules` during Milestones 2–3 attempts. The directly affected email plugin was tested, typechecked, and built comprehensively.

@@ -134,6 +134,52 @@ type ShadowEvaluationData = {
   evaluatedAt: string;
 } | null;
 
+type ContinuityRecordData = {
+  conversationId: string;
+  linkage: {
+    status: string;
+    method: string;
+    confidence: number;
+    reason: string;
+    priorIssueIds: string[];
+    priorMessageIds: string[];
+    priorMessageCount: number;
+    candidates: Array<{ issueId: string; messageId: string; reason: string; confidence: number }>;
+  };
+  entityContinuity: {
+    entityName: string | null;
+    entityLocator: string | null;
+    matchConfidence: number;
+    provenance: string;
+    inheritedFromIssueId: string | null;
+    reason: string;
+  };
+  previousState: string | null;
+  currentState: string;
+  transition: {
+    kind: string;
+    from: string | null;
+    to: string;
+    reason: string;
+  };
+  followUp: {
+    status: string;
+    shadowAction: string;
+    dueAt: string | null;
+    policyRequired: boolean;
+    reason: string;
+  };
+  outcomeComparison: {
+    status: string;
+    knownOutcome: string | null;
+    shadowRecommendation: string | null;
+    reason: string;
+    evidence: string | null;
+  };
+  humanAttentionRequired: boolean;
+  uncertaintyReasons: string[];
+} | null;
+
 type StoreIntakeData = {
   evidence: {
     sourceDetection: {
@@ -187,6 +233,7 @@ type StoreIntakeData = {
   draftCandidate: DraftCandidateData;
   conversationRecord: ConversationRecordData;
   shadowEvaluation: ShadowEvaluationData;
+  continuityRecord: ContinuityRecordData;
 } | null;
 
 const VERDICT_LABELS: Record<string, string> = {
@@ -259,7 +306,7 @@ export function StoreIntakeTab({ context }: PluginDetailTabProps) {
     return <div style={box(10, 12)}><span style={{ opacity: 0.7 }}>No store intake record linked to this issue.</span></div>;
   }
 
-  const { evidence, duplicates, analyses, reviews, latestAnalysis, latestReview, intakeMetadata, sortResult, draftCandidate, conversationRecord, shadowEvaluation } = data;
+  const { evidence, duplicates, analyses, reviews, latestAnalysis, latestReview, intakeMetadata, sortResult, draftCandidate, conversationRecord, shadowEvaluation, continuityRecord } = data;
   const intake = evidence.storeIntake;
 
   async function handleReview() {
@@ -320,14 +367,44 @@ export function StoreIntakeTab({ context }: PluginDetailTabProps) {
           <div style={row()}><span style={labelStyle()}>Tenant</span><span>{conversationRecord.tenant}</span></div>
           <div style={row()}><span style={labelStyle()}>Intent</span><span>{conversationRecord.intent.category.replace(/_/g, " ")} ({Math.round(conversationRecord.intent.confidence * 100)}%)</span></div>
           <div style={row()}><span style={labelStyle()}>State</span><span>{conversationRecord.state.replace(/_/g, " ")}</span></div>
+          {continuityRecord && (
+            <div style={row()}><span style={labelStyle()}>Conversation</span><span style={{ fontFamily: "monospace", fontSize: 12 }}>{continuityRecord.conversationId}</span></div>
+          )}
+          {continuityRecord && (
+            <div style={row()}>
+              <span style={labelStyle()}>Continuity</span>
+              <span>
+                {continuityRecord.linkage.status.replace(/_/g, " ")} via {continuityRecord.linkage.method.replace(/_/g, " ")}
+                {" · "}{continuityRecord.linkage.priorMessageCount} prior
+              </span>
+            </div>
+          )}
+          {continuityRecord?.previousState && (
+            <div style={row()}><span style={labelStyle()}>Previous state</span><span>{continuityRecord.previousState.replace(/_/g, " ")}</span></div>
+          )}
+          {continuityRecord && (
+            <div style={row()}><span style={labelStyle()}>Transition</span><span>{continuityRecord.transition.kind.replace(/_/g, " ")} · {continuityRecord.transition.reason}</span></div>
+          )}
           <div style={row()}><span style={labelStyle()}>Next action</span><span>{conversationRecord.nextAction.label}</span></div>
           <div style={row()}><span style={labelStyle()}>Shadow action</span><span>{(shadowEvaluation?.shadowActionKind || "not evaluated").replace(/^would_/, "").replace(/_/g, " ")}</span></div>
+          {continuityRecord && (
+            <div style={row()}><span style={labelStyle()}>Follow-up</span><span>{continuityRecord.followUp.status.replace(/_/g, " ")} · {continuityRecord.followUp.shadowAction.replace(/_/g, " ")}</span></div>
+          )}
           <div style={row()}><span style={labelStyle()}>Risk</span><span>{conversationRecord.riskAuthorityClass.replace(/_/g, " ")}</span></div>
-          <div style={row()}><span style={labelStyle()}>Entity</span><span>{conversationRecord.entityContext.entityName || conversationRecord.entityContext.entityLocator || "unmatched"} · {Math.round(conversationRecord.entityContext.matchConfidence * 100)}%</span></div>
+          <div style={row()}><span style={labelStyle()}>Entity</span><span>{continuityRecord?.entityContinuity.entityName || continuityRecord?.entityContinuity.entityLocator || conversationRecord.entityContext.entityName || conversationRecord.entityContext.entityLocator || "unmatched"} · {Math.round((continuityRecord?.entityContinuity.matchConfidence ?? conversationRecord.entityContext.matchConfidence) * 100)}%</span></div>
+          {continuityRecord?.entityContinuity.provenance && (
+            <div style={row()}><span style={labelStyle()}>Entity source</span><span>{continuityRecord.entityContinuity.provenance.replace(/_/g, " ")}{continuityRecord.entityContinuity.inheritedFromIssueId ? ` · ${continuityRecord.entityContinuity.inheritedFromIssueId}` : ""}</span></div>
+          )}
+          {continuityRecord?.uncertaintyReasons.length ? (
+            <div style={row()}><span style={labelStyle()}>Uncertainty</span><span>{continuityRecord.uncertaintyReasons.join("; ")}</span></div>
+          ) : null}
           {conversationRecord.extraction.missingInformation.length > 0 && (
             <div style={row()}><span style={labelStyle()}>Missing</span><span>{conversationRecord.extraction.missingInformation.join(", ")}</span></div>
           )}
           <div style={row()}><span style={labelStyle()}>Output</span><span>{conversationRecord.output.mode.replace(/_/g, " ")}{conversationRecord.output.draft ? ` · ${conversationRecord.output.draft.kind}` : ""}</span></div>
+          {continuityRecord && (
+            <div style={row()}><span style={labelStyle()}>Outcome compare</span><span>{continuityRecord.outcomeComparison.status.replace(/_/g, " ")}</span></div>
+          )}
           <div style={{ fontSize: 11, opacity: 0.65 }}>
             Evidence: {conversationRecord.evidenceRefs.slice(0, 4).map((ref) => `${ref.kind}:${ref.ref}`).join(" · ")}
           </div>
