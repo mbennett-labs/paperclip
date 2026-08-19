@@ -91,6 +91,10 @@ import {
   type PriorConversationContext,
 } from "./mail/conversation-continuity.js";
 import {
+  createLiveShadowReport,
+  type LiveShadowReportIssueInput,
+} from "./mail/conversation-live-shadow-report.js";
+import {
   activeMailboxProfiles,
   buildMailboxProfiles,
   hasActiveMailboxConfig,
@@ -1094,6 +1098,69 @@ const plugin = definePlugin({
         return items;
       } catch {
         return [];
+      }
+    });
+
+    ctx.data.register("live-shadow-report", async (params) => {
+      const companyId = params?.companyId as string;
+      if (!companyId) return createLiveShadowReport([]);
+      const requestedProfileKey = typeof params?.profileKey === "string" && params.profileKey.trim()
+        ? params.profileKey.trim()
+        : null;
+      const requestedTenant = typeof params?.tenant === "string" && params.tenant.trim()
+        ? params.tenant.trim()
+        : null;
+      const rawLimit = Number(params?.limit ?? 200);
+      const limit = Number.isInteger(rawLimit) && rawLimit > 0
+        ? Math.min(rawLimit, 500)
+        : 200;
+
+      try {
+        const issues = await ctx.issues.list({
+          companyId,
+          originKindPrefix: ORIGIN_KIND_INTAKE,
+          limit,
+        });
+        const records: LiveShadowReportIssueInput[] = [];
+        for (const issue of issues) {
+          try {
+            const evidence = await ctx.state.get({ scopeKind: "issue", scopeId: issue.id, namespace: STATE_NS_INTAKE, stateKey: "intake-evidence" });
+            const evidenceRecord = evidence && typeof evidence === "object"
+              ? evidence as Record<string, unknown>
+              : null;
+            const profileKey = typeof evidenceRecord?.profileKey === "string" ? evidenceRecord.profileKey : null;
+            if (requestedProfileKey && profileKey !== requestedProfileKey) continue;
+
+            const [conversationRecord, shadowEvaluation, continuityRecord, reviewKeys] = await Promise.all([
+              ctx.state.get({ scopeKind: "issue", scopeId: issue.id, namespace: STATE_NS_INTAKE, stateKey: "conversation-record" }) as Promise<StructuredConversationRecord | undefined>,
+              ctx.state.get({ scopeKind: "issue", scopeId: issue.id, namespace: STATE_NS_INTAKE, stateKey: "conversation-shadow-evaluation" }) as Promise<ShadowConversationEvaluation | undefined>,
+              ctx.state.get({ scopeKind: "issue", scopeId: issue.id, namespace: STATE_NS_INTAKE, stateKey: "conversation-continuity" }) as Promise<ConversationContinuityRecord | undefined>,
+              ctx.state.get({ scopeKind: "issue", scopeId: issue.id, namespace: STATE_NS_INTAKE, stateKey: "intake-review-keys" }),
+            ]);
+            const tenant = conversationRecord?.tenant ?? shadowEvaluation?.tenant ?? continuityRecord?.tenant ?? null;
+            if (requestedTenant && tenant !== requestedTenant) continue;
+
+            const reviews: ReviewRecord[] = [];
+            const reviewKeyList: string[] = Array.isArray(reviewKeys) ? reviewKeys : [];
+            for (const key of reviewKeyList) {
+              try {
+                const review = await ctx.state.get({ scopeKind: "issue", scopeId: issue.id, namespace: STATE_NS_INTAKE, stateKey: key });
+                if (review) reviews.push(review as ReviewRecord);
+              } catch { /* skip unreadable review records */ }
+            }
+
+            records.push({
+              issueId: issue.id,
+              conversationRecord: conversationRecord ?? null,
+              shadowEvaluation: shadowEvaluation ?? null,
+              continuityRecord: continuityRecord ?? null,
+              reviews,
+            });
+          } catch { /* skip problematic issues; reporting must not mutate or fail broad reads */ }
+        }
+        return createLiveShadowReport(records);
+      } catch {
+        return createLiveShadowReport([]);
       }
     });
 

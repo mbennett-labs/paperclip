@@ -278,3 +278,24 @@ Milestone 3 verification:
 - `node esbuild.config.mjs` from `packages/plugins/plugin-email`: passed.
 
 Repo-wide pnpm verification was not repeated for Milestone 3 because the same workspace repeatedly stalled after `Recreating ...\node_modules` during Milestones 2–3 attempts. The directly affected email plugin was tested, typechecked, and built comprehensively.
+
+## Milestone 4A evidence — read-only live shadow report
+
+Completed on 2026-08-19 on `feat/directory-conversation-operator-v1` after Milestone 3 commit `fc871432e`.
+
+- Added a pure read-only live-shadow aggregation module over existing Email Operations issue state.
+- Exposed the report through the existing plugin data-provider bridge as `live-shadow-report`; report generation reads existing intake/conversation/shadow/continuity/review state only.
+- No mailbox access, polling, outbound email, directory mutation, config changes, schema changes, deployment, or service restart are part of this milestone.
+- The report summarizes total considered records, classification/conversation creation, continuity linkage, entity continuity, human attention, draft/commercial/suppression/no-interest/follow-up states, recommendation agreement/disagreement/unknown, and records lacking sufficient outcome evidence.
+- Breakdowns are included by tenant, intent, conversation state, next action, shadow action, linkage status/method, and risk/authority class.
+- Outcome evidence remains fail-closed: existing deterministic continuity comparisons are counted; explicit human review `approvedNextAction` values are compared when present; coarse outcomes without deterministic next-action evidence remain `unknown`.
+
+Milestone 4A verification:
+
+- `..\..\..\node_modules\.bin\vitest.CMD run tests/conversation-live-shadow-report.spec.ts` from `packages/plugins/plugin-email`: 1 file passed, 6 tests passed.
+- `..\..\..\node_modules\.bin\vitest.CMD run tests/conversation-replay.spec.ts tests/conversation-continuity.spec.ts tests/conversation-live-shadow-report.spec.ts` from `packages/plugins/plugin-email`: 3 files passed, 32 tests passed.
+- `..\..\..\node_modules\.bin\vitest.CMD run` from `packages/plugins/plugin-email`: 25 files passed, 536 tests passed.
+- `node_modules\.bin\tsc.CMD --noEmit -p packages/plugins/plugin-email/tsconfig.json`: passed.
+- `node esbuild.config.mjs` from `packages/plugins/plugin-email`: passed.
+
+This is not live staging validation. Milestone 4B remains the first operator-approved staging-data read/report pass, still without mailbox polling or new intake creation unless separately approved.
