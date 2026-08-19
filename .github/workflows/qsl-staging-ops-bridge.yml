@@ -1,0 +1,97 @@
+name: QSL Staging Ops Bridge V0
+
+on:
+  push:
+    branches:
+      - ops/staging-bridge-v0
+    paths:
+      - ".qsl/staging-ops/request.json"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: qsl-staging-ops-bridge-v0
+  cancel-in-progress: false
+
+jobs:
+  staging-ops:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout ops request
+        uses: actions/checkout@v7
+        with:
+          ref: ops/staging-bridge-v0
+
+      - name: Validate request schema
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          request=.qsl/staging-ops/request.json
+          test -f "$request"
+
+          operation="$(jq -r '.operation // empty' "$request")"
+          target_sha="$(jq -r '.targetSha // empty' "$request")"
+          expected_old_sha="$(jq -r '.expectedOldSha // empty' "$request")"
+
+          case "$operation" in
+            deploy-email-plugin|health|live-shadow-report) ;;
+            *) echo "Unsupported operation: $operation" >&2; exit 40 ;;
+          esac
+
+          sha_re='^[0-9a-f]{40}$'
+          if [[ "$operation" == "deploy-email-plugin" ]]; then
+            [[ "$target_sha" =~ $sha_re ]] || { echo "Invalid targetSha" >&2; exit 41; }
+            [[ "$expected_old_sha" =~ $sha_re ]] || { echo "Invalid expectedOldSha" >&2; exit 42; }
+          fi
+
+          echo "operation=$operation" >> "$GITHUB_OUTPUT"
+          echo "target_sha=$target_sha" >> "$GITHUB_OUTPUT"
+          echo "expected_old_sha=$expected_old_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Install bounded SSH identity
+        shell: bash
+        env:
+          QSL_STAGING_OPS_KEY: ${{ secrets.QSL_STAGING_OPS_KEY }}
+          QSL_STAGING_KNOWN_HOSTS: ${{ secrets.QSL_STAGING_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          test -n "$QSL_STAGING_OPS_KEY"
+          test -n "$QSL_STAGING_KNOWN_HOSTS"
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$QSL_STAGING_OPS_KEY" > ~/.ssh/qsl_staging_ops
+          chmod 600 ~/.ssh/qsl_staging_ops
+          printf '%s\n' "$QSL_STAGING_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+
+      - name: Execute fixed staging operation
+        shell: bash
+        env:
+          OPERATION: ${{ steps.request.outputs.operation }}
+          TARGET_SHA: ${{ steps.request.outputs.target_sha }}
+          EXPECTED_OLD_SHA: ${{ steps.request.outputs.expected_old_sha }}
+        run: |
+          set -euo pipefail
+          ssh_opts=(
+            -i "$HOME/.ssh/qsl_staging_ops"
+            -o BatchMode=yes
+            -o IdentitiesOnly=yes
+            -o StrictHostKeyChecking=yes
+            -o ConnectTimeout=10
+          )
+
+          case "$OPERATION" in
+            deploy-email-plugin)
+              ssh "${ssh_opts[@]}" root@69.62.69.140 \
+                "deploy-email-plugin $EXPECTED_OLD_SHA $TARGET_SHA"
+              ;;
+            health)
+              ssh "${ssh_opts[@]}" root@69.62.69.140 "health"
+              ;;
+            live-shadow-report)
+              ssh "${ssh_opts[@]}" root@69.62.69.140 "live-shadow-report"
+              ;;
+          esac
