@@ -202,6 +202,16 @@ Every evaluation/live-shadow run should be able to report:
 
 Primary value metric: **human attention bought back without loss of trust or evidence.**
 
+## Mission UI / observability principle
+
+**Surface live intelligence broadly; surface required human action narrowly.**
+
+Primary Mission UI should answer: **What needs my attention right now?**
+
+Operations and intelligence observability should answer: **What is the system seeing, deciding, and learning?**
+
+Rich telemetry is desirable, but it should be progressive-disclosure telemetry. Human governance, approvals, blockers, uncertainty, and required action should be prominent in mission-critical surfaces. General metrics, trends, throughput, confidence, classifications, continuity quality, recommendation agreement rates, commercial signals, and system health belong in distinct but easily reachable observability surfaces.
+
 ## Engineering rules
 
 1. Reuse existing Email Operations primitives before adding new infrastructure.
@@ -299,3 +309,25 @@ Milestone 4A verification:
 - `node esbuild.config.mjs` from `packages/plugins/plugin-email`: passed.
 
 This is not live staging validation. Milestone 4B remains the first operator-approved staging-data read/report pass, still without mailbox polling or new intake creation unless separately approved.
+
+## Milestone 4B precheck — staging runtime blocked before deploy
+
+Precheck performed on 2026-08-19 after Milestone 4A commit `6b5cd3cca`.
+
+Documented staging targets:
+
+- staging deployment path: `/opt/paperclip-deployments/thebinmap-email-ops-staging`;
+- staging service: `paperclip-thebinmap-staging.service`;
+- staging API: `http://127.0.0.1:3101/api`;
+- production service: `paperclip-thebinmap-prod.service`;
+- production public health endpoint remains separate at `https://paperclip.quantumshieldlabs.dev/api/health`.
+
+Precheck result:
+
+- local branch was clean and aligned with `origin/feat/directory-conversation-operator-v1`;
+- public production health was read-only checked and returned healthy;
+- direct staging API access on `69.62.69.140:3101` timed out, consistent with loopback-only staging;
+- SSH access to the host was denied for the available identities tested, including the documented local key path `C:\Users\mikeb\Hostinger\hostinger_sshkey.txt`;
+- no staging deploy, restart, plugin invocation, mailbox access, polling, outbound email, directory mutation, or configuration change occurred.
+
+Milestone 4B remains blocked until an operator provides a working staging access path or an established deployment mechanism that can verify service identity, current runtime health, rollback target, post-deploy health, and unchanged outbound/polling safety settings.
