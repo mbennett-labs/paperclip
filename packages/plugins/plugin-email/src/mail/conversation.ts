@@ -122,9 +122,18 @@ function inferRelationship(body: string, fromAddress: string): StructuredConvers
   return "unknown";
 }
 
+function hasExplicitSenderUnsubscribeIntent(subject: string, body: string): boolean {
+  const text = `${subject}\n${body}`.toLowerCase().replace(/\s+/g, " ").trim();
+  return /\bplease\s+unsubscribe\s+(?:me|us)\b/.test(text) ||
+    /\bunsubscribe\s+(?:me|us)\s+from\b/.test(text) ||
+    /\bremove\s+(?:me|us)\s+from\s+(?:your\s+)?(?:email\s+)?(?:list|emails|mailing list)\b/.test(text) ||
+    /\b(?:do not|don't)\s+(?:contact|email)\s+(?:me|us)\s*(?:again|anymore)?\b/.test(text) ||
+    /\bstop\s+(?:emailing|contacting)\s+(?:me|us)\b/.test(text);
+}
+
 function inferIntent(input: ConversationRecordInput, tenant: IntakeBrand): string {
   const text = `${input.msg.subject}\n${input.msg.bodyText}`.toLowerCase();
-  if (/\b(unsubscribe|stop emailing|remove me from (?:your )?(?:list|emails)|do not contact|don't contact)\b/.test(text)) return "unsubscribe";
+  if (hasExplicitSenderUnsubscribeIntent(input.msg.subject, input.msg.bodyText)) return "unsubscribe";
   if (/\b(no thanks|not interested|do not want|don't want|please stop|not a fit)\b/.test(text)) return "negative_not_interested";
   if (input.msg.inReplyTo && /\b(yes|interested|sounds good|send details|tell me more|let's talk|lets talk)\b/.test(text)) return "positive_response";
   if (tenant === "therapist_index" && /\b(remove|delete|take down|delist)\b/.test(text)) return "listing_removal";
@@ -244,6 +253,9 @@ function buildEvidenceRefs(input: ConversationRecordInput, facts: StructuredConv
 export function createConversationRecord(input: ConversationRecordInput): StructuredConversationRecord {
   const tenant = inferTenant(input.detection, input.msg);
   const intent = inferIntent(input, tenant);
+  const intentConfidence = intent === "unsubscribe" && hasExplicitSenderUnsubscribeIntent(input.msg.subject, input.msg.bodyText)
+    ? Math.max(input.sortResult.classificationConfidence, 0.8)
+    : input.sortResult.classificationConfidence;
   const facts = extractFacts(input, tenant);
   const entity = inferEntity(input, tenant, facts);
   const missingInformation = [...new Set([
@@ -265,7 +277,7 @@ export function createConversationRecord(input: ConversationRecordInput): Struct
     missingInformation,
     hasDraftCandidate: input.draftCandidate != null,
     commercialSignal: commercialSignal.present,
-    confidence: input.sortResult.classificationConfidence,
+    confidence: intentConfidence,
   });
 
   const outputMode = policy.draftPolicy === "no_reply"
@@ -300,7 +312,7 @@ export function createConversationRecord(input: ConversationRecordInput): Struct
       category: intent,
       sourceType: input.detection.sourceType,
       sourceForm: input.detection.sourceForm,
-      confidence: input.sortResult.classificationConfidence,
+      confidence: intentConfidence,
     },
     extraction: {
       request: {

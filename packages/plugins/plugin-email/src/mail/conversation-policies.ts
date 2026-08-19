@@ -71,16 +71,19 @@ export function decideConversationPolicy(input: ConversationPolicyInput): Conver
     };
   }
 
-  if (input.sortCategory === "spam_irrelevant") {
+  if (
+    input.sortCategory === "unknown" ||
+    (input.confidence < 0.5 && (input.sortCategory === "spam_irrelevant" || input.intent === "unsubscribe"))
+  ) {
     return {
-      state: "closed_not_interested",
-      riskAuthorityClass: "spam_or_system",
-      draftPolicy: "no_reply",
+      state: "human_review",
+      riskAuthorityClass: "uncertain",
+      draftPolicy: "human_gate",
       nextAction: {
-        kind: "suppress_close",
-        label: "Suppress and close",
-        reason: "Message was classified as spam or irrelevant.",
-        humanApprovalRequired: false,
+        kind: "escalate_to_human",
+        label: "Human review required",
+        reason: "Classification or tenant/entity evidence is too weak for deterministic handling.",
+        humanApprovalRequired: true,
       },
     };
   }
@@ -94,6 +97,20 @@ export function decideConversationPolicy(input: ConversationPolicyInput): Conver
         kind: "suppress_close",
         label: "Suppress unsubscribe / do-not-contact",
         reason: "Sender asked not to receive further outbound contact.",
+        humanApprovalRequired: false,
+      },
+    };
+  }
+
+  if (input.sortCategory === "spam_irrelevant") {
+    return {
+      state: "closed_not_interested",
+      riskAuthorityClass: "spam_or_system",
+      draftPolicy: "no_reply",
+      nextAction: {
+        kind: "suppress_close",
+        label: "Suppress and close",
+        reason: "Message was classified as spam or irrelevant.",
         humanApprovalRequired: false,
       },
     };
@@ -136,20 +153,6 @@ export function decideConversationPolicy(input: ConversationPolicyInput): Conver
         kind: "prepare_follow_up",
         label: "Prepare human-reviewed follow-up",
         reason: "Positive response to prior outreach can create commitments and remains human-gated.",
-        humanApprovalRequired: true,
-      },
-    };
-  }
-
-  if (input.sortCategory === "unknown" || input.confidence < 0.5) {
-    return {
-      state: "human_review",
-      riskAuthorityClass: "uncertain",
-      draftPolicy: "human_gate",
-      nextAction: {
-        kind: "escalate_to_human",
-        label: "Human review required",
-        reason: "Classification or tenant/entity evidence is too weak for deterministic handling.",
         humanApprovalRequired: true,
       },
     };
