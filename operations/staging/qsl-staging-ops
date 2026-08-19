@@ -1,0 +1,156 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+DEPLOY_DIR="/opt/paperclip-deployments/thebinmap-email-ops-staging"
+SERVICE="paperclip-thebinmap-staging.service"
+API_BASE="http://127.0.0.1:3101/api"
+TARGET_BRANCH="feat/directory-conversation-operator-v1"
+THEBINMAP_COMPANY_ID="f5609cfe-37ff-4061-a3c7-35ae55dbcc2b"
+ENV_A="/etc/paperclip/thebinmap-email-ops-staging.env"
+ENV_B="/etc/paperclip/thebinmap-staging-agent-jwt.env"
+
+fail() {
+  echo "QSL_STAGING_OPS_ERROR: $*" >&2
+  exit 1
+}
+
+require_sha() {
+  [[ "${1:-}" =~ ^[0-9a-f]{40}$ ]] || fail "invalid SHA"
+}
+
+health() {
+  cd "$DEPLOY_DIR"
+  echo "=== QSL STAGING HEALTH ==="
+  echo "SERVICE=$SERVICE"
+  echo "ACTIVE=$(systemctl is-active "$SERVICE")"
+  echo "PID=$(systemctl show "$SERVICE" -p MainPID --value)"
+  echo "HEAD=$(git rev-parse HEAD)"
+  echo "BRANCH=$(git branch --show-current)"
+  if [[ -n "$(git status --porcelain)" ]]; then
+    echo "TREE=CLEAN:false"
+    git status --short
+  else
+    echo "TREE=CLEAN:true"
+  fi
+  echo "--- API HEALTH ---"
+  curl -fsS "$API_BASE/health"
+  echo
+  echo "--- PLUGIN HEALTH ---"
+  curl -fsS "$API_BASE/plugins/qsl.email/health"
+  echo
+}
+
+live_shadow_report() {
+  echo "=== QSL LIVE SHADOW REPORT ==="
+  curl -fsS \
+    -H 'Content-Type: application/json' \
+    -X POST \
+    "$API_BASE/plugins/qsl.email/data/live-shadow-report" \
+    --data "{\"companyId\":\"$THEBINMAP_COMPANY_ID\",\"params\":{\"limit\":200}}"
+  echo
+}
+
+deploy_email_plugin() {
+  local expected_old="${1:-}"
+  local target="${2:-}"
+  require_sha "$expected_old"
+  require_sha "$target"
+
+  cd "$DEPLOY_DIR"
+  local current old_pid new_pid rollback_ref env_hash_file remote health_json
+  current="$(git rev-parse HEAD)"
+  old_pid="$(systemctl show "$SERVICE" -p MainPID --value)"
+  rollback_ref="rollback/staging-ops-$(date -u +%Y%m%dT%H%M%SZ)"
+  env_hash_file="$(mktemp /tmp/qsl-staging-env.XXXXXX.sha256)"
+  trap 'rm -f "$env_hash_file"' RETURN
+
+  echo "=== PREDEPLOY ==="
+  echo "CURRENT=$current"
+  echo "EXPECTED_OLD=$expected_old"
+  echo "TARGET=$target"
+  echo "OLD_PID=$old_pid"
+  echo "ROLLBACK_REF=$rollback_ref"
+
+  [[ "$current" == "$expected_old" ]] || fail "current HEAD does not match expected old SHA"
+  [[ -z "$(git status --porcelain)" ]] || fail "staging working tree is dirty"
+
+  git fetch origin "$TARGET_BRANCH"
+  remote="$(git rev-parse "origin/$TARGET_BRANCH")"
+  echo "REMOTE=$remote"
+  [[ "$remote" == "$target" ]] || fail "remote branch does not match requested target SHA"
+  git merge-base --is-ancestor "$current" "$target" || fail "target is not a fast-forward descendant"
+
+  git branch "$rollback_ref" "$current"
+  sha256sum "$ENV_A" "$ENV_B" > "$env_hash_file"
+
+  git merge --ff-only "origin/$TARGET_BRANCH"
+  [[ "$(git rev-parse HEAD)" == "$target" ]] || fail "post-merge HEAD mismatch"
+
+  echo "=== BUILD EMAIL PLUGIN ==="
+  (
+    cd packages/plugins/plugin-email
+    /usr/local/bin/node22 ./esbuild.config.mjs
+    test -f dist/manifest.js
+    test -f dist/worker.js
+    test -d dist/ui
+  )
+
+  [[ -z "$(git status --porcelain)" ]] || fail "build changed repository state"
+
+  echo "=== RESTART STAGING ==="
+  systemctl restart "$SERVICE"
+
+  health_json=""
+  for _ in $(seq 1 15); do
+    if health_json="$(curl -fsS "$API_BASE/health" 2>/dev/null)"; then
+      break
+    fi
+    sleep 2
+  done
+  [[ -n "$health_json" ]] || {
+    journalctl -u "$SERVICE" -n 100 --no-pager || true
+    fail "health endpoint did not recover"
+  }
+
+  new_pid="$(systemctl show "$SERVICE" -p MainPID --value)"
+  echo "ACTIVE=$(systemctl is-active "$SERVICE")"
+  echo "OLD_PID=$old_pid"
+  echo "NEW_PID=$new_pid"
+  echo "--- API HEALTH ---"
+  echo "$health_json"
+  echo "--- PLUGIN HEALTH ---"
+  curl -fsS "$API_BASE/plugins/qsl.email/health"
+  echo
+  echo "--- ENV INTEGRITY ---"
+  sha256sum -c "$env_hash_file"
+  echo "--- FINAL GIT ---"
+  echo "HEAD=$(git rev-parse HEAD)"
+  echo "BRANCH=$(git branch --show-current)"
+  [[ -z "$(git status --porcelain)" ]] || fail "final repository state is dirty"
+  echo "TREE=CLEAN:true"
+  echo "QSL_STAGING_OPS_RESULT=DEPLOY_OK"
+}
+
+# When installed as a forced SSH command, SSH_ORIGINAL_COMMAND is the only
+# accepted input. Direct execution is also supported for local operator testing.
+raw_command="${SSH_ORIGINAL_COMMAND:-${*:-}}"
+read -r -a argv <<< "$raw_command"
+operation="${argv[0]:-}"
+
+case "$operation" in
+  health)
+    [[ ${#argv[@]} -eq 1 ]] || fail "health takes no arguments"
+    health
+    ;;
+  live-shadow-report)
+    [[ ${#argv[@]} -eq 1 ]] || fail "live-shadow-report takes no arguments"
+    live_shadow_report
+    ;;
+  deploy-email-plugin)
+    [[ ${#argv[@]} -eq 3 ]] || fail "deploy-email-plugin requires expected-old SHA and target SHA"
+    deploy_email_plugin "${argv[1]}" "${argv[2]}"
+    ;;
+  *)
+    fail "unsupported operation"
+    ;;
+esac
