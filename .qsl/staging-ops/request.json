@@ -1,5 +1,6 @@
 {
   "operation": "health",
   "targetSha": "",
-  "expectedOldSha": ""
+  "expectedOldSha": "",
+  "nonce": "2026-08-20T12:35:30Z"
 }
