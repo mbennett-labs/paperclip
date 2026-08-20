@@ -16,7 +16,7 @@ export const SLOT_IDS = {
 export const EXPORT_NAMES = {
   issueTab: "EmailIssueTab",
   storeIntakeTab: "StoreIntakeTab",
-  storeIntakePage: "StoreIntakePage",
+  storeIntakePage: "EmailOperationsPage",
   founderMissionControlPage: "FounderMissionControlPage",
   dashboardWidget: "EmailMetricsWidget",
 } as const;
