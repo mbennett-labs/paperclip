@@ -1,0 +1,53 @@
+name: QSL Email Safety Validation
+
+on:
+  push:
+    branches:
+      - fix/directory-conversation-low-confidence-safety
+
+permissions:
+  contents: read
+
+jobs:
+  validate-email-safety:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+
+    steps:
+      - name: Checkout candidate
+        uses: actions/checkout@v7
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          version: 9.15.4
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Targeted unsubscribe and low-confidence regression
+        run: pnpm exec vitest run packages/plugins/plugin-email/tests/conversation-unsubscribe-safety.spec.ts
+
+      - name: Conversation Operator safety slice
+        run: >-
+          pnpm exec vitest run
+          packages/plugins/plugin-email/tests/conversation-replay.spec.ts
+          packages/plugins/plugin-email/tests/conversation-continuity.spec.ts
+          packages/plugins/plugin-email/tests/conversation-live-shadow-report.spec.ts
+          packages/plugins/plugin-email/tests/conversation-unsubscribe-safety.spec.ts
+
+      - name: Full plugin-email suite
+        run: pnpm exec vitest run packages/plugins/plugin-email/tests
+
+      - name: Plugin-email typecheck
+        run: ./node_modules/.bin/tsc --noEmit -p packages/plugins/plugin-email/tsconfig.json
+
+      - name: Plugin-email build
+        working-directory: packages/plugins/plugin-email
+        run: node esbuild.config.mjs
