@@ -7,6 +7,7 @@ on:
 
 permissions:
   contents: read
+  issues: write
 
 jobs:
   validate-email-safety:
@@ -51,3 +52,19 @@ jobs:
       - name: Plugin-email build
         working-directory: packages/plugins/plugin-email
         run: node esbuild.config.mjs
+
+      - name: Publish validation result
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RESULT: ${{ job.status }}
+          CANDIDATE_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          gh issue comment 34 --repo "$GITHUB_REPOSITORY" --body "### QSL Email Safety Candidate Validation
+
+- candidate_sha: \`$CANDIDATE_SHA\`
+- result: **$RESULT**
+- workflow_run: \`$GITHUB_RUN_ID\`
+- scope: targeted unsubscribe/low-confidence regression, Conversation Operator safety slice, full plugin-email suite, typecheck, build
+"
