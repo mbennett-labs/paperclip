@@ -8,6 +8,7 @@ import {
 
 export { StoreIntakeTab } from "./store-intake-tab.js";
 export { StoreIntakePage } from "./store-intake-page.js";
+export { FounderMissionControlPage } from "./founder-mission-control-page.js";
 
 type ThreadRecord = {
   messageId: string;
