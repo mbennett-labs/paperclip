@@ -9,6 +9,7 @@ on:
 
 permissions:
   contents: read
+  issues: write
 
 concurrency:
   group: qsl-staging-ops-bridge-v0
@@ -68,13 +69,14 @@ jobs:
           chmod 600 ~/.ssh/known_hosts
 
       - name: Execute fixed staging operation
+        id: execute
         shell: bash
         env:
           OPERATION: ${{ steps.request.outputs.operation }}
           TARGET_SHA: ${{ steps.request.outputs.target_sha }}
           EXPECTED_OLD_SHA: ${{ steps.request.outputs.expected_old_sha }}
         run: |
-          set -euo pipefail
+          set -uo pipefail
           ssh_opts=(
             -i "$HOME/.ssh/qsl_staging_ops"
             -o BatchMode=yes
@@ -83,15 +85,70 @@ jobs:
             -o ConnectTimeout=10
           )
 
-          case "$OPERATION" in
-            deploy-email-plugin)
-              ssh "${ssh_opts[@]}" root@69.62.69.140 \
-                "deploy-email-plugin $EXPECTED_OLD_SHA $TARGET_SHA"
-              ;;
-            health)
-              ssh "${ssh_opts[@]}" root@69.62.69.140 "health"
-              ;;
-            live-shadow-report)
-              ssh "${ssh_opts[@]}" root@69.62.69.140 "live-shadow-report"
-              ;;
-          esac
+          run_op() {
+            case "$OPERATION" in
+              deploy-email-plugin)
+                ssh "${ssh_opts[@]}" root@69.62.69.140 \
+                  "deploy-email-plugin $EXPECTED_OLD_SHA $TARGET_SHA"
+                ;;
+              health)
+                ssh "${ssh_opts[@]}" root@69.62.69.140 "health"
+                ;;
+              live-shadow-report)
+                ssh "${ssh_opts[@]}" root@69.62.69.140 "live-shadow-report"
+                ;;
+            esac
+          }
+
+          set +e
+          run_op > staging-ops-output.txt 2>&1
+          rc=$?
+          set -e
+          cat staging-ops-output.txt
+          echo "exit_code=$rc" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Publish bounded result
+        if: always()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OPERATION: ${{ steps.request.outputs.operation }}
+          EXIT_CODE: ${{ steps.execute.outputs.exit_code }}
+        run: |
+          set -euo pipefail
+          result="UNKNOWN"
+          if [[ "${EXIT_CODE:-}" == "0" ]]; then
+            result="PASS"
+          elif [[ -n "${EXIT_CODE:-}" ]]; then
+            result="FAIL"
+          fi
+
+          {
+            echo "### QSL Staging Ops Bridge V0"
+            echo
+            echo "- operation: \`${OPERATION:-unknown}\`"
+            echo "- result: **$result**"
+            echo "- exit_code: \`${EXIT_CODE:-unknown}\`"
+            echo "- request_commit: \`${GITHUB_SHA}\`"
+            echo "- run_id: \`${GITHUB_RUN_ID}\`"
+            echo
+            echo '```text'
+            if [[ -f staging-ops-output.txt ]]; then
+              sed -n '1,240p' staging-ops-output.txt
+            else
+              echo "No staging operation output was produced."
+            fi
+            echo '```'
+          } > staging-ops-comment.md
+
+          gh issue comment 34 --repo "$GITHUB_REPOSITORY" --body-file staging-ops-comment.md
+
+      - name: Preserve operation failure
+        if: always()
+        shell: bash
+        env:
+          EXIT_CODE: ${{ steps.execute.outputs.exit_code }}
+        run: |
+          set -euo pipefail
+          [[ "${EXIT_CODE:-1}" == "0" ]] || exit "${EXIT_CODE:-1}"
