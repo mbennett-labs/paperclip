@@ -9,6 +9,7 @@ export const SLOT_IDS = {
   issueTab: "email-issue-tab",
   storeIntakeTab: "store-intake-tab",
   storeIntakePage: "store-intake-page",
+  founderMissionControlPage: "founder-mission-control-page",
   dashboardWidget: "email-metrics-widget",
 } as const;
 
@@ -16,6 +17,7 @@ export const EXPORT_NAMES = {
   issueTab: "EmailIssueTab",
   storeIntakeTab: "StoreIntakeTab",
   storeIntakePage: "StoreIntakePage",
+  founderMissionControlPage: "FounderMissionControlPage",
   dashboardWidget: "EmailMetricsWidget",
 } as const;
 
