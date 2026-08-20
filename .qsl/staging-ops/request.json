@@ -1,6 +1,6 @@
 {
-  "operation": "deploy-email-plugin",
-  "targetSha": "e7278d4175be09bcaa0b704ac99e49137a20c137",
-  "expectedOldSha": "91fd8bba8eb126903f2055823211e4ea26aae9af",
-  "nonce": "2026-08-20T12:55:30Z"
+  "operation": "live-shadow-report",
+  "targetSha": "",
+  "expectedOldSha": "",
+  "nonce": "2026-08-20T12:56:20Z"
 }
