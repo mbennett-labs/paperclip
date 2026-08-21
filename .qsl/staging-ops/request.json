@@ -1,6 +1,8 @@
 {
-  "operation": "operator-probe",
+  "operation": "operator-version",
   "targetSha": "",
   "expectedOldSha": "",
-  "nonce": "2026-08-21T13:06:00Z"
+  "issueIdentifier": "",
+  "confirm": "",
+  "nonce": "2026-08-21T13:21:30Z"
 }
