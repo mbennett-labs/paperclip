@@ -1,6 +1,6 @@
 {
-  "operation": "health",
+  "operation": "operator-probe",
   "targetSha": "",
   "expectedOldSha": "",
-  "nonce": "2026-08-21T11:50:00Z"
+  "nonce": "2026-08-21T13:06:00Z"
 }
