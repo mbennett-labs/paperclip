@@ -1,8 +1,8 @@
 {
-  "operation": "diagnostic-bundle",
+  "operation": "repair-ceo-instructions",
   "targetSha": "",
   "expectedOldSha": "",
   "issueIdentifier": "",
-  "confirm": "",
-  "nonce": "2026-08-21T13:23:10Z"
+  "confirm": "repair-ceo-instructions",
+  "nonce": "2026-08-21T13:24:15Z"
 }
