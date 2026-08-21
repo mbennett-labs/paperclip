@@ -39,7 +39,7 @@ jobs:
           expected_old_sha="$(jq -r '.expectedOldSha // empty' "$request")"
 
           case "$operation" in
-            deploy-email-plugin|health|live-shadow-report) ;;
+            deploy-email-plugin|health|live-shadow-report|operator-probe) ;;
             *) echo "Unsupported operation: $operation" >&2; exit 40 ;;
           esac
 
@@ -96,6 +96,10 @@ jobs:
                 ;;
               live-shadow-report)
                 ssh "${ssh_opts[@]}" root@69.62.69.140 "live-shadow-report"
+                ;;
+              operator-probe)
+                ssh "${ssh_opts[@]}" root@69.62.69.140 \
+                  "sudo -u paperclip-thebinmap-staging -H bash -lc 'echo OPERATOR_PROBE_OK; id; printf \"HOME=%s\\n\" \"\$HOME\"; test -r /opt/paperclip-deployments/thebinmap-email-ops-staging/package.json && echo STAGING_READ=YES || echo STAGING_READ=NO'"
                 ;;
             esac
           }
