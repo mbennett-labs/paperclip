@@ -1,8 +1,8 @@
 {
-  "operation": "inspect-ceo-config",
+  "operation": "diagnostic-bundle",
   "targetSha": "",
   "expectedOldSha": "",
   "issueIdentifier": "",
   "confirm": "",
-  "nonce": "2026-08-21T13:22:15Z"
+  "nonce": "2026-08-21T13:23:10Z"
 }
