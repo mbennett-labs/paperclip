@@ -1,8 +1,8 @@
 {
-  "operation": "repair-ceo-instructions",
+  "operation": "test-ceo-task-access",
   "targetSha": "",
   "expectedOldSha": "",
-  "issueIdentifier": "",
-  "confirm": "repair-ceo-instructions",
-  "nonce": "2026-08-21T13:24:15Z"
+  "issueIdentifier": "THE-32",
+  "confirm": "",
+  "nonce": "2026-08-21T13:25:10Z"
 }
