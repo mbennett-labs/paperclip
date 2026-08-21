@@ -1,8 +1,8 @@
 {
-  "operation": "test-ceo-task-access",
+  "operation": "diagnostic-bundle",
   "targetSha": "",
   "expectedOldSha": "",
-  "issueIdentifier": "THE-32",
+  "issueIdentifier": "",
   "confirm": "",
-  "nonce": "2026-08-21T13:25:10Z"
+  "nonce": "2026-08-21T13:56:00Z"
 }
