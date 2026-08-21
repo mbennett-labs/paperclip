@@ -37,9 +37,11 @@ jobs:
           operation="$(jq -r '.operation // empty' "$request")"
           target_sha="$(jq -r '.targetSha // empty' "$request")"
           expected_old_sha="$(jq -r '.expectedOldSha // empty' "$request")"
+          issue_identifier="$(jq -r '.issueIdentifier // empty' "$request")"
+          confirm="$(jq -r '.confirm // empty' "$request")"
 
           case "$operation" in
-            deploy-email-plugin|health|live-shadow-report|operator-probe) ;;
+            deploy-email-plugin|health|live-shadow-report|operator-version|inspect-ceo-config|repair-ceo-instructions|test-ceo-task-access|restart-staging-service|diagnostic-bundle) ;;
             *) echo "Unsupported operation: $operation" >&2; exit 40 ;;
           esac
 
@@ -49,9 +51,24 @@ jobs:
             [[ "$expected_old_sha" =~ $sha_re ]] || { echo "Invalid expectedOldSha" >&2; exit 42; }
           fi
 
+          if [[ "$operation" == "test-ceo-task-access" ]]; then
+            [[ "$issue_identifier" =~ ^THE-[0-9]+$ ]] || { echo "Invalid issueIdentifier" >&2; exit 43; }
+          elif [[ -n "$issue_identifier" ]]; then
+            echo "issueIdentifier is only allowed for test-ceo-task-access" >&2
+            exit 44
+          fi
+
+          if [[ "$operation" == "repair-ceo-instructions" || "$operation" == "restart-staging-service" ]]; then
+            [[ "$confirm" == "$operation" ]] || { echo "Explicit confirmation required: confirm=$operation" >&2; exit 45; }
+          elif [[ -n "$confirm" ]]; then
+            echo "confirm is not valid for read-only operation $operation" >&2
+            exit 46
+          fi
+
           echo "operation=$operation" >> "$GITHUB_OUTPUT"
           echo "target_sha=$target_sha" >> "$GITHUB_OUTPUT"
           echo "expected_old_sha=$expected_old_sha" >> "$GITHUB_OUTPUT"
+          echo "issue_identifier=$issue_identifier" >> "$GITHUB_OUTPUT"
 
       - name: Install bounded SSH identity
         shell: bash
@@ -75,6 +92,7 @@ jobs:
           OPERATION: ${{ steps.request.outputs.operation }}
           TARGET_SHA: ${{ steps.request.outputs.target_sha }}
           EXPECTED_OLD_SHA: ${{ steps.request.outputs.expected_old_sha }}
+          ISSUE_IDENTIFIER: ${{ steps.request.outputs.issue_identifier }}
         run: |
           set -uo pipefail
           ssh_opts=(
@@ -91,15 +109,12 @@ jobs:
                 ssh "${ssh_opts[@]}" root@69.62.69.140 \
                   "deploy-email-plugin $EXPECTED_OLD_SHA $TARGET_SHA"
                 ;;
-              health)
-                ssh "${ssh_opts[@]}" root@69.62.69.140 "health"
+              health|live-shadow-report|operator-version|inspect-ceo-config|repair-ceo-instructions|restart-staging-service|diagnostic-bundle)
+                ssh "${ssh_opts[@]}" root@69.62.69.140 "$OPERATION"
                 ;;
-              live-shadow-report)
-                ssh "${ssh_opts[@]}" root@69.62.69.140 "live-shadow-report"
-                ;;
-              operator-probe)
+              test-ceo-task-access)
                 ssh "${ssh_opts[@]}" root@69.62.69.140 \
-                  "sudo -u paperclip-thebinmap-staging -H bash -lc 'echo OPERATOR_PROBE_OK; id; printf \"HOME=%s\\n\" \"\$HOME\"; test -r /opt/paperclip-deployments/thebinmap-email-ops-staging/package.json && echo STAGING_READ=YES || echo STAGING_READ=NO'"
+                  "test-ceo-task-access $ISSUE_IDENTIFIER"
                 ;;
             esac
           }
