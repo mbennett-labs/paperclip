@@ -1,8 +1,8 @@
 {
-  "operation": "operator-version",
+  "operation": "inspect-ceo-config",
   "targetSha": "",
   "expectedOldSha": "",
   "issueIdentifier": "",
   "confirm": "",
-  "nonce": "2026-08-21T13:21:30Z"
+  "nonce": "2026-08-21T13:22:15Z"
 }
