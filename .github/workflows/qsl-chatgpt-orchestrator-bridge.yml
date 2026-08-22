@@ -41,10 +41,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          COMMENT_BODY=$(cat <<'GHCOMMENT'
-          ${{ github.event.comment.body }}
-          GHCOMMENT
-          )
+          COMMENT_BODY=$(jq -r '.comment.body // ""' "$GITHUB_EVENT_PATH")
 
           REQUEST_JSON=$(echo "$COMMENT_BODY" | sed -n '/^```json/,/^```/p' | sed '1d;$d')
 
@@ -101,7 +98,8 @@ jobs:
         run: |
           pnpm exec vitest run \
             server/src/__tests__/qsl-orchestrator-bridge.test.ts \
-            server/src/__tests__/qsl-orchestrator-bridge-runner.test.ts
+            server/src/__tests__/qsl-orchestrator-bridge-runner.test.ts \
+            server/src/__tests__/qsl-orchestrator-bridge-simulation.test.ts
 
       - name: Prove no shell orchestration in bridge routes
         shell: bash

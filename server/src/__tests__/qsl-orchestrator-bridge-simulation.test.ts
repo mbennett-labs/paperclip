@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { orchestratorBridgeRequestSchema } from "@paperclipai/shared";
 
-describe("QSL Orchestrator Bridge — staging E2E simulation", () => {
+describe("QSL Orchestrator Bridge — schema-level simulation", () => {
   function simulateBridgeCall(request: Record<string, unknown>) {
     const parsed = orchestratorBridgeRequestSchema.safeParse(request);
     if (!parsed.success) {
