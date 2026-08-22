@@ -2250,3 +2250,7 @@ export {
   type OrchestratorBridgeRequest,
   type OrchestratorBridgeResult,
 } from "./types/qsl-orchestrator-bridge.js";
+
+export {
+  orchestratorBridgeRequestSchema,
+} from "./validators/qsl-orchestrator-bridge.js";

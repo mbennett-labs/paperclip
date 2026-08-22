@@ -13,8 +13,14 @@ import {
   BOUNDED_WRITE_OPERATIONS,
   HUMAN_GATED_OPERATIONS,
   isProhibitedOperation,
+  orchestratorBridgeRequestSchema,
   type OrchestratorBridgeOperation,
 } from "@paperclipai/shared";
+
+const MAX_TARGET_IDS = 50;
+const MAX_PAYLOAD_KEYS = 20;
+const MAX_PAYLOAD_VALUE_LENGTH = 10_000;
+const MAX_EVIDENCE_TEXT_LENGTH = 50_000;
 
 export function qslOrchestratorBridgeRoutes(db: Db) {
   const router = Router();
@@ -33,10 +39,26 @@ export function qslOrchestratorBridgeRoutes(db: Db) {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
 
-    const { operation, target_ids, payload, authority_approval_id } = req.body;
+    const parsed = orchestratorBridgeRequestSchema.safeParse(req.body);
+    if (!parsed.success) {
+      const issues = parsed.error.issues.map((i: { path: (string | number)[]; message: string }) => i.path.join(".") + " " + i.message).join("; ").slice(0, 500);
+      res.status(400).json({
+        error: "Invalid bridge request",
+        result_class: "BLOCKED",
+        sanitized_error: "Request validation failed: " + issues,
+      });
+      return;
+    }
 
-    if (!operation || typeof operation !== "string") {
-      res.status(400).json({ error: "operation is required" });
+    const { operation, target_ids, payload, authority_approval_id, environment } =
+      parsed.data;
+
+    if (environment !== "staging") {
+      res.status(403).json({
+        error: "Only staging environment is allowed",
+        result_class: "BLOCKED",
+        sanitized_error: `Environment must be "staging", got "${environment}"`,
+      });
       return;
     }
 
@@ -44,14 +66,57 @@ export function qslOrchestratorBridgeRoutes(db: Db) {
       res.status(403).json({
         error: "Prohibited operation class",
         result_class: "BLOCKED",
+        sanitized_error: `Operation "${operation}" matches a prohibited pattern`,
       });
       return;
     }
 
     if (!(ALL_BRIDGE_OPERATIONS as readonly string[]).includes(operation)) {
       res.status(400).json({
-        error: `Unknown operation: ${operation}`,
-        allowed: ALL_BRIDGE_OPERATIONS,
+        error: "Unknown operation",
+        result_class: "BLOCKED",
+        sanitized_error: `Unknown operation: ${operation}`,
+      });
+      return;
+    }
+
+    if (target_ids && target_ids.length > MAX_TARGET_IDS) {
+      res.status(400).json({
+        error: "Too many target_ids",
+        result_class: "BLOCKED",
+        sanitized_error: `target_ids limit is ${MAX_TARGET_IDS}, got ${target_ids.length}`,
+      });
+      return;
+    }
+
+    if (payload) {
+      const keys = Object.keys(payload);
+      if (keys.length > MAX_PAYLOAD_KEYS) {
+        res.status(400).json({
+          error: "Too many payload keys",
+          result_class: "BLOCKED",
+          sanitized_error: `Payload key limit is ${MAX_PAYLOAD_KEYS}, got ${keys.length}`,
+        });
+        return;
+      }
+      for (const key of keys) {
+        const val = payload[key];
+        if (typeof val === "string" && val.length > MAX_PAYLOAD_VALUE_LENGTH) {
+          res.status(400).json({
+            error: "Payload value too long",
+            result_class: "BLOCKED",
+            sanitized_error: `Payload key "${key}" exceeds max length ${MAX_PAYLOAD_VALUE_LENGTH}`,
+          });
+          return;
+        }
+      }
+    }
+
+    if (authority_approval_id && authority_approval_id.length > 128) {
+      res.status(400).json({
+        error: "authority_approval_id too long",
+        result_class: "BLOCKED",
+        sanitized_error: "authority_approval_id exceeds max length",
       });
       return;
     }
@@ -64,8 +129,8 @@ export function qslOrchestratorBridgeRoutes(db: Db) {
         companyId,
         operation: operation as OrchestratorBridgeOperation,
         targetIds: target_ids ?? [],
-        payload: payload ?? {},
-        authorityApprovalId: authority_approval_id,
+        payload: (payload as Record<string, unknown>) ?? {},
+        authorityApprovalId: authority_approval_id ?? undefined,
         actor,
         issueSvc,
         approvalSvc,
@@ -77,7 +142,6 @@ export function qslOrchestratorBridgeRoutes(db: Db) {
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
       res.status(500).json({
-        error: "Bridge operation failed",
         result_class: "FAIL",
         sanitized_error: sanitizeErrorMessage(message),
       });
@@ -89,7 +153,8 @@ export function qslOrchestratorBridgeRoutes(db: Db) {
 
 function sanitizeErrorMessage(message: string): string {
   return message
-    .replace(/(eyJ|sk-|api_key|password|secret|token)[\w-]{20,}/gi, "[REDACTED]")
+    .replace(/(eyJ|sk-|api_key|password|secret|token|credential)[\w\-]{20,}/gi, "[REDACTED]")
+    .replace(/-----BEGIN[\s\S]*?-----END[\s\S]*?-----/gi, "[REDACTED]")
     .slice(0, 500);
 }
 
@@ -109,23 +174,19 @@ interface BridgeOpContext {
 
 async function executeBridgeOperation(ctx: BridgeOpContext) {
   const { companyId, operation, targetIds, payload, actor } = ctx;
-  const evidence: string[] = [];
 
   switch (operation) {
     // ── Read-only operations ──────────────────────────────────────
     case "status": {
-      const companies = targetIds.length > 0 ? targetIds : [companyId];
-      const issues = await Promise.all(
-        companies.map((cid) =>
-          ctx.issueSvc
-            .list(cid, { limit: 5 })
-            .catch(() => [])
-        )
-      );
+      const issues = await ctx.issueSvc.list(companyId, { limit: 5 });
       return {
         result_class: "PASS" as const,
-        evidence_summary: `Status resolved for ${companies.length} company scope(s).`,
-        data: { companies, recent_issue_count: issues.flat().length },
+        evidence_summary: `Status resolved. Recent issues: ${issues.length}.`,
+        data: {
+          company_id: companyId,
+          recent_issue_count: issues.length,
+          recent_issue_ids: issues.map((i) => i.id),
+        },
       };
     }
 
@@ -138,8 +199,9 @@ async function executeBridgeOperation(ctx: BridgeOpContext) {
         result_class: "PASS" as const,
         evidence_summary: `Listed ${issues.length} in_progress issues.`,
         data: {
-          missions: issues.map((i) => ({
+          missions: issues.slice(0, 50).map((i) => ({
             id: i.id,
+            identifier: i.identifier,
             title: i.title,
             status: i.status,
             priority: i.priority,
@@ -159,20 +221,23 @@ async function executeBridgeOperation(ctx: BridgeOpContext) {
         return { result_class: "BLOCKED" as const, sanitized_error: "Mission not found in company scope" };
       }
       const missionView = await ctx.missionSvc.getMission(companyId, issueId).catch(() => null);
-      evidence.push(`get-mission: ${issue.title}`);
       return {
         result_class: "PASS" as const,
-        evidence_summary: evidence.join("; "),
+        evidence_summary: `Resolved mission: ${issue.title}`,
         data: {
           id: issue.id,
+          identifier: issue.identifier,
           title: issue.title,
           status: issue.status,
           priority: issue.priority,
           description: issue.description?.slice(0, 500),
           assignee_agent_id: issue.assigneeAgentId,
           parent_id: issue.parentId,
+          project_id: issue.projectId,
           mission_view: missionView ? {
-            progress: missionView.progress,
+            state: missionView.state,
+            total_tasks: missionView.progress?.totalTasks,
+            completed_tasks: missionView.progress?.completedTasks,
             blockers: missionView.blockers?.length ?? 0,
           } : null,
         },
@@ -189,7 +254,7 @@ async function executeBridgeOperation(ctx: BridgeOpContext) {
         result_class: "PASS" as const,
         evidence_summary: `Listed ${issues.length} tasks.`,
         data: {
-          tasks: issues.map((i) => ({
+          tasks: issues.slice(0, 50).map((i) => ({
             id: i.id,
             identifier: i.identifier,
             title: i.title,
@@ -247,23 +312,20 @@ async function executeBridgeOperation(ctx: BridgeOpContext) {
 
     case "list-mail-triage": {
       const issues = await ctx.issueSvc.list(companyId, {
-        status: "backlog",
+        originKind: "plugin:qsl.email:intake",
         limit: 50,
       });
-      const triageCandidates = issues.filter((i) =>
-        i.title.toLowerCase().includes("mail") ||
-        i.title.toLowerCase().includes("inbox") ||
-        i.title.toLowerCase().includes("email")
-      );
       return {
         result_class: "PASS" as const,
-        evidence_summary: `Found ${triageCandidates.length} mail-triage candidates among ${issues.length} backlog items.`,
+        evidence_summary: `Found ${issues.length} email intake issues.`,
         data: {
-          candidates: triageCandidates.map((i) => ({
+          intake_items: issues.slice(0, 50).map((i) => ({
             id: i.id,
+            identifier: i.identifier,
             title: i.title,
             status: i.status,
-            identifier: i.identifier,
+            priority: i.priority,
+            origin_kind: i.originKind,
           })),
         },
       };
@@ -278,14 +340,19 @@ async function executeBridgeOperation(ctx: BridgeOpContext) {
       if (!issue || issue.companyId !== companyId) {
         return { result_class: "BLOCKED" as const, sanitized_error: "Mail thread not found in company scope" };
       }
+
+      const comments = await ctx.issueSvc.listComments(issueId, { limit: 10 }).catch(() => []);
       return {
         result_class: "PASS" as const,
         evidence_summary: `Resolved mail thread summary for: ${issue.title}`,
         data: {
           id: issue.id,
+          identifier: issue.identifier,
           title: issue.title,
-          description_summary: issue.description?.slice(0, 500),
           status: issue.status,
+          origin_kind: issue.originKind,
+          description_summary: issue.description?.slice(0, 500),
+          comment_count: comments.length,
           created_at: issue.createdAt,
         },
       };
@@ -297,8 +364,8 @@ async function executeBridgeOperation(ctx: BridgeOpContext) {
         return { result_class: "BLOCKED" as const, sanitized_error: "payload.title is required" };
       }
       const created = await ctx.issueSvc.create(companyId, {
-        title: String(payload.title),
-        description: typeof payload.description === "string" ? String(payload.description) : undefined,
+        title: String(payload.title).slice(0, 500),
+        description: typeof payload.description === "string" ? String(payload.description).slice(0, 10000) : undefined,
         status: "todo",
         priority: typeof payload.priority === "string" ? String(payload.priority) : "medium",
         parentId: typeof payload.parent_id === "string" ? String(payload.parent_id) : undefined,
@@ -334,8 +401,8 @@ async function executeBridgeOperation(ctx: BridgeOpContext) {
         return { result_class: "BLOCKED" as const, sanitized_error: "Task not found in company scope" };
       }
       const updates: Record<string, unknown> = {};
-      if (typeof payload.title === "string") updates.title = payload.title;
-      if (typeof payload.description === "string") updates.description = payload.description;
+      if (typeof payload.title === "string") updates.title = String(payload.title).slice(0, 500);
+      if (typeof payload.description === "string") updates.description = String(payload.description).slice(0, 10000);
       if (typeof payload.status === "string") updates.status = payload.status;
       if (typeof payload.priority === "string") updates.priority = payload.priority;
       if (Object.keys(updates).length === 0) {
@@ -421,12 +488,16 @@ async function executeBridgeOperation(ctx: BridgeOpContext) {
       if (typeof payload.title !== "string" || !payload.title.trim()) {
         return { result_class: "BLOCKED" as const, sanitized_error: "payload.title is required" };
       }
+
       const draft = await ctx.issueSvc.create(companyId, {
-        title: `[DRAFT] ${String(payload.title)}`,
-        description: typeof payload.description === "string" ? String(payload.description) : undefined,
+        title: `[DRAFT] ${String(payload.title).slice(0, 500)}`,
+        description: typeof payload.description === "string"
+          ? String(payload.description).slice(0, 10000)
+          : undefined,
         status: "backlog",
         priority: "medium",
         workMode: "ask",
+        originKind: "plugin:qsl.email:intake",
       });
 
       await logActivity(ctx.db, {
@@ -443,8 +514,14 @@ async function executeBridgeOperation(ctx: BridgeOpContext) {
       return {
         result_class: "PASS" as const,
         affected_ids: [draft.id],
-        evidence_summary: `Created outbound draft: ${draft.title}`,
-        data: { id: draft.id, identifier: draft.identifier, title: draft.title },
+        evidence_summary: `Created outbound draft: ${draft.title} (intake pipeline)`,
+        data: {
+          id: draft.id,
+          identifier: draft.identifier,
+          title: draft.title,
+          origin_kind: draft.originKind,
+          note: "Draft created in email intake pipeline. Human Board review required before any send.",
+        },
       };
     }
 
@@ -462,6 +539,15 @@ async function executeBridgeOperation(ctx: BridgeOpContext) {
         return { result_class: "BLOCKED" as const, sanitized_error: "Issue not found in company scope" };
       }
 
+      const truncatedEvidence = evidenceText.slice(0, MAX_EVIDENCE_TEXT_LENGTH);
+
+      const bodyText = `[Orchestrator Bridge Evidence]\n\n${truncatedEvidence}`;
+
+      const comment = await ctx.issueSvc.addComment(issueId, bodyText, {
+        agentId: actor.agentId ?? undefined,
+        userId: actor.actorType === "user" ? actor.actorId : undefined,
+      });
+
       await logActivity(ctx.db, {
         companyId,
         actorType: actor.actorType,
@@ -472,16 +558,16 @@ async function executeBridgeOperation(ctx: BridgeOpContext) {
         entityId: issueId,
         details: {
           source: "qsl_orchestrator_bridge",
-          evidenceLength: evidenceText.length,
-          issueTitle: issue.title,
+          commentId: comment.id,
+          evidenceLength: truncatedEvidence.length,
         },
       });
 
       return {
         result_class: "PASS" as const,
-        affected_ids: [issueId],
-        evidence_summary: `Recorded evidence for ${issue.title} (${evidenceText.length} chars)`,
-        data: { id: issueId, evidence_length: evidenceText.length },
+        affected_ids: [issueId, comment.id],
+        evidence_summary: `Recorded evidence for ${issue.title} (${truncatedEvidence.length} chars, comment: ${comment.id})`,
+        data: { issue_id: issueId, comment_id: comment.id, evidence_length: truncatedEvidence.length },
       };
     }
 
@@ -511,29 +597,15 @@ async function executeBridgeOperation(ctx: BridgeOpContext) {
         };
       }
 
-      await logActivity(ctx.db, {
-        companyId,
-        actorType: actor.actorType,
-        actorId: actor.actorId,
-        agentId: actor.agentId,
-        action: `mission.${operation}`,
-        entityType: "approval",
-        entityId: ctx.authorityApprovalId,
-        details: {
-          source: "qsl_orchestrator_bridge",
-          operation,
-          approvalType: approval.type,
-        },
-      });
-
       return {
-        result_class: "PASS" as const,
-        affected_ids: [ctx.authorityApprovalId],
-        evidence_summary: `Executed human-gated operation: ${operation} (approval: ${ctx.authorityApprovalId})`,
+        result_class: "BLOCKED" as const,
+        sanitized_error: `Operation "${operation}" is human-gated. Approval ${ctx.authorityApprovalId} is valid (status: approved) but the execution adapter is not implemented in V1. Deferred to future work.`,
+        approval_required: false,
         data: {
           operation,
           approval_id: ctx.authorityApprovalId,
           approval_status: approval.status,
+          reason: "execution_adapter_not_implemented",
         },
       };
     }

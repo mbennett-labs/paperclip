@@ -10,5 +10,3 @@ export const orchestratorBridgeRequestSchema = z.object({
   authority_approval_id: z.string().max(128).optional(),
   expected_terminal_state: z.string().max(128).optional(),
 });
-
-export type OrchestratorBridgeRequest = z.infer<typeof orchestratorBridgeRequestSchema>;

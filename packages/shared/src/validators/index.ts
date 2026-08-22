@@ -870,4 +870,4 @@ export {
   type RevokeToolTrustRule,
 } from "./tool-access.js";
 export * from "./skill-policy.js";
-export { orchestratorBridgeRequestSchema, type OrchestratorBridgeRequest } from "./qsl-orchestrator-bridge.js";
+export { orchestratorBridgeRequestSchema } from "./qsl-orchestrator-bridge.js";
