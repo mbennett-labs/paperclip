@@ -1,8 +1,6 @@
-name: QSL ChatGPT Orchestrator Bridge V1
+name: QSL ChatGPT Orchestrator Bridge V1 — Validate
 
 on:
-  issue_comment:
-    types: [created]
   push:
     branches:
       - feat/qsl-chatgpt-orchestrator-bridge-v1
@@ -12,64 +10,21 @@ on:
       - "packages/shared/src/types/qsl-orchestrator-bridge.ts"
       - "packages/shared/src/validators/qsl-orchestrator-bridge.ts"
       - "scripts/qsl-chatgpt-orchestrator-bridge/*"
-      - ".github/workflows/qsl-chatgpt-orchestrator-bridge.yml"
+      - ".github/workflows/qsl-chatgpt-orchestrator-bridge*.yml"
+  pull_request:
+    branches:
+      - feat/qsl-current-upstream-integration
+      - feat/directory-conversation-operator-v1
+    paths:
+      - "server/src/routes/qsl-orchestrator-bridge.ts"
+      - "server/src/__tests__/qsl-orchestrator-bridge*.test.ts"
+      - "packages/shared/src/types/qsl-orchestrator-bridge.ts"
+      - "packages/shared/src/validators/qsl-orchestrator-bridge.ts"
+      - "scripts/qsl-chatgpt-orchestrator-bridge/*"
+      - ".github/workflows/qsl-chatgpt-orchestrator-bridge*.yml"
 
 jobs:
-  dispatch:
-    if: |
-      github.event_name == 'issue_comment' &&
-      github.event.issue.number == 38 &&
-      startsWith(github.event.comment.body, '```json') &&
-      contains(github.event.comment.body, '"operation"') &&
-      github.event.comment.author_association == 'OWNER'
-    runs-on: self-hosted
-    timeout-minutes: 15
-    environment: staging
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v7
-
-      - name: Parse and dispatch bridge request
-        shell: bash
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PAPERCLIP_API_BASE: ${{ vars.PAPERCLIP_API_BASE || 'http://localhost:3101' }}
-          PAPERCLIP_COMPANY_ID: ${{ vars.PAPERCLIP_COMPANY_ID }}
-          BRIDGE_REQUEST_ISSUE: "38"
-          BRIDGE_RESULT_ISSUE: "34"
-        run: |
-          set -euo pipefail
-
-          COMMENT_BODY=$(jq -r '.comment.body // ""' "$GITHUB_EVENT_PATH")
-
-          REQUEST_JSON=$(echo "$COMMENT_BODY" | sed -n '/^```json/,/^```/p' | sed '1d;$d')
-
-          if [[ -z "$REQUEST_JSON" ]]; then
-            echo "No JSON request block found in comment"
-            exit 0
-          fi
-
-          # Validate the request is valid JSON before passing to runner
-          if ! echo "$REQUEST_JSON" | jq empty 2>&1; then
-            echo "FAIL: request is not valid JSON"
-            exit 0
-          fi
-
-          echo "=== Bridge request dispatched ==="
-          echo "operation: $(echo "$REQUEST_JSON" | jq -r '.operation // "unknown"')"
-          echo "request_id: $(echo "$REQUEST_JSON" | jq -r '.request_id // "auto"')"
-
-          bash scripts/qsl-chatgpt-orchestrator-bridge/run-bridge-operation.sh \
-            --request-json "$REQUEST_JSON" \
-            --api-base "${PAPERCLIP_API_BASE}" \
-            --company-id "${PAPERCLIP_COMPANY_ID}" \
-            --result-issue "${BRIDGE_RESULT_ISSUE}"
-
   validate:
-    if: |
-      github.event_name == 'push' &&
-      github.ref == 'refs/heads/feat/qsl-chatgpt-orchestrator-bridge-v1'
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
@@ -98,8 +53,8 @@ jobs:
         run: |
           pnpm exec vitest run \
             server/src/__tests__/qsl-orchestrator-bridge.test.ts \
-            server/src/__tests__/qsl-orchestrator-bridge-runner.test.ts \
-            server/src/__tests__/qsl-orchestrator-bridge-simulation.test.ts
+            server/src/__tests__/qsl-orchestrator-bridge-simulation.test.ts \
+            server/src/__tests__/qsl-orchestrator-bridge-transport.test.ts
 
       - name: Prove no shell orchestration in bridge routes
         shell: bash

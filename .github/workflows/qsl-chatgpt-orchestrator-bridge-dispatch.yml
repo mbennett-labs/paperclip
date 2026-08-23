@@ -1,0 +1,71 @@
+name: QSL ChatGPT Orchestrator Bridge V1 — Dispatch
+
+on:
+  push:
+    branches:
+      - feat/qsl-chatgpt-orchestrator-bridge-v1
+    paths:
+      - ".qsl/bridge-requests/**"
+
+jobs:
+  dispatch:
+    runs-on: self-hosted
+    timeout-minutes: 15
+    environment: staging
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Identify changed bridge request file
+        id: changed
+        shell: bash
+        env:
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.event.after }}
+        run: |
+          set -euo pipefail
+
+          files=$(git diff --name-only "${BEFORE}" "${AFTER}" -- '.qsl/bridge-requests/' \
+            | grep -E '^\.qsl/bridge-requests/[A-Za-z0-9_-]+\.json$' || true)
+
+          count=$(printf '%s\n' "$files" | grep -c . || true)
+
+          if [[ "$count" -ne 1 ]]; then
+            echo "BLOCKED: expected exactly one bridge request file in this push, got ${count}"
+            exit 1
+          fi
+
+          request_file="$files"
+          request_id=$(basename "$request_file" .json)
+
+          echo "Dispatching request file: ${request_file}"
+          echo "request_id: ${request_id}"
+
+          echo "request_file=${request_file}" >> "$GITHUB_OUTPUT"
+          echo "request_id=${request_id}" >> "$GITHUB_OUTPUT"
+
+      - name: Dispatch request to staging Paperclip
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PAPERCLIP_API_BASE: ${{ vars.PAPERCLIP_API_BASE || 'http://localhost:3101' }}
+          PAPERCLIP_COMPANY_ID: ${{ vars.PAPERCLIP_COMPANY_ID }}
+          BRIDGE_RESULT_ISSUE: "34"
+          BRIDGE_REPO: ${{ github.repository }}
+          BRIDGE_COMMIT: ${{ github.event.after }}
+          BRIDGE_COMMIT_LEDGER: "true"
+        run: |
+          set -euo pipefail
+
+          node scripts/qsl-chatgpt-orchestrator-bridge/dispatch-request.mjs \
+            --request-file "${{ steps.changed.outputs.request_file }}" \
+            --ledger .qsl/bridge-ledger.json \
+            --commit "${BRIDGE_COMMIT}" \
+            --api-base "${PAPERCLIP_API_BASE}" \
+            --company-id "${PAPERCLIP_COMPANY_ID}" \
+            --result-issue "${BRIDGE_RESULT_ISSUE}" \
+            --repo "${BRIDGE_REPO}" \
+            --commit-ledger

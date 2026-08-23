@@ -1,0 +1,278 @@
+import { describe, expect, it, vi, afterEach } from "vitest";
+import { mkdtempSync, writeFileSync, mkdirSync, rmSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import {
+  REQUEST_DIR,
+  ALLOWLIST_OPERATIONS,
+  isRequestPath,
+  requestIdFromPath,
+  isProhibitedOperation,
+  sanitizeText,
+  parseRequest,
+  validateRequest,
+  isReplay,
+  appendLedger,
+  classifyResponse,
+  buildResultComment,
+  dispatch,
+} from "../../../scripts/qsl-chatgpt-orchestrator-bridge/dispatch-request.mjs";
+import { ORCHESTRATOR_BRIDGE_OPERATIONS } from "@paperclipai/shared";
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
+
+describe("QSL Orchestrator Bridge transport — request-file path filtering", () => {
+  it("accepts a valid request file path", () => {
+    expect(isRequestPath(".qsl/bridge-requests/status-001.json")).toBe(true);
+    expect(isRequestPath(".qsl/bridge-requests/list_tasks_abc.json")).toBe(true);
+  });
+
+  it("rejects paths outside the narrow request directory", () => {
+    expect(isRequestPath("bridge-requests/status.json")).toBe(false);
+    expect(isRequestPath(".qsl/other/status.json")).toBe(false);
+    expect(isRequestPath("status.json")).toBe(false);
+    expect(isRequestPath(".qsl/bridge-requests/sub/status.json")).toBe(false);
+  });
+
+  it("rejects traversal and non-json files", () => {
+    expect(isRequestPath(".qsl/bridge-requests/../../secret.json")).toBe(false);
+    expect(isRequestPath(".qsl/bridge-requests/status.txt")).toBe(false);
+    expect(isRequestPath(".qsl/bridge-requests/.json")).toBe(false);
+    expect(isRequestPath(".qsl/bridge-requests/READ ME.json")).toBe(false);
+  });
+
+  it("derives a matching request_id from a valid path", () => {
+    expect(requestIdFromPath(".qsl/bridge-requests/status-001.json")).toBe("status-001");
+    expect(requestIdFromPath("elsewhere.json")).toBeNull();
+  });
+});
+
+describe("QSL Orchestrator Bridge transport — allowlist parity with shared types", () => {
+  it("dispatcher allowlist matches the shared operation constant", () => {
+    expect(ALLOWLIST_OPERATIONS.slice().sort()).toEqual(
+      [...ORCHESTRATOR_BRIDGE_OPERATIONS].slice().sort(),
+    );
+  });
+});
+
+describe("QSL Orchestrator Bridge transport — malformed requests", () => {
+  it("rejects empty and non-JSON documents", () => {
+    expect(parseRequest("").ok).toBe(false);
+    expect(parseRequest("not json {").ok).toBe(false);
+    expect(parseRequest("[]").ok).toBe(false);
+  });
+
+  it("rejects missing request_id and operation", () => {
+    expect(validateRequest({ operation: "status", environment: "staging" }).ok).toBe(false);
+    expect(validateRequest({ request_id: "r1", environment: "staging" }).ok).toBe(false);
+  });
+
+  it("rejects prohibited and non-allowlisted operations", () => {
+    expect(validateRequest({ request_id: "r1", operation: "exec-shell", environment: "staging" }).ok).toBe(false);
+    expect(validateRequest({ request_id: "r1", operation: "rm -rf /", environment: "staging" }).ok).toBe(false);
+    expect(validateRequest({ request_id: "r1", operation: "delete-all", environment: "staging" }).ok).toBe(false);
+  });
+
+  it("rejects oversized payload values", () => {
+    const result = validateRequest({
+      request_id: "r1",
+      operation: "create-task",
+      environment: "staging",
+      payload: { title: "x".repeat(10_001) },
+    });
+    expect(result.ok).toBe(false);
+  });
+
+  it("fails closed via dispatch on a malformed file", async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "bridge-malformed-"));
+    const reqDir = path.join(dir, ".qsl", "bridge-requests");
+    mkdirSync(reqDir, { recursive: true });
+    const file = path.join(reqDir, "bad.json");
+    writeFileSync(file, "{ not valid json", "utf8");
+    const result = await dispatch({
+      requestFilePath: file,
+      apiBase: "http://localhost:3101",
+      companyId: "company-1",
+      resultIssue: "",
+    });
+    expect(result.resultClass).toBe("BLOCKED");
+    expect(result.error).toContain("not valid JSON");
+    rmSync(dir, { recursive: true, force: true });
+  });
+});
+
+describe("QSL Orchestrator Bridge transport — staging-only enforcement", () => {
+  it("rejects non-staging environment at validation", () => {
+    expect(validateRequest({ request_id: "r1", operation: "status", environment: "production" }).ok).toBe(false);
+    expect(validateRequest({ request_id: "r1", operation: "status", environment: "staging" }).ok).toBe(true);
+  });
+
+  it("rejects missing environment", () => {
+    expect(validateRequest({ request_id: "r1", operation: "status" }).ok).toBe(false);
+  });
+});
+
+describe("QSL Orchestrator Bridge transport — replay prevention", () => {
+  it("detects a replayed request_id in the ledger", () => {
+    const ledger = { "status-001": { operation: "status", result: "PASS" } };
+    expect(isReplay("status-001", ledger)).toBe(true);
+    expect(isReplay("status-002", ledger)).toBe(false);
+  });
+
+  it("treats empty/absent ledger as no replay", () => {
+    expect(isReplay("status-001", {})).toBe(false);
+    expect(isReplay("status-001", null)).toBe(false);
+  });
+
+  it("records a processed request durably", () => {
+    const next = appendLedger({}, "status-001", {
+      operation: "status",
+      commit: "abc123",
+      resultClass: "PASS",
+      processedAt: "2026-08-23T00:00:00Z",
+    });
+    expect(next["status-001"]).toMatchObject({
+      operation: "status",
+      commit: "abc123",
+      result: "PASS",
+    });
+  });
+
+  it("blocks a duplicate request before calling the API", async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "bridge-replay-"));
+    const reqDir = path.join(dir, ".qsl", "bridge-requests");
+    mkdirSync(reqDir, { recursive: true });
+    const ledgerPath = path.join(dir, "ledger.json");
+    writeFileSync(ledgerPath, JSON.stringify({ "status-001": { operation: "status", result: "PASS" } }), "utf8");
+
+    const requestFilePath = path.join(reqDir, "status-001.json");
+    writeFileSync(
+      requestFilePath,
+      JSON.stringify({ request_id: "status-001", operation: "status", environment: "staging" }),
+      "utf8",
+    );
+
+    let fetchCalled = false;
+    vi.stubGlobal("fetch", () => {
+      fetchCalled = true;
+      throw new Error("fetch should not be called for replay");
+    });
+
+    const result = await dispatch({
+      requestFilePath,
+      ledgerPath,
+      apiBase: "http://localhost:3101",
+      companyId: "company-1",
+      resultIssue: "",
+    });
+
+    expect(result.resultClass).toBe("BLOCKED");
+    expect(result.error).toContain("duplicate/replayed");
+    expect(fetchCalled).toBe(false);
+    rmSync(dir, { recursive: true, force: true });
+  });
+});
+
+describe("QSL Orchestrator Bridge transport — read-only status flow", () => {
+  it("dispatches a valid status request and posts a sanitized PASS result", async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "bridge-status-"));
+    const reqDir = path.join(dir, ".qsl", "bridge-requests");
+    mkdirSync(reqDir, { recursive: true });
+    const requestFilePath = path.join(reqDir, "status-001.json");
+    writeFileSync(
+      requestFilePath,
+      JSON.stringify({ request_id: "status-001", operation: "status", environment: "staging" }),
+      "utf8",
+    );
+
+    const fetchCalls = [];
+    vi.stubGlobal("fetch", async (url, init) => {
+      fetchCalls.push({ url: String(url), init });
+      if (String(url).includes("/bridge")) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            result_class: "PASS",
+            evidence_summary: "Status resolved. Recent issues: 3.",
+            affected_ids: ["issue-1", "issue-2"],
+          }),
+        };
+      }
+      return { ok: true, status: 201, json: async () => ({}) };
+    });
+
+    const result = await dispatch({
+      requestFilePath,
+      ledgerPath: path.join(dir, "ledger.json"),
+      commit: "abc123def",
+      apiBase: "http://localhost:3101",
+      companyId: "company-1",
+      resultIssue: "34",
+      repo: "mbennett-labs/paperclip",
+      token: "test-token",
+    });
+
+    expect(result.resultClass).toBe("PASS");
+    expect(result.posted).toBe(true);
+    expect(fetchCalls.some((c) => c.url.includes("/bridge"))).toBe(true);
+    expect(fetchCalls.some((c) => c.url.includes("/issues/34/comments"))).toBe(true);
+
+    // Ledger must be updated with the processed request.
+    const ledger = JSON.parse(readFileSync(path.join(dir, "ledger.json"), "utf8"));
+    expect(ledger["status-001"]).toMatchObject({ operation: "status", result: "PASS" });
+
+    rmSync(dir, { recursive: true, force: true });
+  });
+});
+
+describe("QSL Orchestrator Bridge transport — sanitized result egress", () => {
+  it("redacts secrets, tokens, PEM blocks, and base64 blobs", () => {
+    expect(sanitizeText("key sk-abcdefghijklmnop1234567890 here")).toBe("key [REDACTED] here");
+    expect(sanitizeText("Authorization: Bearer abcdefghijklmnopqrstuvwxyz123456")).toContain("[REDACTED]");
+    expect(sanitizeText("-----BEGIN PRIVATE KEY-----\nabcdef\n-----END PRIVATE KEY-----")).toBe("[REDACTED]");
+    expect(sanitizeText("password=hunter2secretvaluehere")).toContain("[REDACTED]");
+    expect(sanitizeText("api_key=superlongsecretvaluehere123456789")).toContain("[REDACTED]");
+  });
+
+  it("builds a result comment without raw secret material", () => {
+    const comment = buildResultComment({
+      requestId: "status-001",
+      operation: "status",
+      resultClass: "PASS",
+      affectedIds: ["issue-1"],
+      evidence: "sk-abcdefghijklmnop1234567890 leaked?",
+      error: "",
+      commit: "abc123",
+      processedAt: "2026-08-23T00:00:00Z",
+    });
+    expect(comment).not.toContain("sk-abcdefghijklmnop");
+    expect(comment).toContain("[REDACTED]");
+    expect(comment).toContain("status-001");
+    expect(comment).toContain("PASS");
+  });
+
+  it("maps HTTP error statuses to BLOCKED/FAIL with sanitized errors", () => {
+    expect(classifyResponse(403, { sanitized_error: "sk-leak" }).resultClass).toBe("BLOCKED");
+    expect(classifyResponse(500, { error: "boom" }).resultClass).toBe("FAIL");
+    const blocked = classifyResponse(403, { sanitized_error: "sk-leak-abcdefghijklmnop" });
+    expect(blocked.error).not.toContain("sk-leak");
+  });
+
+  it("never emits raw request payload text in the result comment", () => {
+    const comment = buildResultComment({
+      requestId: "create-task-001",
+      operation: "create-task",
+      resultClass: "PASS",
+      affectedIds: ["issue-9"],
+      evidence: "Created task",
+      error: "",
+      commit: "abc",
+      processedAt: "2026-08-23T00:00:00Z",
+    });
+    expect(comment).not.toContain("payload");
+    expect(comment).not.toContain("{");
+  });
+});
