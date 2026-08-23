@@ -1,0 +1,12 @@
+{
+  "request_id": "qsl-bridge-staging-proof-20260823-01",
+  "authorized_by": "Human Board",
+  "authorized_at": "2026-08-23T13:38:50Z",
+  "target_branch": "feat/directory-conversation-operator-v1",
+  "target_sha": "ee6dfb4ee1ef3b3b05469d4684a8b0b40c006fd3",
+  "service": "paperclip-thebinmap-staging.service",
+  "scope": "staging read-only bridge proof only",
+  "bounded_writes": false,
+  "production": false,
+  "merge": false
+}
