@@ -61,6 +61,7 @@ import { mcpGatewayProtocolRoutes, toolGatewayRoutes } from "./routes/tool-gatew
 import { adapterRoutes } from "./routes/adapters.js";
 import { pluginUiStaticRoutes } from "./routes/plugin-ui-static.js";
 import { qslBridgeRoutes } from "./routes/qsl-bridge.js";
+import { qslOrchestratorBridgeRoutes } from "./routes/qsl-orchestrator-bridge.js";
 import { missionRoutes } from "./routes/mission.js";
 import { operatorMissionRoutes } from "./routes/operator-missions.js";
 import { readBrandedStaticIndexHtml } from "./static-index-html.js";
@@ -281,6 +282,7 @@ export async function createApp(
   api.use(inboxDismissalRoutes(db));
   api.use(instanceSettingsRoutes(db));
   api.use("/qsl", qslBridgeRoutes(db));
+  api.use("/qsl-orchestrator-bridge", qslOrchestratorBridgeRoutes(db));
   if (opts.databaseBackupService) {
     api.use(instanceDatabaseBackupRoutes(opts.databaseBackupService));
   }
