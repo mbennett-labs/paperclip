@@ -15,7 +15,7 @@
  */
 
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -321,6 +321,94 @@ export async function callBridge(apiBase, companyId, request) {
   return { status: res.status, body: parsed };
 }
 
+/**
+ * Parse the transport envelope from SSH stdout. The forced command outputs
+ * exactly one JSON line: { transport_version, http_status, body }.
+ *
+ * Returns the same shape as callBridge: { status: number, body: object|null }
+ * plus optional transportError for transport-level failures.
+ */
+export function parseTransportEnvelope(stdout, stderr = "") {
+  if (!stdout) {
+    return { status: 0, body: null, transportError: "transport_no_output" };
+  }
+
+  let envelope;
+  try {
+    envelope = JSON.parse(stdout);
+  } catch {
+    return {
+      status: 0,
+      body: null,
+      transportError: "transport_envelope_unparseable",
+      rawOutput: sanitizeText(stdout, 200),
+    };
+  }
+
+  if (
+    !envelope ||
+    typeof envelope !== "object" ||
+    envelope.transport_version !== 1 ||
+    typeof envelope.http_status !== "number"
+  ) {
+    return {
+      status: 0,
+      body: null,
+      transportError: "transport_envelope_malformed",
+      rawOutput: sanitizeText(JSON.stringify(envelope), 200),
+    };
+  }
+
+  return {
+    status: envelope.http_status,
+    body: envelope.body && typeof envelope.body === "object" ? envelope.body : {},
+  };
+}
+
+/**
+ * Call the bridge API through a bounded SSH forced command.
+ *
+ * The request JSON is piped to `bridge-dispatch-readonly` on the staging host.
+ * The forced command validates, forwards, and returns a transport envelope:
+ *   { transport_version: 1, http_status: <actual>, body: <parsed bridge JSON> }
+ *
+ * This preserves the actual HTTP status through the SSH boundary so
+ * classifyResponse can distinguish BLOCKED (403) from FAIL (500) from PASS (200).
+ */
+export function callBridgeViaSsh(sshTarget, sshKey, request, spawnFn = spawnSync) {
+  const args = [
+    "-i", sshKey,
+    "-o", "BatchMode=yes",
+    "-o", "IdentitiesOnly=yes",
+    "-o", "StrictHostKeyChecking=yes",
+    "-o", "ConnectTimeout=10",
+    sshTarget,
+    "bridge-dispatch-readonly",
+  ];
+
+  let result;
+  try {
+    result = spawnFn("ssh", args, {
+      input: requestJson,
+      encoding: "utf8",
+      timeout: 35_000,
+      maxBuffer: 256 * 1024,
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+  } catch (err) {
+    return {
+      status: 0,
+      body: null,
+      transportError: `ssh_spawn_exception: ${err instanceof Error ? sanitizeText(err.message) : "unknown"}`,
+    };
+  }
+
+  return parseTransportEnvelope(
+    (result.stdout ?? "").trim(),
+    (result.stderr ?? "").trim(),
+  );
+}
+
 export async function postResultComment(repo, resultIssue, token, commentBody) {
   if (!token || !resultIssue) {
     // Dry-run / no GitHub context: emit locally, never post.
@@ -385,6 +473,10 @@ export async function dispatch({
   token,
   commitLedger = false,
   commitLedgerFn = commitLedgerToGit,
+  transport = "fetch",
+  sshTarget,
+  sshKey,
+  sshSpawnFn = spawnSync,
 }) {
   const relPath = requestFilePath.replace(/\\/g, "/");
   const requestId = requestIdFromPath(relPath);
@@ -436,7 +528,12 @@ export async function dispatch({
   }
 
   const operation = parsed.request.operation;
-  const result = await callBridge(apiBase, companyId, parsed.request);
+  let result;
+  if (transport === "ssh") {
+    result = callBridgeViaSsh(sshTarget, sshKey, parsed.request, sshSpawnFn);
+  } else {
+    result = await callBridge(apiBase, companyId, parsed.request);
+  }
   const classified = classifyResponse(result.status, result.body);
   const processedAt = new Date().toISOString();
 
@@ -479,7 +576,7 @@ export async function dispatch({
 // ── CLI entry ────────────────────────────────────────────────────────────────
 
 function parseArgs(argv) {
-  const args = { commitLedger: false };
+  const args = { commitLedger: false, transport: "fetch" };
   for (let i = 0; i < argv.length; i++) {
     const key = argv[i];
     const next = argv[i + 1];
@@ -491,6 +588,9 @@ function parseArgs(argv) {
     else if (key === "--result-issue") args.resultIssue = next;
     else if (key === "--repo") args.repo = next;
     else if (key === "--commit-ledger") args.commitLedger = true;
+    else if (key === "--transport") args.transport = next;
+    else if (key === "--ssh-target") args.sshTarget = next;
+    else if (key === "--ssh-key") args.sshKey = next;
     else if (key === "--help" || key === "-h") args.help = true;
   }
   return args;
@@ -500,12 +600,14 @@ async function main() {
   const args = parseArgs(process.argv.slice(2));
   if (args.help) {
     console.log(
-      "Usage: node dispatch-request.mjs --request-file <path> --api-base <url> --company-id <id> --result-issue <n> [--ledger <path>] [--commit <sha>] [--repo owner/name] [--commit-ledger]",
+      "Usage: node dispatch-request.mjs --request-file <path> --api-base <url> --company-id <id> --result-issue <n> [--ledger <path>] [--commit <sha>] [--repo owner/name] [--commit-ledger] [--transport fetch|ssh] [--ssh-target user@host] [--ssh-key <path>]",
     );
     return;
   }
   if (!args.requestFile) throw new Error("--request-file is required");
-  if (!args.apiBase) throw new Error("--api-base is required");
+  if (args.transport !== "ssh" && !args.apiBase) throw new Error("--api-base is required for fetch transport");
+  if (args.transport === "ssh" && !args.sshTarget) throw new Error("--ssh-target is required for ssh transport");
+  if (args.transport === "ssh" && !args.sshKey) throw new Error("--ssh-key is required for ssh transport");
   if (!args.companyId) throw new Error("--company-id is required");
 
   const result = await dispatch({
@@ -518,6 +620,9 @@ async function main() {
     repo: args.repo,
     token: process.env.GITHUB_TOKEN,
     commitLedger: args.commitLedger || process.env.BRIDGE_COMMIT_LEDGER === "true",
+    transport: args.transport,
+    sshTarget: args.sshTarget,
+    sshKey: args.sshKey,
   });
 
   if (!result.posted && !args.resultIssue) {

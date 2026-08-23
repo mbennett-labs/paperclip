@@ -9,11 +9,9 @@ on:
 
 jobs:
   dispatch:
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     timeout-minutes: 15
     environment: staging
-    # Explicit token authority: the workflow must push the ledger (contents)
-    # and post the sanitized receipt comment to issue #34 (issues).
     permissions:
       contents: write
       issues: write
@@ -52,11 +50,25 @@ jobs:
           echo "request_file=${request_file}" >> "$GITHUB_OUTPUT"
           echo "request_id=${request_id}" >> "$GITHUB_OUTPUT"
 
-      - name: Dispatch request to staging Paperclip
+      - name: Install bounded SSH identity
+        shell: bash
+        env:
+          QSL_STAGING_OPS_KEY: ${{ secrets.QSL_STAGING_OPS_KEY }}
+          QSL_STAGING_KNOWN_HOSTS: ${{ secrets.QSL_STAGING_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          test -n "$QSL_STAGING_OPS_KEY"
+          test -n "$QSL_STAGING_KNOWN_HOSTS"
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$QSL_STAGING_OPS_KEY" > ~/.ssh/qsl_staging_ops
+          chmod 600 ~/.ssh/qsl_staging_ops
+          printf '%s\n' "$QSL_STAGING_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+
+      - name: Dispatch read-only bridge request via bounded SSH
         shell: bash
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PAPERCLIP_API_BASE: ${{ vars.PAPERCLIP_API_BASE || 'http://localhost:3101' }}
           PAPERCLIP_COMPANY_ID: ${{ vars.PAPERCLIP_COMPANY_ID }}
           BRIDGE_RESULT_ISSUE: "34"
           BRIDGE_REPO: ${{ github.repository }}
@@ -69,8 +81,10 @@ jobs:
             --request-file "${{ steps.changed.outputs.request_file }}" \
             --ledger .qsl/bridge-ledger.json \
             --commit "${BRIDGE_COMMIT}" \
-            --api-base "${PAPERCLIP_API_BASE}" \
             --company-id "${PAPERCLIP_COMPANY_ID}" \
             --result-issue "${BRIDGE_RESULT_ISSUE}" \
             --repo "${BRIDGE_REPO}" \
+            --transport ssh \
+            --ssh-target "root@69.62.69.140" \
+            --ssh-key "$HOME/.ssh/qsl_staging_ops" \
             --commit-ledger
