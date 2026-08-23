@@ -50,7 +50,7 @@ export function qslOrchestratorBridgeRoutes(db: Db) {
       return;
     }
 
-    const { operation, target_ids, payload, authority_approval_id, environment } =
+    const { operation, target_ids, payload, authority_approval_id, environment, request_id } =
       parsed.data;
 
     if (environment !== "staging") {
@@ -66,6 +66,7 @@ export function qslOrchestratorBridgeRoutes(db: Db) {
       res.status(403).json({
         error: "Prohibited operation class",
         result_class: "BLOCKED",
+        request_id,
         sanitized_error: `Operation "${operation}" matches a prohibited pattern`,
       });
       return;
@@ -75,7 +76,27 @@ export function qslOrchestratorBridgeRoutes(db: Db) {
       res.status(400).json({
         error: "Unknown operation",
         result_class: "BLOCKED",
+        request_id,
         sanitized_error: `Unknown operation: ${operation}`,
+      });
+      return;
+    }
+
+    // Bounded-write operations are NOT live-capable until durable server-side
+    // idempotency/receipts exist. Fail closed unless the operator has explicitly
+    // enabled the provisional path (proof-of-life only). This prevents duplicate
+    // mutation when execution succeeds but the runner fails before persisting
+    // its client-side ledger.
+    if (
+      (BOUNDED_WRITE_OPERATIONS as readonly string[]).includes(operation) &&
+      process.env.PAPERCLIP_BRIDGE_ENABLE_BOUNDED_WRITES !== "true"
+    ) {
+      res.status(403).json({
+        error: "Bounded-write operations are not live-capable",
+        result_class: "BLOCKED",
+        request_id,
+        sanitized_error:
+          "server_side_idempotency_not_implemented: bounded-write bridge operations are disabled until durable server-side request receipts exist",
       });
       return;
     }
@@ -138,11 +159,12 @@ export function qslOrchestratorBridgeRoutes(db: Db) {
         missionSvc,
       });
 
-      res.json(result);
+      res.json({ ...result, request_id });
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
       res.status(500).json({
         result_class: "FAIL",
+        request_id,
         sanitized_error: sanitizeErrorMessage(message),
       });
     }

@@ -298,6 +298,7 @@ export async function callBridge(apiBase, companyId, request) {
   const base = apiBase.replace(/\/+$/, "");
   const url = `${base}/api/qsl-orchestrator-bridge/companies/${encodeURIComponent(companyId)}/bridge`;
   const body = {
+    request_id: request.request_id,
     operation: request.operation,
     environment: request.environment,
   };
@@ -356,12 +357,12 @@ function writeLedger(ledgerPath, ledger) {
   writeFileSync(ledgerPath, JSON.stringify(ledger, null, 2) + "\n", "utf8");
 }
 
-function commitLedger(ledgerPath, requestId) {
+export function commitLedgerToGit(ledgerPath, requestId, exec = execFileSync) {
   if (!ledgerPath) return;
   try {
-    execFileSync("git", ["add", ledgerPath], { stdio: "ignore" });
-    execFileSync("git", ["commit", "-m", `chore(qsl): record processed bridge request ${requestId}`], { stdio: "ignore" });
-    execFileSync("git", ["push", "origin", "HEAD"], { stdio: "ignore" });
+    exec("git", ["add", ledgerPath], { stdio: "ignore" });
+    exec("git", ["commit", "-m", `chore(qsl): record processed bridge request ${requestId}`], { stdio: "ignore" });
+    exec("git", ["push", "origin", "HEAD"], { stdio: "ignore" });
   } catch (err) {
     // Best-effort: the result comment on the issue is the fallback audit trail.
     console.warn(`[bridge] ledger commit skipped: ${err instanceof Error ? err.message : String(err)}`);
@@ -383,6 +384,7 @@ export async function dispatch({
   repo,
   token,
   commitLedger = false,
+  commitLedgerFn = commitLedgerToGit,
 }) {
   const relPath = requestFilePath.replace(/\\/g, "/");
   const requestId = requestIdFromPath(relPath);
@@ -411,6 +413,15 @@ export async function dispatch({
   const parsed = parseRequest(readFileSync(requestFilePath, "utf8"));
   if (!parsed.ok) {
     return fail("BLOCKED", parsed.error);
+  }
+
+  // Enforce request identity: the declared request_id must exactly equal the id
+  // derived from `.qsl/bridge-requests/<request_id>.json`. Prevents a request
+  // file whose contents claim a different identity than its filename.
+  const declaredId =
+    parsed.request && typeof parsed.request.request_id === "string" ? parsed.request.request_id : null;
+  if (declaredId !== requestId) {
+    return fail("BLOCKED", `request_id mismatch: file id is "${requestId}" but request declares "${declaredId}"`);
   }
 
   const validation = validateRequest(parsed.request);
@@ -459,7 +470,7 @@ export async function dispatch({
   });
   writeLedger(ledgerPath, nextLedger);
   if (commitLedger) {
-    commitLedger(ledgerPath, requestId);
+    commitLedgerFn(ledgerPath, requestId);
   }
 
   return { requestId, resultClass: classified.resultClass, commentBody, replay: false, posted, status: 0 };

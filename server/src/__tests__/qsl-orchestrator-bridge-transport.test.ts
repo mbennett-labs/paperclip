@@ -15,6 +15,7 @@ import {
   appendLedger,
   classifyResponse,
   buildResultComment,
+  commitLedgerToGit,
   dispatch,
 } from "../../../scripts/qsl-chatgpt-orchestrator-bridge/dispatch-request.mjs";
 import { ORCHESTRATOR_BRIDGE_OPERATIONS } from "@paperclipai/shared";
@@ -111,6 +112,118 @@ describe("QSL Orchestrator Bridge transport — staging-only enforcement", () =>
 
   it("rejects missing environment", () => {
     expect(validateRequest({ request_id: "r1", operation: "status" }).ok).toBe(false);
+  });
+});
+
+describe("QSL Orchestrator Bridge transport — request identity enforcement", () => {
+  it("blocks a request whose declared request_id does not match the file id", async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "bridge-identity-"));
+    const reqDir = path.join(dir, ".qsl", "bridge-requests");
+    mkdirSync(reqDir, { recursive: true });
+    const requestFilePath = path.join(reqDir, "status-001.json");
+    writeFileSync(
+      requestFilePath,
+      JSON.stringify({ request_id: "status-OTHER", operation: "status", environment: "staging" }),
+      "utf8",
+    );
+
+    const result = await dispatch({
+      requestFilePath,
+      apiBase: "http://localhost:3101",
+      companyId: "company-1",
+      resultIssue: "",
+    });
+
+    expect(result.resultClass).toBe("BLOCKED");
+    expect(result.error).toContain("request_id mismatch");
+    expect(result.error).toContain("status-001");
+    expect(result.error).toContain("status-OTHER");
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("accepts a request whose declared request_id matches the file id", async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "bridge-identity-ok-"));
+    const reqDir = path.join(dir, ".qsl", "bridge-requests");
+    mkdirSync(reqDir, { recursive: true });
+    const requestFilePath = path.join(reqDir, "status-001.json");
+    writeFileSync(
+      requestFilePath,
+      JSON.stringify({ request_id: "status-001", operation: "status", environment: "staging" }),
+      "utf8",
+    );
+
+    vi.stubGlobal("fetch", async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ result_class: "PASS", evidence_summary: "ok" }),
+    }));
+
+    const result = await dispatch({
+      requestFilePath,
+      ledgerPath: path.join(dir, "ledger.json"),
+      apiBase: "http://localhost:3101",
+      companyId: "company-1",
+      resultIssue: "",
+    });
+
+    expect(result.resultClass).toBe("PASS");
+    rmSync(dir, { recursive: true, force: true });
+  });
+});
+
+describe("QSL Orchestrator Bridge transport — durable ledger commit path", () => {
+  it("commitLedgerToGit stages, commits, and pushes the ledger", () => {
+    const execCalls = [];
+    const fakeExec = (cmd, args) => {
+      execCalls.push({ cmd, args });
+      return Buffer.from("");
+    };
+    commitLedgerToGit(".qsl/bridge-ledger.json", "status-001", fakeExec);
+
+    expect(execCalls.map((c) => c.cmd)).toEqual(["git", "git", "git"]);
+    expect(execCalls[0].args).toEqual(["add", ".qsl/bridge-ledger.json"]);
+    expect(execCalls[1].args[0]).toBe("commit");
+    expect(execCalls[1].args[2]).toContain("record processed bridge request status-001");
+    expect(execCalls[2].args).toEqual(["push", "origin", "HEAD"]);
+  });
+
+  it("dispatch with commitLedger=true invokes the ledger commit function", async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "bridge-commitledger-"));
+    const reqDir = path.join(dir, ".qsl", "bridge-requests");
+    mkdirSync(reqDir, { recursive: true });
+    const requestFilePath = path.join(reqDir, "status-001.json");
+    writeFileSync(
+      requestFilePath,
+      JSON.stringify({ request_id: "status-001", operation: "status", environment: "staging" }),
+      "utf8",
+    );
+
+    vi.stubGlobal("fetch", async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ result_class: "PASS", evidence_summary: "ok" }),
+    }));
+
+    let committedWith = null;
+    const commitLedgerFn = (ledgerPath, requestId) => {
+      committedWith = { ledgerPath, requestId };
+    };
+
+    const result = await dispatch({
+      requestFilePath,
+      ledgerPath: path.join(dir, "ledger.json"),
+      apiBase: "http://localhost:3101",
+      companyId: "company-1",
+      resultIssue: "",
+      commitLedger: true,
+      commitLedgerFn,
+    });
+
+    expect(result.resultClass).toBe("PASS");
+    expect(committedWith).not.toBeNull();
+    expect(committedWith.requestId).toBe("status-001");
+    expect(committedWith.ledgerPath).toContain("ledger.json");
+    rmSync(dir, { recursive: true, force: true });
   });
 });
 

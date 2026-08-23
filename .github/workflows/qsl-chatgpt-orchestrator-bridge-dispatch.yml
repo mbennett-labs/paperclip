@@ -12,6 +12,11 @@ jobs:
     runs-on: self-hosted
     timeout-minutes: 15
     environment: staging
+    # Explicit token authority: the workflow must push the ledger (contents)
+    # and post the sanitized receipt comment to issue #34 (issues).
+    permissions:
+      contents: write
+      issues: write
 
     steps:
       - name: Checkout repository
