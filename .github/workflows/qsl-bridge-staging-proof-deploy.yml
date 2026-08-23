@@ -1,0 +1,207 @@
+name: QSL Bridge Staging Proof Deploy
+
+on:
+  push:
+    branches:
+      - ops/qsl-bridge-staging-proof-20260823
+    paths:
+      - ".qsl/staging-proof/deploy-request.json"
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  deploy-staging-proof:
+    runs-on: self-hosted
+    timeout-minutes: 15
+    environment: staging
+
+    steps:
+      - name: Checkout proof branch
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Preflight, fast-forward staging, restart, verify
+        id: deploy
+        shell: bash
+        env:
+          SERVICE: paperclip-thebinmap-staging.service
+          TARGET_BRANCH: feat/directory-conversation-operator-v1
+          TARGET_SHA: ee6dfb4ee1ef3b3b05469d4684a8b0b40c006fd3
+          API_HEALTH: http://localhost:3101/api/health
+        run: |
+          set -euo pipefail
+
+          workdir="$(systemctl show "$SERVICE" -p WorkingDirectory --value)"
+          if [[ -z "$workdir" || ! -d "$workdir/.git" ]]; then
+            echo "BLOCKED: staging service working directory could not be verified"
+            exit 1
+          fi
+
+          if [[ "$(systemctl is-active "$SERVICE" || true)" != "active" ]]; then
+            echo "BLOCKED: staging service is not active before deployment"
+            exit 1
+          fi
+
+          cd "$workdir"
+          branch="$(git branch --show-current)"
+          if [[ "$branch" != "$TARGET_BRANCH" ]]; then
+            echo "BLOCKED: staging branch mismatch"
+            exit 1
+          fi
+
+          if [[ -n "$(git status --porcelain)" ]]; then
+            echo "BLOCKED: staging worktree is not clean"
+            exit 1
+          fi
+
+          old_head="$(git rev-parse HEAD)"
+          git fetch origin "$TARGET_BRANCH" --quiet
+          remote_head="$(git rev-parse "origin/$TARGET_BRANCH")"
+          if [[ "$remote_head" != "$TARGET_SHA" ]]; then
+            echo "BLOCKED: remote staging target moved"
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor "$old_head" "$TARGET_SHA"; then
+            echo "BLOCKED: staging target is not a fast-forward from current runtime"
+            exit 1
+          fi
+
+          pid="$(systemctl show "$SERVICE" -p MainPID --value)"
+          if [[ -z "$pid" || "$pid" == "0" ]]; then
+            echo "BLOCKED: staging PID could not be verified"
+            exit 1
+          fi
+          if ! sudo -n test -r "/proc/$pid/environ"; then
+            echo "BLOCKED: staging process environment cannot be verified"
+            exit 1
+          fi
+          if sudo -n sh -c "tr '\0' '\n' < /proc/$pid/environ | grep -Fxq 'PAPERCLIP_BRIDGE_ENABLE_BOUNDED_WRITES=true'"; then
+            echo "BLOCKED: bounded writes are enabled; proof requires them disabled"
+            exit 1
+          fi
+
+          node <<'NODE'
+          const url = process.env.API_HEALTH;
+          const r = await fetch(url);
+          if (!r.ok) throw new Error(`pre-health HTTP ${r.status}`);
+          const h = await r.json();
+          if (h.status !== 'ok') throw new Error('pre-health status is not ok');
+          if (h.deploymentMode !== 'local_trusted') throw new Error('pre-health deployment mode is not local_trusted');
+          console.log('PRE_HEALTH=PASS deploymentMode=local_trusted');
+          NODE
+
+          rollback_ref="rollback/qsl-bridge-proof-$(date -u +%Y%m%dT%H%M%SZ)"
+          git branch "$rollback_ref" "$old_head"
+
+          git pull --ff-only origin "$TARGET_BRANCH" --quiet
+          new_head="$(git rev-parse HEAD)"
+          if [[ "$new_head" != "$TARGET_SHA" ]]; then
+            echo "BLOCKED: staging HEAD did not reach approved target"
+            exit 1
+          fi
+          if [[ -n "$(git status --porcelain)" ]]; then
+            echo "BLOCKED: staging worktree became dirty after fast-forward"
+            exit 1
+          fi
+
+          pnpm --filter @paperclipai/shared typecheck
+          pnpm --filter @paperclipai/server typecheck
+
+          sudo -n systemctl restart "$SERVICE"
+          sleep 3
+          if [[ "$(systemctl is-active "$SERVICE" || true)" != "active" ]]; then
+            echo "BLOCKED: staging service failed to become active after restart"
+            exit 1
+          fi
+
+          node <<'NODE'
+          const url = process.env.API_HEALTH;
+          const expected = process.env.TARGET_SHA;
+          const r = await fetch(url);
+          if (!r.ok) throw new Error(`post-health HTTP ${r.status}`);
+          const h = await r.json();
+          if (h.status !== 'ok') throw new Error('post-health status is not ok');
+          if (h.deploymentMode !== 'local_trusted') throw new Error('post-health deployment mode is not local_trusted');
+          const sha = h?.serverInfo?.git?.fullSha;
+          if (sha !== expected) throw new Error('post-health git SHA does not match approved staging target');
+          console.log('POST_HEALTH=PASS deploymentMode=local_trusted target_sha_verified=true');
+          NODE
+
+          echo "old_head=$old_head" >> "$GITHUB_OUTPUT"
+          echo "new_head=$new_head" >> "$GITHUB_OUTPUT"
+          echo "rollback_ref=$rollback_ref" >> "$GITHUB_OUTPUT"
+
+      - name: Post sanitized staging deployment receipt
+        if: success()
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          OLD_HEAD: ${{ steps.deploy.outputs.old_head }}
+          NEW_HEAD: ${{ steps.deploy.outputs.new_head }}
+          ROLLBACK_REF: ${{ steps.deploy.outputs.rollback_ref }}
+        run: |
+          node <<'NODE'
+          const body = [
+            '### QSL Bridge Staging Read-Only Proof — deployment',
+            '',
+            '- result: **PASS**',
+            '- service: `paperclip-thebinmap-staging.service`',
+            '- branch: `feat/directory-conversation-operator-v1`',
+            `- old_head: \`${process.env.OLD_HEAD}\``,
+            `- new_head: \`${process.env.NEW_HEAD}\``,
+            '- deployment_mode: `local_trusted`',
+            '- bounded_writes: **disabled / not enabled**',
+            `- rollback_ref: \`${process.env.ROLLBACK_REF}\``,
+            `- run_id: \`${process.env.RUN_ID}\``,
+            '',
+            'Staging only. No production, merge, bounded write, email send, publication, or commercial commitment.'
+          ].join('\n');
+          const r = await fetch(`https://api.github.com/repos/${process.env.REPO}/issues/34/comments`, {
+            method: 'POST',
+            headers: {
+              Authorization: `Bearer ${process.env.GITHUB_TOKEN}`,
+              Accept: 'application/vnd.github+json',
+              'X-GitHub-Api-Version': '2022-11-28',
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ body })
+          });
+          if (!r.ok) throw new Error(`receipt post failed: ${r.status}`);
+          NODE
+
+      - name: Post sanitized blocked receipt
+        if: failure()
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          node <<'NODE'
+          const body = [
+            '### QSL Bridge Staging Read-Only Proof — deployment',
+            '',
+            '- result: **BLOCKED**',
+            '- target: `ee6dfb4ee1ef3b3b05469d4684a8b0b40c006fd3`',
+            `- run_id: \`${process.env.RUN_ID}\``,
+            '- note: staging deployment preflight or verification failed closed; inspect the workflow run for the bounded diagnostic.',
+            '',
+            'No production, merge, bounded write, email send, publication, or commercial commitment was authorized.'
+          ].join('\n');
+          const r = await fetch(`https://api.github.com/repos/${process.env.REPO}/issues/34/comments`, {
+            method: 'POST',
+            headers: {
+              Authorization: `Bearer ${process.env.GITHUB_TOKEN}`,
+              Accept: 'application/vnd.github+json',
+              'X-GitHub-Api-Version': '2022-11-28',
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ body })
+          });
+          if (!r.ok) throw new Error(`blocked receipt post failed: ${r.status}`);
+          NODE
