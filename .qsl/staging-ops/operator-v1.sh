@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="qsl-staging-ops-v1.0.0"
+VERSION="qsl-staging-ops-v1.1.0"
 SERVICE="paperclip-thebinmap-staging.service"
 STAGING_USER="paperclip-thebinmap-staging"
 STAGING_ROOT="/home/paperclip-thebinmap-staging/.paperclip-staging/instances/thebinmap-email-ops-staging"
@@ -201,7 +201,103 @@ case "$op" in
     log_event "PASS"
     ;;
 
+  bridge-dispatch-readonly)
+    require_no_extra_args
+    bridge_dispatch_readonly
+    log_event "PASS"
+    ;;
+
   *)
     fail "unsupported operation"
     ;;
 esac
+
+# ── bridge-dispatch-readonly ──────────────────────────────────────────────
+# QSL ChatGPT Orchestrator Bridge V1 — read-only over SSH forced command.
+#
+# Transport contract:
+#   1. Read at most 65537 bytes from stdin.
+#   2. If byte count > 65536, fail closed: request exceeds max size.
+#   3. Parse JSON with jq.  Fail closed on malformed JSON.
+#   4. Enforce environment == staging.
+#   5. Enforce operation is in the hardcoded read-only allowlist.
+#   6. Forward validated request to the localhost bridge API.
+#   7. Capture actual HTTP status + response body into transport envelope.
+#   8. Output exactly one JSON line to stdout.
+#
+# The allowlist here is AUTHORITATIVE — even if the server-side
+# PAPERCLIP_BRIDGE_ENABLE_BOUNDED_WRITES flag is true, this gate
+# prevents bounded-write and human-gated operations from ever
+# reaching the bridge API.
+
+bridge_dispatch_readonly() {
+  local MAX=65536
+  local TMP
+  TMP=$(mktemp -d)
+  trap 'rm -rf "$TMP"' RETURN
+
+  local readonly_allowlist="status list-missions get-mission list-tasks get-task list-approvals list-mail-triage get-mail-thread-summary"
+
+  head -c $((MAX + 1)) > "$TMP/request-raw"
+  local byte_count
+  byte_count=$(wc -c < "$TMP/request-raw")
+
+  if [[ "$byte_count" -gt "$MAX" ]]; then
+    printf '{"transport_version":1,"http_status":0,"body":{"result_class":"BLOCKED","sanitized_error":"request exceeds maximum size: %d bytes (limit %d)"}}\n' "$byte_count" "$MAX"
+    exit 1
+  fi
+
+  if [[ "$byte_count" -eq 0 ]]; then
+    printf '{"transport_version":1,"http_status":0,"body":{"result_class":"BLOCKED","sanitized_error":"request is empty"}}\n'
+    exit 1
+  fi
+
+  if ! jq -c '.' "$TMP/request-raw" > "$TMP/request-parsed" 2>/dev/null; then
+    printf '{"transport_version":1,"http_status":0,"body":{"result_class":"BLOCKED","sanitized_error":"invalid JSON"}}\n'
+    exit 1
+  fi
+
+  local env op
+  env=$(jq -r '.environment // empty' "$TMP/request-parsed")
+  op=$(jq -r '.operation // empty' "$TMP/request-parsed")
+
+  if [[ "$env" != "staging" ]]; then
+    printf '{"transport_version":1,"http_status":0,"body":{"result_class":"BLOCKED","sanitized_error":"environment must be staging"}}\n'
+    exit 1
+  fi
+
+  if [[ -z "$op" ]]; then
+    printf '{"transport_version":1,"http_status":0,"body":{"result_class":"BLOCKED","sanitized_error":"missing operation"}}\n'
+    exit 1
+  fi
+
+  local matched=""
+  for allowed in $readonly_allowlist; do
+    if [[ "$op" == "$allowed" ]]; then
+      matched="yes"
+      break
+    fi
+  done
+
+  if [[ -z "$matched" ]]; then
+    printf '{"transport_version":1,"http_status":0,"body":{"result_class":"BLOCKED","sanitized_error":"operation not in read-only allowlist: %s"}}\n' "$op"
+    exit 1
+  fi
+
+  local http_status body
+  http_status=$(curl -s -o "$TMP/response-body" -w '%{http_code}' \
+    --max-time 15 \
+    -X POST -H 'Content-Type: application/json' \
+    "$API/qsl-orchestrator-bridge/companies/$COMPANY_ID/bridge" \
+    -d @"$TMP/request-parsed")
+
+  if body=$(jq -c '.' "$TMP/response-body" 2>/dev/null); then
+    printf '{"transport_version":1,"http_status":%s,"body":%s}\n' "$http_status" "$body"
+  else
+    local raw
+    raw=$(head -c 500 "$TMP/response-body")
+    local safe_raw
+    safe_raw=$(printf '%s' "$raw" | jq -Rs .)
+    printf '{"transport_version":1,"http_status":%s,"body":{"result_class":"FAIL","sanitized_error":%s}}\n' "$http_status" "$safe_raw"
+  fi
+}
