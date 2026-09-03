@@ -70,8 +70,17 @@ jobs:
           echo "=== EMAIL BUILD ==="
           pnpm --filter @qsl/plugin-email build
 
-          echo "=== EMAIL TESTS ==="
-          pnpm exec vitest run packages/plugins/plugin-email/tests --reporter=dot
+          echo "=== TARGETED MIME TEST ==="
+          (
+            cd packages/plugins/plugin-email
+            pnpm exec vitest run tests/mime.spec.ts --reporter=dot
+          )
+
+          echo "=== FULL EMAIL PLUGIN TEST SUITE ==="
+          (
+            cd packages/plugins/plugin-email
+            pnpm exec vitest run --reporter=dot
+          )
 
           echo "QSL_EMAIL_COMMIT_VALIDATION=PASS"
 
@@ -92,7 +101,7 @@ jobs:
             echo "- target: \`$TARGET_SHA\`"
             echo "- result: **$result**"
             echo "- run_id: \`$GITHUB_RUN_ID\`"
-            echo "- checks: frozen install, email typecheck, email build, full email plugin tests"
+            echo "- checks: frozen install, email typecheck, email build, targeted MIME tests, full email plugin tests"
           } > validation-comment.md
           gh issue comment 45 --repo "$GITHUB_REPOSITORY" --body-file validation-comment.md
 
