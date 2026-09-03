@@ -69,7 +69,7 @@ jobs:
         shell: bash
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PAPERCLIP_COMPANY_ID: ${{ vars.PAPERCLIP_COMPANY_ID }}
+          PAPERCLIP_COMPANY_ID: ${{ vars.PAPERCLIP_COMPANY_ID || 'f32509d2-8cad-4754-baab-c87148c4c69a' }}
           BRIDGE_RESULT_ISSUE: "34"
           BRIDGE_REPO: ${{ github.repository }}
           BRIDGE_COMMIT: ${{ github.event.after }}
