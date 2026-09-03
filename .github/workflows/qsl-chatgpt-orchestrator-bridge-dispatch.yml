@@ -22,6 +22,13 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Configure bridge audit identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
       - name: Identify changed bridge request file
         id: changed
         shell: bash
@@ -64,6 +71,26 @@ jobs:
           chmod 600 ~/.ssh/qsl_staging_ops
           printf '%s\n' "$QSL_STAGING_KNOWN_HOSTS" > ~/.ssh/known_hosts
           chmod 600 ~/.ssh/known_hosts
+
+      # Temporary fail-closed runner repair. The branch dispatcher currently
+      # references requestJson without defining it inside callBridgeViaSsh.
+      # Patch only the checked-out runner copy so bounded read-only transport
+      # can be proven before the source repair is promoted separately.
+      - name: Apply bounded SSH dispatcher runtime repair
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          p = Path("scripts/qsl-chatgpt-orchestrator-bridge/dispatch-request.mjs")
+          s = p.read_text()
+          old = "export function callBridgeViaSsh(sshTarget, sshKey, request, spawnFn = spawnSync) {\n  const args = ["
+          new = "export function callBridgeViaSsh(sshTarget, sshKey, request, spawnFn = spawnSync) {\n  const requestJson = JSON.stringify(request);\n  const args = ["
+          if s.count(old) != 1:
+              raise SystemExit("BLOCKED: expected exactly one callBridgeViaSsh repair target")
+          p.write_text(s.replace(old, new, 1))
+          PY
 
       - name: Dispatch read-only bridge request via bounded SSH
         shell: bash
