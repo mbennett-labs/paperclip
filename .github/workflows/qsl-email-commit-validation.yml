@@ -1,0 +1,106 @@
+name: QSL Email Commit Validation
+
+on:
+  push:
+    branches:
+      - ops/staging-bridge-v0
+    paths:
+      - ".qsl/staging-ops/validation-request.json"
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: qsl-email-commit-validation
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - name: Checkout validation request
+        uses: actions/checkout@v7
+        with:
+          ref: ops/staging-bridge-v0
+          fetch-depth: 1
+
+      - name: Resolve target commit
+        id: target
+        shell: bash
+        run: |
+          set -euo pipefail
+          request=.qsl/staging-ops/validation-request.json
+          test -f "$request"
+          target_sha="$(jq -r '.targetSha // empty' "$request")"
+          purpose="$(jq -r '.purpose // empty' "$request")"
+          [[ "$target_sha" =~ ^[0-9a-f]{40}$ ]] || { echo "Invalid targetSha" >&2; exit 41; }
+          [[ "$purpose" == "qsl-email-plugin" ]] || { echo "Invalid purpose" >&2; exit 42; }
+          echo "target_sha=$target_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Validate email commit
+        id: validate
+        continue-on-error: true
+        shell: bash
+        env:
+          TARGET_SHA: ${{ steps.target.outputs.target_sha }}
+        run: |
+          set -euo pipefail
+          exec > >(tee validation-output.txt) 2>&1
+
+          git fetch --no-tags --depth=1 origin "$TARGET_SHA"
+          git checkout --detach "$TARGET_SHA"
+
+          echo "=== TARGET ==="
+          git log -1 --oneline
+          git status --short
+
+          corepack enable
+          corepack prepare pnpm@9.15.4 --activate
+          pnpm --version
+
+          echo "=== INSTALL ==="
+          pnpm install --frozen-lockfile
+
+          echo "=== EMAIL TYPECHECK ==="
+          pnpm --filter @qsl/plugin-email typecheck
+
+          echo "=== EMAIL BUILD ==="
+          pnpm --filter @qsl/plugin-email build
+
+          echo "=== EMAIL TESTS ==="
+          pnpm exec vitest run packages/plugins/plugin-email/tests --reporter=dot
+
+          echo "QSL_EMAIL_COMMIT_VALIDATION=PASS"
+
+      - name: Publish validation result
+        if: always()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_SHA: ${{ steps.target.outputs.target_sha }}
+          OUTCOME: ${{ steps.validate.outcome }}
+        run: |
+          set -euo pipefail
+          result="FAIL"
+          [[ "$OUTCOME" == "success" ]] && result="PASS"
+          {
+            echo "### QSL Email Commit Validation"
+            echo
+            echo "- target: \`$TARGET_SHA\`"
+            echo "- result: **$result**"
+            echo "- run_id: \`$GITHUB_RUN_ID\`"
+            echo "- checks: frozen install, email typecheck, email build, full email plugin tests"
+          } > validation-comment.md
+          gh issue comment 45 --repo "$GITHUB_REPOSITORY" --body-file validation-comment.md
+
+      - name: Preserve validation failure
+        if: always()
+        shell: bash
+        env:
+          OUTCOME: ${{ steps.validate.outcome }}
+        run: |
+          set -euo pipefail
+          [[ "$OUTCOME" == "success" ]]
