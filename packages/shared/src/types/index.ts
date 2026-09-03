@@ -893,3 +893,16 @@ export {
   type OperatorActionRule,
   type OperatorAuthorityPolicy,
 } from "./operator-mission.js";
+
+export {
+  ORCHESTRATOR_BRIDGE_OPERATIONS,
+  ORCHESTRATOR_BRIDGE_RESULT_CLASSES,
+  READ_ONLY_OPERATIONS,
+  BOUNDED_WRITE_OPERATIONS,
+  HUMAN_GATED_OPERATIONS,
+  isProhibitedOperation,
+  type OrchestratorBridgeOperation,
+  type OrchestratorBridgeResultClass,
+  type OrchestratorBridgeRequest,
+  type OrchestratorBridgeResult,
+} from "./qsl-orchestrator-bridge.js";
