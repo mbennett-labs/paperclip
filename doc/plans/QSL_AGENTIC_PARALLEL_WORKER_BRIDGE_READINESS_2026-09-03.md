@@ -15,8 +15,8 @@ issue-#34 evidence. Nothing was executed against the VPS.
 | Current-upstream integration | `feat/qsl-current-upstream-integration` @ `d14423fed` merges Mission Control V0 (#21), Hermes containment V0 (#22), Email Intake Ops V0 (#23), Hermes synthetic POC V0 (#24) | `git log` |
 | ChatGPT/orchestrator bridge | `feat/qsl-chatgpt-orchestrator-bridge-v1` @ `dbda8c7da` (source repair promoted today); server route, shared types/validators, 17-op allowlist | `server/src/routes/qsl-orchestrator-bridge.ts`, `packages/shared/src/{types,validators}/qsl-orchestrator-bridge.ts` |
 | Staging bridge transport | Branch-native commit-triggered: `.qsl/bridge-requests/<request_id>.json` → GH Actions dispatch → bounded SSH forced command → staging API → sanitized comment on issue #34 + `.qsl/bridge-ledger.json` | `.github/workflows/qsl-chatgpt-orchestrator-bridge-dispatch.yml` |
-| Forced-command operator (repo) | `ops/staging-bridge-v0` `.qsl/staging-ops/operator-v1.sh` = `qsl-staging-ops-v1.1.0` incl. `bridge-dispatch-readonly` (64KB stdin cap, jq validation, `environment=staging` gate, hardcoded 8-op read-only allowlist, transport envelope with real HTTP status, fail-closed) | commit `30b877594` |
-| Operator v1.0 vs v1.1 drift | **CONFIRMED**. VPS runs v1.0.0; repo has v1.1.0. Today 21:26 UTC diagnostic bundle (run `33807976388`, issue #34): `OPERATOR=qsl-staging-ops-v1.0.0`. Consequence: today's three `status` requests hit the installed v1.0.0 operator, which has no `bridge-dispatch-readonly` op → `unsupported operation` → result posted as **UNKNOWN** | issue #34 comments, 2026-09-03 |
+| Forced-command operator (repo) | `ops/staging-bridge-v0` `.qsl/staging-ops/operator-v1.sh` = `qsl-staging-ops-v1.1.1` incl. `bridge-dispatch-readonly` (64KB stdin cap, jq validation, `environment=staging` gate, hardcoded 8-op read-only allowlist, transport envelope with real HTTP status, fail-closed). **v1.1.1 fixes a runtime defect in v1.1.0** — see §5a | commits `30b877594`, `363d2bffd` |
+| Operator v1.0 vs v1.1 drift | **CONFIRMED**. VPS runs v1.0.0; repo has v1.1.x. Today 21:26 UTC diagnostic bundle (run `33807976388`, issue #34): `OPERATOR=qsl-staging-ops-v1.0.0`. Consequence: today's three `status` requests hit the installed v1.0.0 operator, which has no `bridge-dispatch-readonly` op → `unsupported operation` → result posted as **UNKNOWN** | issue #34 comments, 2026-09-03 |
 | GitHub Actions bridge paths | Dispatch: push to `feat/qsl-chatgpt-orchestrator-bridge-v1` with `paths: .qsl/bridge-requests/**`, `environment: staging`, secrets `QSL_STAGING_OPS_KEY` / `QSL_STAGING_KNOWN_HOSTS`, SSH `root@69.62.69.140`. Validate: typecheck + 3 bridge test suites + no-shell-orchestration proof | both workflow files on the bridge branch |
 | Staging server-side bridge API | Deployed: staging deploy checkout runs branch `fix/qsl-email-mime-normalization-20260903` @ `bb1bbb3a` which contains `server/src/routes/qsl-orchestrator-bridge.ts`; API health `200 ok` | diagnostic bundle 2026-09-03 |
 | Hermes/OpenRouter worker execution | Built-in `hermes_local` + `hermes_gateway` (no plugin install); OpenRouter key delivered only via governed company secrets (plaintext rejected, digest verified); bwrap containment with fail-closed egress; `containment.providerPreset="openrouter"` allowlists only `openrouter.ai:443` (subdomain/port denials tested) | `server/src/adapters/builtin-adapter-types.ts`, `packages/adapters/hermes/src/server/*` tests |
@@ -31,7 +31,7 @@ Example missions: "research these markets", "implement this isolated branch".
 ChatGPT/QSL (supervisor)
   └─ commit .qsl/bridge-requests/<request_id>.json  → push to bridge branch
        └─ GH Actions dispatch (staging env, bounded SSH key)
-            └─ ssh forced command `bridge-dispatch-readonly` (operator v1.1.0)
+             └─ ssh forced command `bridge-dispatch-readonly` (operator v1.1.1)
                  └─ POST /api/qsl-orchestrator-bridge/companies/:id/bridge
                       └─ staging Paperclip
                            ├─ read-only: mission/task state, approvals, evidence
@@ -87,10 +87,56 @@ current dispatcher to `<dispatcher>.v0` before install, installs, and records
 the source SHA in `/usr/local/share/qsl-staging-ops/operator-source-sha`.
 
 Post-install verification (repo-side, no root):
-1. `operator-version` forced command → expect `qsl-staging-ops-v1.1.0`.
+1. `operator-version` forced command → expect `qsl-staging-ops-v1.1.1`.
 2. Commit one new `.qsl/bridge-requests/status-...json` → expect a `PASS`
    transport envelope comment on issue #34 and a ledger entry with
    `result: PASS` (not UNKNOWN).
+
+## 4a. Follow-up review (2026-09-04): operator runtime defect found, fixed
+
+Independent review claimed `bridge_dispatch_readonly` was invoked (line 206)
+before its definition (line 233) in operator-v1.sh v1.1.0. **Reproduced and
+confirmed** against the actual branch:
+
+```
+$ printf "" | bash operator-v1.sh bridge-dispatch-readonly   # empty stdin
+./operator-v1.sh: line 206: bridge_dispatch_readonly: command not found
+EXIT=127, stdout empty (no envelope) — same for malformed JSON
+```
+
+`bash -n` passes because the file is syntactically valid; bash executes
+top-to-bottom, so every real `bridge-dispatch-readonly` dispatch died before
+any envelope existed. Installing v1.1.0 unmodified would have locked the
+bridge transport with `command not found` on every request.
+
+Fix (branch `work/qsl-operator-dispatch-order-fix`, fast-forwarded to
+`ops/staging-bridge-v0` @ `363d2bffd`, VERSION bumped to **v1.1.1**):
+
+- moved the function definition (body byte-identical; allowlist, gates, and
+  envelope behavior unchanged; no authority broadened) above the case
+  dispatch, with a comment explaining why;
+- added `.qsl/staging-ops/operator-runtime-test.sh` — a REAL execution test
+  (not `bash -n`): runs the operator with empty / malformed / non-staging /
+  missing-operation / non-allowlisted / bounded-write inputs and asserts the
+  structured BLOCKED envelope, exit 1, and absence of `command not found`;
+  no network required (all paths return before curl);
+- added `qsl-staging-operator-runtime-test` CI workflow (syntax checks +
+  structural definition-before-dispatch guard + the runtime test); green on
+  both branches: runs `33828374803`, `33828388585`;
+- added the same structural guard to `bootstrap-operator-v1.sh` (exit 7,
+  pre-install) so a re-introduced ordering defect can never be installed;
+- `*.sh` pinned to LF via `.gitattributes` (CRLF working copies fail at
+  runtime under WSL/Git Bash).
+
+Bootstrap/rollback review conclusion: `.v0` is the **legacy pre-V1
+dispatcher** that `operator-v1.sh` delegates to for v0-era ops
+(`LEGACY="${BASH_SOURCE[0]}.v0"`, ops `health|live-shadow-report|
+deploy-email-plugin`) — it is NOT a generic rollback slot and must never be
+overwritten by an upgrade. Added a **separate timestamped+SHA pre-upgrade
+snapshot** (`<dispatcher>.pre-<UTC ts>-<sha8>`, retention 3) of the currently
+installed dispatcher, so a bad V1→V1' upgrade rolls back without regressing
+legacy delegation; the bootstrap now prints `ROLLBACK_CMD` and expects
+`operator-version` to report the candidate version post-install.
 
 ## 5. Repo-only work completed this session
 
@@ -106,21 +152,43 @@ Post-install verification (repo-side, no root):
    - `.gitattributes` pins `scripts/qsl-chatgpt-orchestrator-bridge/*.mjs` to
      LF (Vite/vitest on Windows cannot import CRLF `.mjs`; this broke local
      runs, CI was unaffected).
-2. This readiness document (branch `work/agentic-e-worker-bridge-20260903`).
+2. Follow-up (2026-09-04), `ops/staging-bridge-v0` + `work/qsl-operator-dispatch-order-fix`
+   @ `363d2bffd4cb5ad29b37491fdca9301abbc533ee` — see §4a: reproduced,
+   fixed, and regression-tested the operator dispatch-order defect; hardened
+   the bootstrap with a structural guard and a separate pre-upgrade rollback
+   snapshot.
+3. This readiness document (branch `work/agentic-e-worker-bridge-20260903`).
 
 ## 6. Tests run
 
-- `pnpm exec vitest run server/src/__tests__/qsl-orchestrator-bridge.test.ts
-  server/src/__tests__/qsl-orchestrator-bridge-simulation.test.ts
-  server/src/__tests__/qsl-orchestrator-bridge-transport.test.ts` → **77 passed**
-  (bridge branch worktree).
+- Operator runtime test (real execution, WSL bash 5.1 + jq 1.7.1, no network):
+  buggy v1.1.0 → **6/6 execution cases FAIL** with exit 127
+  `bridge_dispatch_readonly: command not found` (suite exit 1 — test detects
+  the defect); fixed v1.1.1 → **7/7 PASS** (6 BLOCKED-envelope cases +
+  `operator-version` reports `qsl-staging-ops-v1.1.1`).
+- Function-body diff vs v1.1.0 → **identical** (allowlist/behavior preserved).
+- Bootstrap structural guard simulation: REJECT buggy operator (exit 7),
+  ACCEPT fixed operator.
+- `bash -n` on operator, bootstrap, runtime test → pass.
+- CI `QSL Staging Operator Runtime Test` → **success** on both pushes
+  (runs `33828374803`, `33828388585`).
+- Bridge vitest suites re-run after all changes → **77 passed**.
 - `pnpm --filter @paperclipai/server typecheck` → pass.
 - `node --check` + CLI `--help` smoke of `dispatch-request.mjs` → pass.
 - CI validate workflow on the source-repair push: run `33823571113`.
 
 ## 7. Terminal state
 
-**REPO_READY_ROOT_STEP_REQUIRED** — the only remaining blocker for read-only
-dispatch is the one-time pinned operator bootstrap in §4. Bounded-write worker
-result return additionally requires the documented server-side durable-receipt
-work (already fail-closed, no data risk until explicitly enabled).
+**ROOT_BOOTSTRAP_READY** — repo-side work is complete (bridge transport source
+repair + operator dispatch-order fix v1.1.1 + runtime tests + bootstrap
+hardening, all green locally and in CI). The single remaining step for
+read-only dispatch is the one-time pinned operator bootstrap in §4, run from
+`ops/staging-bridge-v0` @ `363d2bffd`:
+
+```sh
+sudo -H bash .qsl/staging-ops/bootstrap-operator-v1.sh 363d2bffd4cb5ad29b37491fdca9301abbc533ee
+```
+
+Bounded-write worker result return additionally requires the documented
+server-side durable-receipt work (already fail-closed, no data risk until
+explicitly enabled).
