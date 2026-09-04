@@ -1,0 +1,7 @@
+# Windows checkouts (core.autocrlf=true) produce CRLF working-tree copies.
+# Vite/vitest on Windows fails to import CRLF .mjs files
+# ("SyntaxError: Invalid or unexpected token"), which breaks local runs of the
+# QSL bridge dispatcher tests. Blob content for these files is already LF;
+# pinning eol=lf only changes checkout behavior and keeps local Windows runs
+# consistent with CI.
+scripts/qsl-chatgpt-orchestrator-bridge/*.mjs text eol=lf

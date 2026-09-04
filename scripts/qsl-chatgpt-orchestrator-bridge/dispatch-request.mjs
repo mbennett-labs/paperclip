@@ -329,8 +329,12 @@ export async function callBridge(apiBase, companyId, request) {
  * plus optional transportError for transport-level failures.
  */
 export function parseTransportEnvelope(stdout, stderr = "") {
+  // The forced command writes diagnostics to stderr (e.g.
+  // "QSL_STAGING_OPS_ERROR: unsupported operation"). Carry a sanitized copy so
+  // a transport failure names the real blocker instead of an opaque UNKNOWN.
+  const detail = stderr ? { transportDetail: sanitizeText(stderr, 200) } : {};
   if (!stdout) {
-    return { status: 0, body: null, transportError: "transport_no_output" };
+    return { status: 0, body: null, transportError: "transport_no_output", ...detail };
   }
 
   let envelope;
@@ -342,6 +346,7 @@ export function parseTransportEnvelope(stdout, stderr = "") {
       body: null,
       transportError: "transport_envelope_unparseable",
       rawOutput: sanitizeText(stdout, 200),
+      ...detail,
     };
   }
 
@@ -356,6 +361,7 @@ export function parseTransportEnvelope(stdout, stderr = "") {
       body: null,
       transportError: "transport_envelope_malformed",
       rawOutput: sanitizeText(JSON.stringify(envelope), 200),
+      ...detail,
     };
   }
 
@@ -376,6 +382,7 @@ export function parseTransportEnvelope(stdout, stderr = "") {
  * classifyResponse can distinguish BLOCKED (403) from FAIL (500) from PASS (200).
  */
 export function callBridgeViaSsh(sshTarget, sshKey, request, spawnFn = spawnSync) {
+  const requestJson = JSON.stringify(request);
   const args = [
     "-i", sshKey,
     "-o", "BatchMode=yes",
@@ -534,7 +541,22 @@ export async function dispatch({
   } else {
     result = await callBridge(apiBase, companyId, parsed.request);
   }
-  const classified = classifyResponse(result.status, result.body);
+  // Fail closed on transport-level failures (no envelope / malformed envelope /
+  // SSH spawn error). Without this, classifyResponse would report UNKNOWN for a
+  // dead transport, which reads like a neutral status. FAIL names the blocker
+  // (e.g. operator version drift) and drives a non-zero CLI exit.
+  let classified;
+  if (result.transportError) {
+    const detail = result.transportDetail ? `: ${result.transportDetail}` : "";
+    classified = {
+      resultClass: "FAIL",
+      affectedIds: [],
+      evidence: "",
+      error: `transport failure: ${result.transportError}${detail}`.slice(0, 500),
+    };
+  } else {
+    classified = classifyResponse(result.status, result.body);
+  }
   const processedAt = new Date().toISOString();
 
   const commentBody = buildResultComment({
@@ -570,7 +592,7 @@ export async function dispatch({
     commitLedgerFn(ledgerPath, requestId);
   }
 
-  return { requestId, resultClass: classified.resultClass, commentBody, replay: false, posted, status: 0 };
+  return { requestId, resultClass: classified.resultClass, commentBody, replay: false, posted, status: 0, error: classified.error };
 }
 
 // ── CLI entry ────────────────────────────────────────────────────────────────

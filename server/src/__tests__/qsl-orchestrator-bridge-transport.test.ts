@@ -17,6 +17,8 @@ import {
   buildResultComment,
   commitLedgerToGit,
   dispatch,
+  callBridgeViaSsh,
+  parseTransportEnvelope,
 } from "../../../scripts/qsl-chatgpt-orchestrator-bridge/dispatch-request.mjs";
 import { ORCHESTRATOR_BRIDGE_OPERATIONS } from "@paperclipai/shared";
 
@@ -387,5 +389,127 @@ describe("QSL Orchestrator Bridge transport — sanitized result egress", () => 
     });
     expect(comment).not.toContain("payload");
     expect(comment).not.toContain("{");
+  });
+});
+
+describe("QSL Orchestrator Bridge transport — bounded SSH transport envelope", () => {
+  it("parses a valid transport envelope into status + body", () => {
+    const parsed = parseTransportEnvelope(
+      JSON.stringify({ transport_version: 1, http_status: 200, body: { result_class: "PASS" } }),
+    );
+    expect(parsed).toEqual({ status: 200, body: { result_class: "PASS" } });
+  });
+
+  it("reports transport_no_output with sanitized stderr detail on empty stdout", () => {
+    const parsed = parseTransportEnvelope("", "QSL_STAGING_OPS_ERROR: unsupported operation\r\n");
+    expect(parsed.status).toBe(0);
+    expect(parsed.body).toBeNull();
+    expect(parsed.transportError).toBe("transport_no_output");
+    expect(parsed.transportDetail).toContain("QSL_STAGING_OPS_ERROR: unsupported operation");
+  });
+
+  it("reports unparseable and malformed envelopes without crashing", () => {
+    expect(parseTransportEnvelope("not json").transportError).toBe("transport_envelope_unparseable");
+    expect(
+      parseTransportEnvelope(JSON.stringify({ transport_version: 2, http_status: 200 })).transportError,
+    ).toBe("transport_envelope_malformed");
+  });
+});
+
+describe("QSL Orchestrator Bridge transport — bounded SSH dispatcher", () => {
+  const baseRequest = { request_id: "status-001", operation: "status", environment: "staging" };
+
+  it("pipes the serialized request to the bridge-dispatch-readonly forced command", () => {
+    const calls = [];
+    const fakeSpawn = (cmd, args, options) => {
+      calls.push({ cmd, args, options });
+      return {
+        status: 0,
+        stdout: JSON.stringify({ transport_version: 1, http_status: 200, body: { result_class: "PASS" } }),
+        stderr: "",
+      };
+    };
+
+    const result = callBridgeViaSsh("root@example", "/tmp/key", baseRequest, fakeSpawn);
+
+    expect(result.status).toBe(200);
+    expect(calls).toHaveLength(1);
+    expect(calls[0].cmd).toBe("ssh");
+    expect(calls[0].args).toContain("bridge-dispatch-readonly");
+    expect(calls[0].args[calls[0].args.length - 1]).toBe("bridge-dispatch-readonly");
+    expect(calls[0].args).toContain("BatchMode=yes");
+    expect(calls[0].args).toContain("StrictHostKeyChecking=yes");
+    expect(calls[0].options.input).toBe(JSON.stringify(baseRequest));
+  });
+
+  it("classifies an SSH transport failure as FAIL with the sanitized operator error", async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "bridge-ssh-fail-"));
+    const reqDir = path.join(dir, ".qsl", "bridge-requests");
+    mkdirSync(reqDir, { recursive: true });
+    const requestFilePath = path.join(reqDir, "status-ssh-001.json");
+    writeFileSync(
+      requestFilePath,
+      JSON.stringify({ request_id: "status-ssh-001", operation: "status", environment: "staging" }),
+      "utf8",
+    );
+
+    const fakeSpawn = () => ({
+      status: 1,
+      stdout: "",
+      stderr: "QSL_STAGING_OPS_ERROR: unsupported operation\n",
+    });
+
+    const result = await dispatch({
+      requestFilePath,
+      ledgerPath: path.join(dir, "ledger.json"),
+      apiBase: "http://localhost:3101",
+      companyId: "company-1",
+      resultIssue: "",
+      transport: "ssh",
+      sshTarget: "root@example",
+      sshKey: "/tmp/key",
+      sshSpawnFn: fakeSpawn,
+    });
+
+    expect(result.resultClass).toBe("FAIL");
+    expect(result.error).toContain("transport failure");
+    expect(result.error).toContain("unsupported operation");
+
+    const ledger = JSON.parse(readFileSync(path.join(dir, "ledger.json"), "utf8"));
+    expect(ledger["status-ssh-001"].result).toBe("FAIL");
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("does not classify a healthy SSH envelope as a transport failure", async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "bridge-ssh-ok-"));
+    const reqDir = path.join(dir, ".qsl", "bridge-requests");
+    mkdirSync(reqDir, { recursive: true });
+    const requestFilePath = path.join(reqDir, "status-ssh-002.json");
+    writeFileSync(
+      requestFilePath,
+      JSON.stringify({ request_id: "status-ssh-002", operation: "status", environment: "staging" }),
+      "utf8",
+    );
+
+    const fakeSpawn = () => ({
+      status: 0,
+      stdout: JSON.stringify({ transport_version: 1, http_status: 200, body: { result_class: "PASS" } }),
+      stderr: "",
+    });
+
+    const result = await dispatch({
+      requestFilePath,
+      ledgerPath: path.join(dir, "ledger.json"),
+      apiBase: "http://localhost:3101",
+      companyId: "company-1",
+      resultIssue: "",
+      transport: "ssh",
+      sshTarget: "root@example",
+      sshKey: "/tmp/key",
+      sshSpawnFn: fakeSpawn,
+    });
+
+    expect(result.resultClass).toBe("PASS");
+    rmSync(dir, { recursive: true, force: true });
   });
 });

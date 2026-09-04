@@ -72,25 +72,8 @@ jobs:
           printf '%s\n' "$QSL_STAGING_KNOWN_HOSTS" > ~/.ssh/known_hosts
           chmod 600 ~/.ssh/known_hosts
 
-      # Temporary fail-closed runner repair. The branch dispatcher currently
-      # references requestJson without defining it inside callBridgeViaSsh.
-      # Patch only the checked-out runner copy so bounded read-only transport
-      # can be proven before the source repair is promoted separately.
-      - name: Apply bounded SSH dispatcher runtime repair
-        shell: bash
-        run: |
-          set -euo pipefail
-          python3 - <<'PY'
-          from pathlib import Path
-
-          p = Path("scripts/qsl-chatgpt-orchestrator-bridge/dispatch-request.mjs")
-          s = p.read_text()
-          old = "export function callBridgeViaSsh(sshTarget, sshKey, request, spawnFn = spawnSync) {\n  const args = ["
-          new = "export function callBridgeViaSsh(sshTarget, sshKey, request, spawnFn = spawnSync) {\n  const requestJson = JSON.stringify(request);\n  const args = ["
-          if s.count(old) != 1:
-              raise SystemExit("BLOCKED: expected exactly one callBridgeViaSsh repair target")
-          p.write_text(s.replace(old, new, 1))
-          PY
+      # The bounded SSH dispatcher source is repaired upstream (requestJson is
+      # defined inside callBridgeViaSsh). No runtime patch is applied here.
 
       - name: Dispatch read-only bridge request via bounded SSH
         shell: bash
