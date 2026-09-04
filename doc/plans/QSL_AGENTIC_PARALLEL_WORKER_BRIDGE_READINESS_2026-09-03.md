@@ -16,7 +16,7 @@ issue-#34 evidence. Nothing was executed against the VPS.
 | ChatGPT/orchestrator bridge | `feat/qsl-chatgpt-orchestrator-bridge-v1` @ `dbda8c7da` (source repair promoted today); server route, shared types/validators, 17-op allowlist | `server/src/routes/qsl-orchestrator-bridge.ts`, `packages/shared/src/{types,validators}/qsl-orchestrator-bridge.ts` |
 | Staging bridge transport | Branch-native commit-triggered: `.qsl/bridge-requests/<request_id>.json` → GH Actions dispatch → bounded SSH forced command → staging API → sanitized comment on issue #34 + `.qsl/bridge-ledger.json` | `.github/workflows/qsl-chatgpt-orchestrator-bridge-dispatch.yml` |
 | Forced-command operator (repo) | `ops/staging-bridge-v0` `.qsl/staging-ops/operator-v1.sh` = `qsl-staging-ops-v1.1.1` incl. `bridge-dispatch-readonly` (64KB stdin cap, jq validation, `environment=staging` gate, hardcoded 8-op read-only allowlist, transport envelope with real HTTP status, fail-closed). **v1.1.1 fixes a runtime defect in v1.1.0** — see §5a | commits `30b877594`, `363d2bffd` |
-| Operator v1.0 vs v1.1 drift | **CONFIRMED**. VPS runs v1.0.0; repo has v1.1.x. Today 21:26 UTC diagnostic bundle (run `33807976388`, issue #34): `OPERATOR=qsl-staging-ops-v1.0.0`. Consequence: today's three `status` requests hit the installed v1.0.0 operator, which has no `bridge-dispatch-readonly` op → `unsupported operation` → result posted as **UNKNOWN** | issue #34 comments, 2026-09-03 |
+| Operator v1.0 vs v1.1 drift | **CONFIRMED** (2026-09-03 record; **resolved 2026-09-04** — v1.1.1 installed, see §4 update). VPS ran v1.0.0; repo had v1.1.x. Today 21:26 UTC diagnostic bundle (run `33807976388`, issue #34): `OPERATOR=qsl-staging-ops-v1.0.0`. Consequence: today's three `status` requests hit the installed v1.0.0 operator, which has no `bridge-dispatch-readonly` op → `unsupported operation` → result posted as **UNKNOWN** | issue #34 comments, 2026-09-03 |
 | GitHub Actions bridge paths | Dispatch: push to `feat/qsl-chatgpt-orchestrator-bridge-v1` with `paths: .qsl/bridge-requests/**`, `environment: staging`, secrets `QSL_STAGING_OPS_KEY` / `QSL_STAGING_KNOWN_HOSTS`, SSH `root@69.62.69.140`. Validate: typecheck + 3 bridge test suites + no-shell-orchestration proof | both workflow files on the bridge branch |
 | Staging server-side bridge API | Deployed: staging deploy checkout runs branch `fix/qsl-email-mime-normalization-20260903` @ `bb1bbb3a` which contains `server/src/routes/qsl-orchestrator-bridge.ts`; API health `200 ok` | diagnostic bundle 2026-09-03 |
 | Hermes/OpenRouter worker execution | Built-in `hermes_local` + `hermes_gateway` (no plugin install); OpenRouter key delivered only via governed company secrets (plaintext rejected, digest verified); bwrap containment with fail-closed egress; `containment.providerPreset="openrouter"` allowlists only `openrouter.ai:443` (subdomain/port denials tested) | `server/src/adapters/builtin-adapter-types.ts`, `packages/adapters/hermes/src/server/*` tests |
@@ -69,7 +69,12 @@ via `openrouter/...` model ids; the orchestrator never assumes frontier models
   cheap-model configuration — provable locally via tests.
 - Windows local dev of the bridge: fixed by pinning bridge `.mjs` to LF.
 
-## 4. Exact one-time human/root step (NOT executed)
+## 4. Exact one-time human/root step (executed successfully 2026-09-04)
+
+> **UPDATE 2026-09-04**: this step was executed. Operator `qsl-staging-ops-v1.1.1`
+> is installed on staging and proven by direct + GitHub-transport status PASS.
+> The drift described below is resolved. Text below preserved as the 2026-09-03
+> record.
 
 The `root@69.62.69.140` forced-command dispatcher is the installed v1.0.0
 operator; only root can replace it (it is root-owned and referenced from
@@ -178,6 +183,13 @@ legacy delegation; the bootstrap now prints `ROLLBACK_CMD` and expects
 - CI validate workflow on the source-repair push: run `33823571113`.
 
 ## 7. Terminal state
+
+> **SUPERSEDED 2026-09-04**: the §4 bootstrap was executed successfully on
+> 2026-09-04 (operator v1.1.1 installed, staging route verified, direct status
+> smoke HTTP 200 / PASS, fresh GitHub status request PASS). The evidence-backed
+> terminal status is now **READ_ONLY_BRIDGE_PROVED** — see
+> `QSL_WORKER_BRIDGE_HARVEST_2026-09-04.md` for the harvest, invariants, and
+> current authority boundary. Text below preserved as the 2026-09-03 record.
 
 **ROOT_BOOTSTRAP_READY** — repo-side work is complete (bridge transport source
 repair + operator dispatch-order fix v1.1.1 + runtime tests + bootstrap
