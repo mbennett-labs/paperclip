@@ -1,0 +1,52 @@
+name: QSL Staging Operator Runtime Test
+
+on:
+  push:
+    paths:
+      - ".qsl/staging-ops/operator-v1.sh"
+      - ".qsl/staging-ops/operator-runtime-test.sh"
+      - ".qsl/staging-ops/bootstrap-operator-v1.sh"
+      - ".github/workflows/qsl-staging-operator-runtime-test.yml"
+  pull_request:
+    paths:
+      - ".qsl/staging-ops/operator-v1.sh"
+      - ".qsl/staging-ops/operator-runtime-test.sh"
+      - ".qsl/staging-ops/bootstrap-operator-v1.sh"
+      - ".github/workflows/qsl-staging-operator-runtime-test.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  operator-runtime:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Syntax-check operator and bootstrap
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash -n .qsl/staging-ops/operator-v1.sh
+          bash -n .qsl/staging-ops/bootstrap-operator-v1.sh
+          bash -n .qsl/staging-ops/operator-runtime-test.sh
+
+      - name: Guard bridge_dispatch_readonly is defined before the case dispatch
+        shell: bash
+        run: |
+          set -euo pipefail
+          def_line="$(grep -n '^bridge_dispatch_readonly()' .qsl/staging-ops/operator-v1.sh | cut -d: -f1)"
+          case_line="$(grep -n 'case "\$op" in' .qsl/staging-ops/operator-v1.sh | cut -d: -f1)"
+          echo "bridge_dispatch_readonly defined at line ${def_line}, case dispatch at line ${case_line}"
+          test -n "$def_line"
+          test -n "$case_line"
+          test "$def_line" -lt "$case_line"
+
+      - name: Execute bridge-dispatch-readonly fail-closed paths (real bash, no network)
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash .qsl/staging-ops/operator-runtime-test.sh
