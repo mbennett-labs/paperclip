@@ -18,12 +18,25 @@ Evidence chain verified today (2026-09-04):
 
 | Step | Result |
 | --- | --- |
-| ChatGPT → GitHub request → Actions dispatch → bounded SSH operator v1.1.1 → staging localhost QSL orchestrator API → Paperclip read-only data → sanitized result → ledger/issue receipt | **PASS** |
 | Operator v1.1.1 installed on staging (bootstrap from §4 of the readiness doc, SHA `363d2bffd`) | done |
-| Orchestrator route present in staging runtime | verified via direct smoke |
+| Fresh status request | **failed — "API route not found"** (live staging base had no orchestrator route) |
+| Minimal staging integration commit `be6eac052d6215cc3a02bd5f62cb332088bc6f5d` ("fix(staging): add read-only QSL orchestrator bridge route on live staging base") — route + app registration on the exact live staging base | done |
+| `server/dist` built | done |
+| Service restarted onto the built runtime | done |
 | Direct bridge status smoke (staging localhost) | HTTP 200, `result_class: PASS` |
-| Fresh GitHub status request (external transport, same path) | **PASS** |
+| Fresh GitHub status request `12cf5014f62b8518d3a2ae977103298a779eb8ce`, `request_id=status-20260904-1345-chatgpt`; dispatch workflow run `33879822426` | completed success |
+| Issue #34 receipt | `result PASS`, evidence "Status resolved. Recent issues: 5." |
+| ChatGPT → GitHub request → Actions dispatch → bounded SSH operator v1.1.1 → staging localhost QSL orchestrator API → Paperclip read-only data → sanitized result → ledger/issue receipt | **PASS** |
 | Production | untouched |
+
+Note the route-missing step (row 2): the readiness doc's 2026-09-03 §1 row
+implied the deployed base `bb1bbb3a` already contained the bridge route — it
+did not. The proof became possible only after the route was added on the live
+staging base, built, loaded, and exercised.
+
+**Durable lesson chain (every link required, in order):**
+source SHA → built artifact → loaded process → direct endpoint exercise →
+external transport exercise.
 
 The readiness document's `ROOT_BOOTSTRAP_READY` status described the state
 *before* the one-time operator bootstrap. That step was executed today
@@ -39,12 +52,14 @@ apply to every future staging/production bridge change:
 1. **Source commit ≠ loaded runtime proof.** The staging checkout can be on a
    different branch/SHA than the repo work (`fix/qsl-email-mime-normalization-20260903`
    @ `bb1bbb3a` was deployed while bridge work lived on
-   `feat/qsl-chatgpt-orchestrator-bridge-v1`), and the installed operator was
-   v1.0.0 while the repo had v1.1.x. A source SHA alone never proves what is
-   actually running.
+   `feat/qsl-chatgpt-orchestrator-bridge-v1` — and that base did **not**
+   contain the bridge route at all, proven by the "API route not found"
+   failure), and the installed operator was v1.0.0 while the repo had v1.1.x.
+   A source SHA alone never proves what is actually running.
 2. **Build artifact must be verified.** The staging runtime executes the
-   compiled artifact (`server/dist/index.js`), not `server/src`. A route added
-   in source does not exist at runtime until it is built, loaded, and verified.
+   compiled artifact (`server/dist/index.js`), not `server/src`. The route
+   added by `be6eac052` only existed at runtime after `server/dist` was built
+   and the service was restarted onto the built runtime.
 3. **Service entrypoint must be verified.** Confirm the running process is
    actually executing `server/dist/index.js` (not a stale entrypoint) before
    attributing behavior to source state.

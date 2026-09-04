@@ -18,7 +18,19 @@ issue-#34 evidence. Nothing was executed against the VPS.
 | Forced-command operator (repo) | `ops/staging-bridge-v0` `.qsl/staging-ops/operator-v1.sh` = `qsl-staging-ops-v1.1.1` incl. `bridge-dispatch-readonly` (64KB stdin cap, jq validation, `environment=staging` gate, hardcoded 8-op read-only allowlist, transport envelope with real HTTP status, fail-closed). **v1.1.1 fixes a runtime defect in v1.1.0** — see §5a | commits `30b877594`, `363d2bffd` |
 | Operator v1.0 vs v1.1 drift | **CONFIRMED** (2026-09-03 record; **resolved 2026-09-04** — v1.1.1 installed, see §4 update). VPS ran v1.0.0; repo had v1.1.x. Today 21:26 UTC diagnostic bundle (run `33807976388`, issue #34): `OPERATOR=qsl-staging-ops-v1.0.0`. Consequence: today's three `status` requests hit the installed v1.0.0 operator, which has no `bridge-dispatch-readonly` op → `unsupported operation` → result posted as **UNKNOWN** | issue #34 comments, 2026-09-03 |
 | GitHub Actions bridge paths | Dispatch: push to `feat/qsl-chatgpt-orchestrator-bridge-v1` with `paths: .qsl/bridge-requests/**`, `environment: staging`, secrets `QSL_STAGING_OPS_KEY` / `QSL_STAGING_KNOWN_HOSTS`, SSH `root@69.62.69.140`. Validate: typecheck + 3 bridge test suites + no-shell-orchestration proof | both workflow files on the bridge branch |
-| Staging server-side bridge API | Deployed: staging deploy checkout runs branch `fix/qsl-email-mime-normalization-20260903` @ `bb1bbb3a` which contains `server/src/routes/qsl-orchestrator-bridge.ts`; API health `200 ok` | diagnostic bundle 2026-09-03 |
+| Staging server-side bridge API | Deployed: staging deploy checkout runs branch `fix/qsl-email-mime-normalization-20260903` @ `bb1bbb3a`; API health `200 ok` | diagnostic bundle 2026-09-03 |
+
+> **CORRECTION 2026-09-04**: the row above implied `bb1bbb3a` contained
+> `server/src/routes/qsl-orchestrator-bridge.ts`. **It did not.** After the
+> operator v1.1.1 install, a fresh status request failed with
+> **"API route not found"** — the live staging base lacked the route. The route
+> plus its app registration were added to the exact live staging base by the
+> minimal integration commit `be6eac052d6215cc3a02bd5f62cb332088bc6f5d`
+> ("fix(staging): add read-only QSL orchestrator bridge route on live staging
+> base"), then `server/dist` was built, the service was restarted onto the
+> built runtime, and the path was proven (direct localhost HTTP 200 / PASS,
+> then GitHub transport PASS). See
+> `QSL_WORKER_BRIDGE_HARVEST_2026-09-04.md` §1 for the exact sequence.
 | Hermes/OpenRouter worker execution | Built-in `hermes_local` + `hermes_gateway` (no plugin install); OpenRouter key delivered only via governed company secrets (plaintext rejected, digest verified); bwrap containment with fail-closed egress; `containment.providerPreset="openrouter"` allowlists only `openrouter.ai:443` (subdomain/port denials tested) | `server/src/adapters/builtin-adapter-types.ts`, `packages/adapters/hermes/src/server/*` tests |
 | Model selection for cheap workers | `adapterConfig.model` + provider auto-detect (`MODEL_PREFIX_PROVIDER_HINTS`: `deepseek`/`qwen`/`llama` → auto, `glm-` → zai, `kimi`/`moonshot` → kimi-coding, `minimax` → minimax); default model `auto` (never forces a frontier model); explicit `provider: "openrouter"` supported | `packages/adapters/hermes/src/shared/constants.ts` |
 | Issue/result return path | Read-only ops live: `status`, `list-missions`, `get-mission`, `list-tasks`, `get-task`, `list-approvals`, `list-mail-triage`, `get-mail-thread-summary` → `{result_class, evidence_summary, affected_ids}`. Bounded writes (`create-task`, `update-task`, `assign-task`, `create-approval-request`, `create-outbound-draft`, `record-mission-evidence`) fail-closed until durable server-side receipts + `PAPERCLIP_BRIDGE_ENABLE_BOUNDED_WRITES=true`. Human-gated: `execute-approved-send`, `publish-approved-asset`, `accept-approved-commercial-commitment` | bridge route on bridge branch |
@@ -185,9 +197,23 @@ legacy delegation; the bootstrap now prints `ROLLBACK_CMD` and expects
 ## 7. Terminal state
 
 > **SUPERSEDED 2026-09-04**: the §4 bootstrap was executed successfully on
-> 2026-09-04 (operator v1.1.1 installed, staging route verified, direct status
-> smoke HTTP 200 / PASS, fresh GitHub status request PASS). The evidence-backed
-> terminal status is now **READ_ONLY_BRIDGE_PROVED** — see
+> 2026-09-04. Exact sequence preserved from the 2026-09-04 evidence:
+> 1. Operator v1.1.1 installed.
+> 2. Fresh status request failed "API route not found" (live staging base had
+>    no orchestrator route — the §1 `bb1bbb3a` row's containment claim was
+>    wrong).
+> 3. Minimal staging integration commit
+>    `be6eac052d6215cc3a02bd5f62cb332088bc6f5d` added the read-only route plus
+>    app registration on the exact live staging base.
+> 4. `server/dist` was built.
+> 5. Service was restarted onto the built runtime.
+> 6. Direct localhost bridge status returned HTTP 200 / PASS.
+> 7. Fresh GitHub request `12cf5014f62b8518d3a2ae977103298a779eb8ce`
+>    (`request_id=status-20260904-1345-chatgpt`); dispatch workflow run
+>    `33879822426` completed success; issue #34 recorded
+>    `result PASS`, evidence "Status resolved. Recent issues: 5.".
+>
+> The evidence-backed terminal status is now **READ_ONLY_BRIDGE_PROVED** — see
 > `QSL_WORKER_BRIDGE_HARVEST_2026-09-04.md` for the harvest, invariants, and
 > current authority boundary. Text below preserved as the 2026-09-03 record.
 
