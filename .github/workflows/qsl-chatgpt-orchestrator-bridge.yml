@@ -1,0 +1,77 @@
+name: QSL ChatGPT Orchestrator Bridge V1 — Validate
+
+on:
+  push:
+    branches:
+      - feat/qsl-chatgpt-orchestrator-bridge-v1
+    paths:
+      - "server/src/routes/qsl-orchestrator-bridge.ts"
+      - "server/src/__tests__/qsl-orchestrator-bridge*.test.ts"
+      - "packages/shared/src/types/qsl-orchestrator-bridge.ts"
+      - "packages/shared/src/validators/qsl-orchestrator-bridge.ts"
+      - "scripts/qsl-chatgpt-orchestrator-bridge/*"
+      - ".github/workflows/qsl-chatgpt-orchestrator-bridge*.yml"
+  pull_request:
+    branches:
+      - feat/qsl-current-upstream-integration
+      - feat/directory-conversation-operator-v1
+    paths:
+      - "server/src/routes/qsl-orchestrator-bridge.ts"
+      - "server/src/__tests__/qsl-orchestrator-bridge*.test.ts"
+      - "packages/shared/src/types/qsl-orchestrator-bridge.ts"
+      - "packages/shared/src/validators/qsl-orchestrator-bridge.ts"
+      - "scripts/qsl-chatgpt-orchestrator-bridge/*"
+      - ".github/workflows/qsl-chatgpt-orchestrator-bridge*.yml"
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          version: 9.15.4
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck server
+        run: pnpm --filter @paperclipai/server typecheck
+
+      - name: Run orchestrator bridge tests
+        run: |
+          pnpm exec vitest run \
+            server/src/__tests__/qsl-orchestrator-bridge.test.ts \
+            server/src/__tests__/qsl-orchestrator-bridge-simulation.test.ts \
+            server/src/__tests__/qsl-orchestrator-bridge-transport.test.ts
+
+      - name: Prove no shell orchestration in bridge routes
+        shell: bash
+        run: |
+          set -euo pipefail
+          if grep -nE 'node:child_process|exec\(|spawn\(' server/src/routes/qsl-orchestrator-bridge.ts; then
+            echo "FAIL: shell orchestration leaked into orchestrator bridge."
+            exit 41
+          fi
+          echo "PASS: orchestrator bridge is native Paperclip API only."
+
+      - name: Prove no credential export in bridge routes
+        shell: bash
+        run: |
+          set -euo pipefail
+          if grep -nE 'process\.env\.(OPENAI|ANTHROPIC|API_KEY|SECRET|TOKEN|KEY)' server/src/routes/qsl-orchestrator-bridge.ts; then
+            echo "FAIL: credential export detected in bridge route."
+            exit 42
+          fi
+          echo "PASS: no credential export in bridge route."
