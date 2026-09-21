@@ -1,0 +1,75 @@
+{
+  "schema_version": "qsl.capabilities.v1",
+  "repository": "mbennett-labs/paperclip",
+  "capabilities": [
+    {
+      "id": "qsl.capability.paperclip_control_plane.v1",
+      "kind": "runtime",
+      "name": "Paperclip Agent Control Plane",
+      "source": "skills/paperclip/SKILL.md",
+      "usage": "runtime",
+      "jobs": [
+        "coordinate_agents",
+        "track_work",
+        "enforce_budgets",
+        "request_approvals"
+      ],
+      "inputs": [
+        "company",
+        "goals",
+        "issues",
+        "agent configuration"
+      ],
+      "outputs": [
+        "runs",
+        "activity",
+        "cost records",
+        "approval requests"
+      ],
+      "tools": [
+        "Paperclip server",
+        "Paperclip UI"
+      ],
+      "policies": [
+        "company isolation",
+        "budget enforcement"
+      ],
+      "authority_ceiling": "configured_per_company",
+      "evidence_required": [
+        "run trace",
+        "cost record",
+        "issue state"
+      ],
+      "cost_class": "variable",
+      "status": "active"
+    },
+    {
+      "id": "qsl.capability.paperclip_agent_adapters.v1",
+      "kind": "adapter",
+      "name": "Paperclip Agent Adapters",
+      "source": "packages/adapters/",
+      "usage": "runtime",
+      "jobs": [
+        "execute_configured_agent"
+      ],
+      "inputs": [
+        "adapter configuration",
+        "task context"
+      ],
+      "outputs": [
+        "agent run result"
+      ],
+      "tools": [],
+      "policies": [
+        "runtime containment",
+        "secret isolation"
+      ],
+      "authority_ceiling": "configured_per_agent",
+      "evidence_required": [
+        "adapter run trace"
+      ],
+      "cost_class": "variable",
+      "status": "active"
+    }
+  ]
+}
