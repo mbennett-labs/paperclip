@@ -1,0 +1,23 @@
+{
+  "schema_version": "qsl.repository.v1",
+  "repository": "mbennett-labs/paperclip",
+  "role": "execution_runtime",
+  "status": "active",
+  "authority": "runtime",
+  "owner": "Paperclip upstream and QSL maintainers",
+  "canonical_for": [
+    "agent orchestration runtime",
+    "work coordination",
+    "budgets",
+    "runtime approvals"
+  ],
+  "entrypoints": [
+    "README.md",
+    "AGENTS.md",
+    "skills/paperclip/SKILL.md"
+  ],
+  "capability_manifest": "qsl/capabilities.json",
+  "dependency_manifest": "qsl/dependencies.json",
+  "policy_manifest": "qsl/policies.json",
+  "last_verified": "2026-09-21"
+}
