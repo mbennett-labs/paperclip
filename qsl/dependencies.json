@@ -1,0 +1,20 @@
+{
+  "schema_version": "qsl.dependencies.v1",
+  "repository": "mbennett-labs/paperclip",
+  "dependencies": [
+    {
+      "id": "qsl",
+      "type": "repository",
+      "source": "https://github.com/mbennett-labs/qsl",
+      "access": "read_only",
+      "required": false
+    },
+    {
+      "id": "qsl-agent-foundry",
+      "type": "repository",
+      "source": "https://github.com/mbennett-labs/qsl-agent-foundry",
+      "access": "read_only",
+      "required": false
+    }
+  ]
+}

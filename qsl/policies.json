@@ -1,0 +1,22 @@
+{
+  "schema_version": "qsl.policies.v1",
+  "repository": "mbennett-labs/paperclip",
+  "authority_ceiling": "Runtime configuration and Human Board approvals",
+  "policies": [
+    {
+      "id": "paperclip_agent_guidance",
+      "source": "AGENTS.md",
+      "usage": "binding"
+    },
+    {
+      "id": "qsl_private_logic_boundary",
+      "source": "https://github.com/mbennett-labs/qsl-agent-foundry/blob/main/docs/governance/REPOSITORY_PRIVACY_BOUNDARY.md",
+      "usage": "binding"
+    }
+  ],
+  "prohibitions": [
+    "no proprietary QSL operating logic added solely to public framework surface",
+    "no cross-company data leakage",
+    "no execution beyond configured budgets and approvals"
+  ]
+}
