@@ -1,9 +1,9 @@
 {
-  "operation": "operator-version",
+  "operation": "health",
   "targetSha": "",
   "targetRef": "",
   "expectedOldSha": "",
   "issueIdentifier": "",
   "confirm": "",
-  "nonce": "2026-10-07T19:48:00Z"
+  "nonce": "2026-10-07T19:53:00Z"
 }
