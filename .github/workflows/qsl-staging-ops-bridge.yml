@@ -37,6 +37,7 @@ jobs:
           operation="$(jq -r '.operation // empty' "$request")"
           target_sha="$(jq -r '.targetSha // empty' "$request")"
           expected_old_sha="$(jq -r '.expectedOldSha // empty' "$request")"
+          target_ref="$(jq -r '.targetRef // empty' "$request")"
           issue_identifier="$(jq -r '.issueIdentifier // empty' "$request")"
           confirm="$(jq -r '.confirm // empty' "$request")"
 
@@ -49,6 +50,11 @@ jobs:
           if [[ "$operation" == "deploy-email-plugin" ]]; then
             [[ "$target_sha" =~ $sha_re ]] || { echo "Invalid targetSha" >&2; exit 41; }
             [[ "$expected_old_sha" =~ $sha_re ]] || { echo "Invalid expectedOldSha" >&2; exit 42; }
+            [[ -n "$target_ref" && "$target_ref" != -* ]] || { echo "Invalid targetRef" >&2; exit 47; }
+            git check-ref-format --branch "$target_ref" >/dev/null 2>&1 || { echo "Invalid targetRef" >&2; exit 47; }
+          elif [[ -n "$target_ref" ]]; then
+            echo "targetRef is only allowed for deploy-email-plugin" >&2
+            exit 48
           fi
 
           if [[ "$operation" == "test-ceo-task-access" ]]; then
@@ -68,6 +74,7 @@ jobs:
           echo "operation=$operation" >> "$GITHUB_OUTPUT"
           echo "target_sha=$target_sha" >> "$GITHUB_OUTPUT"
           echo "expected_old_sha=$expected_old_sha" >> "$GITHUB_OUTPUT"
+          echo "target_ref=$target_ref" >> "$GITHUB_OUTPUT"
           echo "issue_identifier=$issue_identifier" >> "$GITHUB_OUTPUT"
 
       - name: Install bounded SSH identity
@@ -92,6 +99,7 @@ jobs:
           OPERATION: ${{ steps.request.outputs.operation }}
           TARGET_SHA: ${{ steps.request.outputs.target_sha }}
           EXPECTED_OLD_SHA: ${{ steps.request.outputs.expected_old_sha }}
+          TARGET_REF: ${{ steps.request.outputs.target_ref }}
           ISSUE_IDENTIFIER: ${{ steps.request.outputs.issue_identifier }}
         run: |
           set -uo pipefail
@@ -107,7 +115,7 @@ jobs:
             case "$OPERATION" in
               deploy-email-plugin)
                 ssh "${ssh_opts[@]}" root@69.62.69.140 \
-                  "deploy-email-plugin $EXPECTED_OLD_SHA $TARGET_SHA"
+                  "deploy-email-plugin $EXPECTED_OLD_SHA $TARGET_SHA $TARGET_REF"
                 ;;
               health|live-shadow-report|operator-version|inspect-ceo-config|repair-ceo-instructions|restart-staging-service|diagnostic-bundle)
                 ssh "${ssh_opts[@]}" root@69.62.69.140 "$OPERATION"
