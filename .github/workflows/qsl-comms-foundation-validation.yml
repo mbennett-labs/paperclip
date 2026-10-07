@@ -33,29 +33,32 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Targeted low-confidence regression
-        run: pnpm exec vitest run packages/plugins/plugin-email/tests/conversation-unsubscribe-safety.spec.ts
+        working-directory: packages/plugins/plugin-email
+        run: pnpm exec vitest run --config vitest.config.ts tests/conversation-unsubscribe-safety.spec.ts
 
       - name: MIME normalization regression
-        run: pnpm exec vitest run packages/plugins/plugin-email/tests/mime.spec.ts
+        working-directory: packages/plugins/plugin-email
+        run: pnpm exec vitest run --config vitest.config.ts tests/mime.spec.ts
 
       - name: Conversation Operator safety slice
+        working-directory: packages/plugins/plugin-email
         run: >-
-          pnpm exec vitest run
-          packages/plugins/plugin-email/tests/conversation-replay.spec.ts
-          packages/plugins/plugin-email/tests/conversation-continuity.spec.ts
-          packages/plugins/plugin-email/tests/conversation-live-shadow-report.spec.ts
-          packages/plugins/plugin-email/tests/conversation-unsubscribe-safety.spec.ts
-          packages/plugins/plugin-email/tests/mime.spec.ts
+          pnpm exec vitest run --config vitest.config.ts
+          tests/conversation-replay.spec.ts
+          tests/conversation-continuity.spec.ts
+          tests/conversation-live-shadow-report.spec.ts
+          tests/conversation-unsubscribe-safety.spec.ts
+          tests/mime.spec.ts
 
       - name: Full plugin-email suite
-        run: pnpm exec vitest run packages/plugins/plugin-email/tests
+        working-directory: packages/plugins/plugin-email
+        run: pnpm exec vitest run --config vitest.config.ts
 
       - name: Plugin-email typecheck
-        run: ./node_modules/.bin/tsc --noEmit -p packages/plugins/plugin-email/tsconfig.json
+        run: pnpm --filter @qsl/plugin-email typecheck
 
       - name: Plugin-email build
-        working-directory: packages/plugins/plugin-email
-        run: node esbuild.config.mjs
+        run: pnpm --filter @qsl/plugin-email build
 
       - name: Publish validation result
         if: always()
