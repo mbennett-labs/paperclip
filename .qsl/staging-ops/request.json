@@ -1,9 +1,9 @@
 {
-  "operation": "diagnostic-bundle",
+  "operation": "live-shadow-report",
   "targetSha": "",
   "targetRef": "",
   "expectedOldSha": "",
   "issueIdentifier": "",
   "confirm": "",
-  "nonce": "2026-10-07T21:08:00Z"
+  "nonce": "2026-10-07T21:12:30Z"
 }
