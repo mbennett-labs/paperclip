@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="qsl-staging-ops-v1.1.1"
+VERSION="qsl-staging-ops-v1.2.0"
 SERVICE="paperclip-thebinmap-staging.service"
 STAGING_USER="paperclip-thebinmap-staging"
 STAGING_ROOT="/home/paperclip-thebinmap-staging/.paperclip-staging/instances/thebinmap-email-ops-staging"
@@ -12,6 +12,8 @@ CEO_ID="0fed0dae-12af-45e4-86a5-0c9bcc8f3ed5"
 CEO_DIR="$STAGING_ROOT/companies/$COMPANY_ID/agents/$CEO_ID/instructions"
 CEO_FILE="$CEO_DIR/AGENTS.md"
 TEMPLATE="/usr/local/share/qsl-staging-ops/CEO_AGENTS.md"
+ENV_A="/etc/paperclip/thebinmap-email-ops-staging.env"
+ENV_B="/etc/paperclip/thebinmap-staging-agent-jwt.env"
 LEGACY="${BASH_SOURCE[0]}.v0"
 
 original="${SSH_ORIGINAL_COMMAND:-${*:-}}"
@@ -31,6 +33,17 @@ fail() {
 
 require_no_extra_args() {
   [[ ${#argv[@]} -eq 1 ]] || fail "unexpected arguments for $op"
+}
+
+require_sha() {
+  [[ "${1:-}" =~ ^[0-9a-f]{40}$ ]] || fail "invalid SHA"
+}
+
+require_target_ref() {
+  local ref="${1:-}"
+  [[ -n "$ref" ]] || fail "missing target ref"
+  [[ "$ref" != -* ]] || fail "invalid target ref"
+  git check-ref-format --branch "$ref" >/dev/null 2>&1 || fail "invalid target ref"
 }
 
 api_get() {
@@ -153,9 +166,105 @@ bridge_dispatch_readonly() {
   fi
 }
 
+
+# Deploy exactly one reviewed fast-forward descendant from an explicit remote
+# branch ref. The requested target SHA remains authoritative; the ref is only
+# the fetch locator and must resolve to that exact SHA.
+deploy_email_plugin() {
+  local expected_old="${1:-}"
+  local target="${2:-}"
+  local target_ref="${3:-}"
+  require_sha "$expected_old"
+  require_sha "$target"
+  require_target_ref "$target_ref"
+
+  cd "$DEPLOY_ROOT"
+  local current old_pid new_pid rollback_ref env_hash_file remote health_json
+  current="$(git rev-parse HEAD)"
+  old_pid="$(systemctl show "$SERVICE" -p MainPID --value)"
+  rollback_ref="rollback/staging-ops-$(date -u +%Y%m%dT%H%M%SZ)"
+  env_hash_file="$(mktemp /tmp/qsl-staging-env.XXXXXX.sha256)"
+  trap 'rm -f "$env_hash_file"' RETURN
+
+  echo "=== PREDEPLOY ==="
+  echo "CURRENT=$current"
+  echo "EXPECTED_OLD=$expected_old"
+  echo "TARGET=$target"
+  echo "TARGET_REF=$target_ref"
+  echo "OLD_PID=$old_pid"
+  echo "ROLLBACK_REF=$rollback_ref"
+
+  [[ "$current" == "$expected_old" ]] || fail "current HEAD does not match expected old SHA"
+  [[ -z "$(git status --porcelain)" ]] || fail "staging working tree is dirty"
+
+  git fetch --no-tags origin "refs/heads/$target_ref"
+  remote="$(git rev-parse FETCH_HEAD)"
+  echo "REMOTE=$remote"
+  [[ "$remote" == "$target" ]] || fail "target ref does not resolve to requested target SHA"
+  git merge-base --is-ancestor "$current" "$target" || fail "target is not a fast-forward descendant"
+
+  git branch "$rollback_ref" "$current"
+  sha256sum "$ENV_A" "$ENV_B" > "$env_hash_file"
+
+  # Keep staging detached from product branches: deploy the exact reviewed SHA
+  # without moving any source branch pointer.
+  git checkout --detach "$target"
+  [[ "$(git rev-parse HEAD)" == "$target" ]] || fail "post-checkout HEAD mismatch"
+
+  echo "=== BUILD EMAIL PLUGIN ==="
+  (
+    cd packages/plugins/plugin-email
+    /usr/local/bin/node22 ./esbuild.config.mjs
+    test -f dist/manifest.js
+    test -f dist/worker.js
+    test -d dist/ui
+  )
+
+  [[ -z "$(git status --porcelain)" ]] || fail "build changed repository state"
+
+  echo "=== RESTART STAGING ==="
+  systemctl restart "$SERVICE"
+
+  health_json=""
+  for _ in $(seq 1 15); do
+    if health_json="$(curl -fsS "$API/health" 2>/dev/null)"; then
+      break
+    fi
+    sleep 2
+  done
+  [[ -n "$health_json" ]] || {
+    journalctl -u "$SERVICE" -n 100 --no-pager || true
+    fail "health endpoint did not recover"
+  }
+
+  new_pid="$(systemctl show "$SERVICE" -p MainPID --value)"
+  echo "ACTIVE=$(systemctl is-active "$SERVICE")"
+  echo "OLD_PID=$old_pid"
+  echo "NEW_PID=$new_pid"
+  echo "--- API HEALTH ---"
+  echo "$health_json"
+  echo "--- PLUGIN HEALTH ---"
+  curl -fsS "$API/plugins/qsl.email/health"
+  echo
+  echo "--- ENV INTEGRITY ---"
+  sha256sum -c "$env_hash_file"
+  echo "--- FINAL GIT ---"
+  echo "HEAD=$(git rev-parse HEAD)"
+  echo "BRANCH=$(git branch --show-current)"
+  [[ -z "$(git status --porcelain)" ]] || fail "final repository state is dirty"
+  echo "TREE=CLEAN:true"
+  echo "QSL_STAGING_OPS_RESULT=DEPLOY_OK"
+}
+
 case "$op" in
-  health|live-shadow-report|deploy-email-plugin)
+  health|live-shadow-report)
     delegate_legacy
+    log_event "PASS"
+    ;;
+
+  deploy-email-plugin)
+    [[ ${#argv[@]} -eq 4 ]] || fail "deploy-email-plugin requires expected-old SHA, target SHA, and target ref"
+    deploy_email_plugin "${argv[1]}" "${argv[2]}" "${argv[3]}"
     log_event "PASS"
     ;;
 
