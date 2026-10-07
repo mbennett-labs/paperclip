@@ -1,0 +1,71 @@
+name: QSL Communications Foundation Validation
+
+on:
+  push:
+    branches:
+      - feat/qsl-comms-foundation-integration-20261007
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  validate-email-safety:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+
+    steps:
+      - name: Checkout candidate
+        uses: actions/checkout@v7
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          version: 9.15.4
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Targeted low-confidence regression
+        run: pnpm exec vitest run packages/plugins/plugin-email/tests/conversation-unsubscribe-safety.spec.ts
+
+      - name: MIME normalization regression
+        run: pnpm exec vitest run packages/plugins/plugin-email/tests/mime.spec.ts
+
+      - name: Conversation Operator safety slice
+        run: >-
+          pnpm exec vitest run
+          packages/plugins/plugin-email/tests/conversation-replay.spec.ts
+          packages/plugins/plugin-email/tests/conversation-continuity.spec.ts
+          packages/plugins/plugin-email/tests/conversation-live-shadow-report.spec.ts
+          packages/plugins/plugin-email/tests/conversation-unsubscribe-safety.spec.ts
+          packages/plugins/plugin-email/tests/mime.spec.ts
+
+      - name: Full plugin-email suite
+        run: pnpm exec vitest run packages/plugins/plugin-email/tests
+
+      - name: Plugin-email typecheck
+        run: ./node_modules/.bin/tsc --noEmit -p packages/plugins/plugin-email/tsconfig.json
+
+      - name: Plugin-email build
+        working-directory: packages/plugins/plugin-email
+        run: node esbuild.config.mjs
+
+      - name: Publish validation result
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RESULT: ${{ job.status }}
+          CANDIDATE_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          gh issue comment 34 --repo "$GITHUB_REPOSITORY" --body "### QSL Communications Foundation Candidate Validation
+
+- candidate_sha: `$CANDIDATE_SHA`
+- result: **$RESULT**
+- workflow_run: `$GITHUB_RUN_ID`
+- scope: low-confidence regression, MIME normalization, Conversation Operator safety slice, full plugin-email suite, typecheck, build
+"
