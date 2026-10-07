@@ -71,10 +71,18 @@ export function decideConversationPolicy(input: ConversationPolicyInput): Conver
     };
   }
 
-  // System/duplicate traffic has already returned above. Everything else with
-  // weak classification evidence must fail closed before any reply-capable
-  // policy branch can run.
-  if (input.sortCategory === "unknown" || input.confidence < 0.5) {
+  // System/duplicate traffic has already returned above. Fail closed when
+  // confidence is weak and the pipeline has only a generic contact label,
+  // while preserving explicit reply/commercial intents handled below.
+  const lowConfidenceUnresolved =
+    input.confidence < 0.5 &&
+    (
+      input.intent === "unknown" ||
+      input.sortCategory === "spam_irrelevant" ||
+      (input.sortCategory === "general_email" && input.intent === "contact_general")
+    );
+
+  if (input.sortCategory === "unknown" || lowConfidenceUnresolved) {
     return {
       state: "human_review",
       riskAuthorityClass: "uncertain",
