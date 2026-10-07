@@ -1,0 +1,9 @@
+{
+  "request_id": "status-20261007-comms-foundation-gate1",
+  "operation": "status",
+  "environment": "staging",
+  "target_ids": [],
+  "payload": {},
+  "authority_approval_id": "",
+  "expected_terminal_state": ""
+}
