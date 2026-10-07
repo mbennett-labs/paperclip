@@ -1,8 +1,8 @@
 {
-  "operation": "diagnostic-bundle",
+  "operation": "health",
   "targetSha": "",
   "expectedOldSha": "",
   "issueIdentifier": "",
   "confirm": "",
-  "nonce": "2026-09-03T21:30:00Z"
+  "nonce": "2026-10-07T18:10:00Z"
 }
