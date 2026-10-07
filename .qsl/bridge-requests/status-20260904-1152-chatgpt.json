@@ -1,0 +1,9 @@
+{
+  "request_id": "status-20260904-1152-chatgpt",
+  "operation": "status",
+  "environment": "staging",
+  "target_ids": [],
+  "payload": {},
+  "authority_approval_id": "",
+  "expected_terminal_state": ""
+}

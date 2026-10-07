@@ -1,0 +1,9 @@
+{
+  "request_id": "list-mail-triage-20260915-2047-email-reconcile",
+  "operation": "list-mail-triage",
+  "environment": "staging",
+  "target_ids": [],
+  "payload": {},
+  "authority_approval_id": "",
+  "expected_terminal_state": ""
+}

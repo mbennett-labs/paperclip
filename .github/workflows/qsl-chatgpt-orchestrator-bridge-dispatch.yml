@@ -1,0 +1,100 @@
+name: QSL ChatGPT Orchestrator Bridge V1 — Dispatch
+
+on:
+  push:
+    branches:
+      - feat/qsl-chatgpt-orchestrator-bridge-v1
+    paths:
+      - ".qsl/bridge-requests/**"
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: staging
+    permissions:
+      contents: write
+      issues: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Configure bridge audit identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Identify changed bridge request file
+        id: changed
+        shell: bash
+        env:
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.event.after }}
+        run: |
+          set -euo pipefail
+
+          files=$(git diff --name-only "${BEFORE}" "${AFTER}" -- '.qsl/bridge-requests/' \
+            | grep -E '^\.qsl/bridge-requests/[A-Za-z0-9_-]+\.json$' || true)
+
+          count=$(printf '%s\n' "$files" | grep -c . || true)
+
+          if [[ "$count" -ne 1 ]]; then
+            echo "BLOCKED: expected exactly one bridge request file in this push, got ${count}"
+            exit 1
+          fi
+
+          request_file="$files"
+          request_id=$(basename "$request_file" .json)
+
+          echo "Dispatching request file: ${request_file}"
+          echo "request_id: ${request_id}"
+
+          echo "request_file=${request_file}" >> "$GITHUB_OUTPUT"
+          echo "request_id=${request_id}" >> "$GITHUB_OUTPUT"
+
+      - name: Install bounded SSH identity
+        shell: bash
+        env:
+          QSL_STAGING_OPS_KEY: ${{ secrets.QSL_STAGING_OPS_KEY }}
+          QSL_STAGING_KNOWN_HOSTS: ${{ secrets.QSL_STAGING_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          test -n "$QSL_STAGING_OPS_KEY"
+          test -n "$QSL_STAGING_KNOWN_HOSTS"
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$QSL_STAGING_OPS_KEY" > ~/.ssh/qsl_staging_ops
+          chmod 600 ~/.ssh/qsl_staging_ops
+          printf '%s\n' "$QSL_STAGING_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+
+      # The bounded SSH dispatcher source is repaired upstream (requestJson is
+      # defined inside callBridgeViaSsh). No runtime patch is applied here.
+
+      - name: Dispatch read-only bridge request via bounded SSH
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PAPERCLIP_COMPANY_ID: ${{ vars.PAPERCLIP_COMPANY_ID || 'f32509d2-8cad-4754-baab-c87148c4c69a' }}
+          BRIDGE_RESULT_ISSUE: "34"
+          BRIDGE_REPO: ${{ github.repository }}
+          BRIDGE_COMMIT: ${{ github.event.after }}
+          BRIDGE_COMMIT_LEDGER: "true"
+        run: |
+          set -euo pipefail
+
+          node scripts/qsl-chatgpt-orchestrator-bridge/dispatch-request.mjs \
+            --request-file "${{ steps.changed.outputs.request_file }}" \
+            --ledger .qsl/bridge-ledger.json \
+            --commit "${BRIDGE_COMMIT}" \
+            --company-id "${PAPERCLIP_COMPANY_ID}" \
+            --result-issue "${BRIDGE_RESULT_ISSUE}" \
+            --repo "${BRIDGE_REPO}" \
+            --transport ssh \
+            --ssh-target "root@69.62.69.140" \
+            --ssh-key "$HOME/.ssh/qsl_staging_ops" \
+            --commit-ledger
