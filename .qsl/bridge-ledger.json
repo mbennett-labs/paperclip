@@ -40,5 +40,11 @@
     "commit": "2acf8a7ccee33520effabe6e3cf61779a3871db6",
     "result": "PASS",
     "processed_at": "2026-10-07T17:58:03.788Z"
+  },
+  "list-mail-triage-20261007-comms-foundation-gate1": {
+    "operation": "list-mail-triage",
+    "commit": "09384e931da63a314e2ddbb03cddbc29a354ae36",
+    "result": "PASS",
+    "processed_at": "2026-10-07T18:00:51.688Z"
   }
 }
