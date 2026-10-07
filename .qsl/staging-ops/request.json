@@ -1,9 +1,9 @@
 {
-  "operation": "live-shadow-report",
+  "operation": "health",
   "targetSha": "",
   "targetRef": "",
   "expectedOldSha": "",
   "issueIdentifier": "",
   "confirm": "",
-  "nonce": "2026-10-07T21:12:30Z"
+  "nonce": "2026-10-07T21:24:30Z"
 }
