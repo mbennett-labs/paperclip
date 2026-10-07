@@ -1,0 +1,154 @@
+name: QSL Staging Operator Bootstrap One-Shot
+
+on:
+  push:
+    branches:
+      - ops/staging-bridge-v0
+    paths:
+      - ".qsl/staging-ops/operator-bootstrap-request.json"
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: qsl-staging-operator-bootstrap
+  cancel-in-progress: false
+
+jobs:
+  bootstrap-operator:
+    runs-on: self-hosted
+    timeout-minutes: 10
+    environment: staging
+
+    steps:
+      - name: Checkout governed ops branch
+        uses: actions/checkout@v7
+        with:
+          ref: ops/staging-bridge-v0
+          fetch-depth: 0
+
+      - name: Validate one-shot request
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          request=.qsl/staging-ops/operator-bootstrap-request.json
+          test -f "$request"
+
+          source_sha="$(jq -r '.sourceSha // empty' "$request")"
+          expected_current="$(jq -r '.expectedCurrentVersion // empty' "$request")"
+          target_version="$(jq -r '.targetVersion // empty' "$request")"
+          expected_staging_sha="$(jq -r '.expectedStagingSha // empty' "$request")"
+          confirm="$(jq -r '.confirm // empty' "$request")"
+
+          [[ "$source_sha" == "58ea29cce31a2dd18f12590cdfa21846dc9a6fbe" ]] || { echo "BLOCKED: unexpected operator source SHA"; exit 41; }
+          [[ "$expected_current" == "qsl-staging-ops-v1.1.1" ]] || { echo "BLOCKED: unexpected current-version gate"; exit 42; }
+          [[ "$target_version" == "qsl-staging-ops-v1.2.0" ]] || { echo "BLOCKED: unexpected target version"; exit 43; }
+          [[ "$expected_staging_sha" == "be6eac052d6215cc3a02bd5f62cb332088bc6f5d" ]] || { echo "BLOCKED: unexpected staging SHA gate"; exit 44; }
+          [[ "$confirm" == "bootstrap-staging-operator" ]] || { echo "BLOCKED: explicit bootstrap confirmation missing"; exit 45; }
+
+          echo "source_sha=$source_sha" >> "$GITHUB_OUTPUT"
+          echo "expected_current=$expected_current" >> "$GITHUB_OUTPUT"
+          echo "target_version=$target_version" >> "$GITHUB_OUTPUT"
+          echo "expected_staging_sha=$expected_staging_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Re-run operator safety tests on source
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash -n .qsl/staging-ops/operator-v1.sh
+          bash -n .qsl/staging-ops/bootstrap-operator-v1.sh
+          bash .qsl/staging-ops/operator-runtime-test.sh
+
+      - name: Verify staging runtime is unchanged before bootstrap
+        id: preflight
+        shell: bash
+        env:
+          SERVICE: paperclip-thebinmap-staging.service
+          EXPECTED_STAGING_SHA: ${{ steps.request.outputs.expected_staging_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$(systemctl is-active "$SERVICE" || true)" == "active" ]] || { echo "BLOCKED: staging service not active"; exit 51; }
+          workdir="$(systemctl show "$SERVICE" -p WorkingDirectory --value)"
+          [[ -n "$workdir" && -d "$workdir/.git" ]] || { echo "BLOCKED: staging workdir unavailable"; exit 52; }
+          [[ "$(git -C "$workdir" rev-parse HEAD)" == "$EXPECTED_STAGING_SHA" ]] || { echo "BLOCKED: staging HEAD changed"; exit 53; }
+          [[ -z "$(git -C "$workdir" status --porcelain)" ]] || { echo "BLOCKED: staging worktree dirty"; exit 54; }
+          echo "workdir=$workdir" >> "$GITHUB_OUTPUT"
+
+      - name: Bootstrap operator with rollback-on-verification-failure
+        id: bootstrap
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ steps.request.outputs.source_sha }}
+          EXPECTED_CURRENT: ${{ steps.request.outputs.expected_current }}
+          TARGET_VERSION: ${{ steps.request.outputs.target_version }}
+          EXPECTED_STAGING_SHA: ${{ steps.request.outputs.expected_staging_sha }}
+          SERVICE: paperclip-thebinmap-staging.service
+          WORKDIR: ${{ steps.preflight.outputs.workdir }}
+        run: |
+          set -euo pipefail
+
+          # The bootstrap script locates the existing forced-command dispatcher,
+          # snapshots it, validates the candidate, and installs only the operator
+          # plus its static CEO template. It does not restart Paperclip.
+          set +e
+          sudo -n bash .qsl/staging-ops/bootstrap-operator-v1.sh "$SOURCE_SHA" | tee /tmp/qsl-operator-bootstrap.out
+          rc=${PIPESTATUS[0]}
+          set -e
+          [[ "$rc" -eq 0 ]] || { echo "BLOCKED: operator bootstrap failed"; exit "$rc"; }
+
+          dispatcher="$(sed -n 's/^DISPATCHER=//p' /tmp/qsl-operator-bootstrap.out | tail -1)"
+          snapshot="$(sed -n 's/^PRE_UPGRADE_SNAPSHOT=//p' /tmp/qsl-operator-bootstrap.out | tail -1)"
+          [[ "$dispatcher" == /* && -f "$dispatcher" ]] || { echo "BLOCKED: dispatcher path not verified"; exit 61; }
+          [[ "$snapshot" == "$dispatcher".pre-* && -f "$snapshot" ]] || { echo "BLOCKED: rollback snapshot not verified"; exit 62; }
+
+          set +e
+          version_out="$(sudo -n env SSH_ORIGINAL_COMMAND=operator-version "$dispatcher" 2>&1)"
+          version_rc=$?
+          set -e
+          first_line="$(printf '%s\n' "$version_out" | head -1)"
+
+          if [[ "$version_rc" -ne 0 || "$first_line" != "$TARGET_VERSION" ]]; then
+            echo "POST_INSTALL_VERSION_CHECK=FAIL"
+            sudo -n install -o root -g root -m 755 "$snapshot" "$dispatcher"
+            restored="$(sudo -n env SSH_ORIGINAL_COMMAND=operator-version "$dispatcher" 2>/dev/null | head -1 || true)"
+            [[ "$restored" == "$EXPECTED_CURRENT" ]] || { echo "CRITICAL: operator rollback verification failed"; exit 63; }
+            echo "OPERATOR_ROLLBACK=PASS"
+            exit 64
+          fi
+
+          [[ "$(systemctl is-active "$SERVICE" || true)" == "active" ]] || { echo "BLOCKED: staging service changed state during operator bootstrap"; exit 65; }
+          [[ "$(git -C "$WORKDIR" rev-parse HEAD)" == "$EXPECTED_STAGING_SHA" ]] || { echo "BLOCKED: staging HEAD changed during operator bootstrap"; exit 66; }
+          [[ -z "$(git -C "$WORKDIR" status --porcelain)" ]] || { echo "BLOCKED: staging tree changed during operator bootstrap"; exit 67; }
+
+          echo "POST_INSTALL_VERSION_CHECK=PASS"
+          echo "LIVE_OPERATOR=$first_line"
+          echo "STAGING_HEAD_UNCHANGED=$EXPECTED_STAGING_SHA"
+          echo "dispatcher=$dispatcher" >> "$GITHUB_OUTPUT"
+          echo "snapshot=$snapshot" >> "$GITHUB_OUTPUT"
+
+      - name: Publish sanitized bootstrap receipt
+        if: always()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RESULT: ${{ job.status }}
+          RUN_ID: ${{ github.run_id }}
+          SOURCE_SHA: ${{ steps.request.outputs.source_sha }}
+          TARGET_VERSION: ${{ steps.request.outputs.target_version }}
+          EXPECTED_STAGING_SHA: ${{ steps.request.outputs.expected_staging_sha }}
+        run: |
+          set -euo pipefail
+          {
+            echo "### QSL Staging Operator Bootstrap"
+            echo
+            echo "- result: **$RESULT**"
+            echo "- source_sha: `$SOURCE_SHA`"
+            echo "- target_version: `$TARGET_VERSION`"
+            echo "- staging_head_required_unchanged: `$EXPECTED_STAGING_SHA`"
+            echo "- run_id: `$RUN_ID`"
+            echo
+            echo "Bounded operator repair only. No product deployment, production change, credentials, polling, or outbound email authorized by this workflow."
+          } > /tmp/qsl-bootstrap-receipt.md
+          gh issue comment 34 --repo "$GITHUB_REPOSITORY" --body-file /tmp/qsl-bootstrap-receipt.md
