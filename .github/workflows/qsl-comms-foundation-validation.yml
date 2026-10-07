@@ -32,6 +32,9 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Build plugin SDK test dependencies
+        run: pnpm --filter @paperclipai/plugin-sdk ensure-build-deps
+
       - name: Targeted low-confidence regression
         working-directory: packages/plugins/plugin-email
         run: pnpm exec vitest run --config vitest.config.ts tests/conversation-unsubscribe-safety.spec.ts
