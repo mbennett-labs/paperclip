@@ -92,5 +92,26 @@ else
   say_fail "operator-version did not report a v1 version (got: $version_line)"
 fi
 
+
+# ── Deploy authority input fails closed before host access ───────────────────
+deploy_err="$(mktemp)"
+zero_sha="0000000000000000000000000000000000000000"
+one_sha="1111111111111111111111111111111111111111"
+deploy_status=0
+bash "$OPERATOR" deploy-email-plugin "$zero_sha" "$one_sha" "-invalid-ref" >/dev/null 2>"$deploy_err" || deploy_status=$?
+if [ "$deploy_status" -ne 0 ] && grep -q "invalid target ref" "$deploy_err"; then
+  say_pass "deploy rejects unsafe target ref before touching staging"
+else
+  say_fail "deploy unsafe-ref guard did not fail closed as expected"
+  cat "$deploy_err" >&2
+fi
+rm -f "$deploy_err"
+
+if grep -A8 'deploy-email-plugin)' "$OPERATOR" | grep -q 'deploy_email_plugin'; then
+  say_pass "deploy is owned by V1 operator rather than delegated to legacy V0"
+else
+  say_fail "deploy still appears delegated to legacy V0"
+fi
+
 echo "== $pass passed, $fail failed =="
 [ "$fail" -eq 0 ]
