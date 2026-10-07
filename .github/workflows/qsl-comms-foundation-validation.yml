@@ -3,7 +3,7 @@ name: QSL Communications Foundation Validation
 on:
   push:
     branches:
-      - feat/qsl-comms-foundation-integration-20261007
+      - feat/qsl-comms-foundation-staging-candidate-20261007
 
 permissions:
   contents: read
