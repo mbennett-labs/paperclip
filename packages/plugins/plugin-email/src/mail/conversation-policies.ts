@@ -71,11 +71,10 @@ export function decideConversationPolicy(input: ConversationPolicyInput): Conver
     };
   }
 
-  const lowConfidenceUnresolved =
-    input.confidence < 0.5 &&
-    (input.intent === "unknown" || input.sortCategory === "spam_irrelevant");
-
-  if (input.sortCategory === "unknown" || lowConfidenceUnresolved) {
+  // System/duplicate traffic has already returned above. Everything else with
+  // weak classification evidence must fail closed before any reply-capable
+  // policy branch can run.
+  if (input.sortCategory === "unknown" || input.confidence < 0.5) {
     return {
       state: "human_review",
       riskAuthorityClass: "uncertain",

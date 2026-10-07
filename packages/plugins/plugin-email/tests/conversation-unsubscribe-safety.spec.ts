@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createShadowEvaluation } from "../src/mail/conversation-evaluation.js";
 import { createConversationRecord } from "../src/mail/conversation.js";
-import { decideConversationPolicy } from "../src/mail/conversation-policies.js";
 import { decideDraft } from "../src/mail/drafts.js";
 import { detectSource, extractStoreIntake, normalizeMessage } from "../src/mail/normalize.js";
 import { sortIntakeRecord } from "../src/mail/sorter.js";
@@ -123,24 +122,28 @@ describe("Conversation Operator unsubscribe safety", () => {
     expect(result.conversation.nextAction.kind).toBe("escalate_to_human");
     expect(result.shadow.humanAttentionRequired).toBe(true);
   });
-  it("fails closed for a low-confidence general email before any autonomous policy branch", () => {
-    const decision = decideConversationPolicy({
-      tenant: "thebinmap",
-      sourceType: "unknown",
-      sortCategory: "general_email",
-      intent: "unknown",
-      hasEntityMatch: false,
-      missingInformation: [],
-      hasDraftCandidate: true,
-      commercialSignal: false,
-      confidence: 0,
+  it("fails closed for a real low-confidence general email through the conversation pipeline", () => {
+    const result = replay({
+      subject: "Quick question",
+      from: { name: "Controlled Sender", address: "controlled.sender@example.test" },
+      to: { name: "TheBinMap", address: "michael@thebinmap.com" },
+      bodyText: "Hi — could you take a look at this and let me know what you think? I’m not sure where it belongs.",
     });
 
-    expect(decision.state).toBe("human_review");
-    expect(decision.riskAuthorityClass).toBe("uncertain");
-    expect(decision.draftPolicy).toBe("human_gate");
-    expect(decision.nextAction.kind).toBe("escalate_to_human");
-    expect(decision.nextAction.humanApprovalRequired).toBe(true);
+    expect(result.detection.sourceType).toBe("unknown");
+    expect(result.detection.confidence).toBe(0);
+    expect(result.msg.classHint).toBe("contact_general");
+    expect(result.sortResult.category).toBe("general_email");
+    expect(result.conversation.intent.category).toBe("contact_general");
+    expect(result.conversation.intent.confidence).toBe(0);
+    expect(result.conversation.state).toBe("human_review");
+    expect(result.conversation.riskAuthorityClass).toBe("uncertain");
+    expect(result.conversation.output.mode).toBe("human_gate");
+    expect(result.conversation.nextAction.kind).toBe("escalate_to_human");
+    expect(result.conversation.nextAction.humanApprovalRequired).toBe(true);
+    expect(result.shadow.humanAttentionRequired).toBe(true);
+    expect(result.shadow.humanApprovalRequired).toBe(true);
+    expect(result.shadow.shadowActionKind).toBe("would_escalate");
   });
 
 });

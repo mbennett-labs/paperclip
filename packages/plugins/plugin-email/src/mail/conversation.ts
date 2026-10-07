@@ -282,7 +282,7 @@ export function createConversationRecord(input: ConversationRecordInput): Struct
 
   const outputMode = policy.draftPolicy === "no_reply"
     ? "no_action"
-    : policy.draftPolicy === "human_gate" && !input.draftCandidate
+    : policy.draftPolicy === "human_gate"
       ? "human_gate"
       : "draft";
 
