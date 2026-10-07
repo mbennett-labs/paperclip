@@ -71,10 +71,11 @@ export function decideConversationPolicy(input: ConversationPolicyInput): Conver
     };
   }
 
-  if (
-    input.sortCategory === "unknown" ||
-    (input.confidence < 0.5 && (input.sortCategory === "spam_irrelevant" || input.intent === "unsubscribe"))
-  ) {
+  const lowConfidenceUnresolved =
+    input.confidence < 0.5 &&
+    (input.intent === "unknown" || input.sortCategory === "spam_irrelevant");
+
+  if (input.sortCategory === "unknown" || lowConfidenceUnresolved) {
     return {
       state: "human_review",
       riskAuthorityClass: "uncertain",

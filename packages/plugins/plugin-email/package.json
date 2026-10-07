@@ -25,10 +25,12 @@
   "license": "UNLICENSED",
   "dependencies": {
     "imapflow": "^1.0.164",
+    "mailparser": "^3.9.20",
     "nodemailer": "^6.9.16"
   },
   "devDependencies": {
     "@paperclipai/plugin-sdk": "workspace:*",
+    "@types/mailparser": "^3.4.6",
     "@types/node": "^22.19.21",
     "@types/nodemailer": "^6.4.17",
     "@types/react": "^19.2.17",

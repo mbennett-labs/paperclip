@@ -1,4 +1,5 @@
 import { ImapFlow } from "imapflow";
+import { extractMimeText } from "./mime.js";
 
 export type ConnectorProfile = {
   key: string;
@@ -64,12 +65,11 @@ export async function fetchUnseen(
       for (const uid of selected) {
         const msg = await client.fetchOne(
           String(uid),
-          { envelope: true, bodyParts: ["text"] },
+          { envelope: true, source: true },
           { uid: true },
         );
         if (!msg) continue;
-        const bodyPart = msg.bodyParts?.get("text");
-        const bodyText = bodyPart ? bodyPart.toString("utf8") : "";
+        const bodyText = msg.source ? await extractMimeText(msg.source) : "";
         out.push({ uid, envelope: msg.envelope ?? {}, bodyText });
       }
     } finally {
@@ -112,12 +112,12 @@ export async function searchBySubject(
       for (const uid of selected) {
         const msg = await client.fetchOne(
           String(uid),
-          { envelope: true, bodyParts: ["text"] },
+          { envelope: true, source: true },
           { uid: true },
         );
         if (!msg) continue;
-        const bodyPart = msg.bodyParts?.get("text");
-        out.push({ uid, envelope: msg.envelope ?? {}, bodyText: bodyPart ? bodyPart.toString("utf8") : "" });
+        const bodyText = msg.source ? await extractMimeText(msg.source) : "";
+        out.push({ uid, envelope: msg.envelope ?? {}, bodyText });
       }
       return out;
     } finally {
