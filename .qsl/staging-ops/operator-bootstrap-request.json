@@ -1,7 +1,0 @@
-{
-  "sourceSha": "58ea29cce31a2dd18f12590cdfa21846dc9a6fbe",
-  "expectedCurrentVersion": "qsl-staging-ops-v1.1.1",
-  "targetVersion": "qsl-staging-ops-v1.2.0",
-  "expectedStagingSha": "be6eac052d6215cc3a02bd5f62cb332088bc6f5d",
-  "confirm": "bootstrap-staging-operator"
-}
