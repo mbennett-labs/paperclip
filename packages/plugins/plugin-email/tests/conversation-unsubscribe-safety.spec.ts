@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { createShadowEvaluation } from "../src/mail/conversation-evaluation.js";
 import { createConversationRecord } from "../src/mail/conversation.js";
+import { decideConversationPolicy } from "../src/mail/conversation-policies.js";
 import { decideDraft } from "../src/mail/drafts.js";
 import { detectSource, extractStoreIntake, normalizeMessage } from "../src/mail/normalize.js";
 import { sortIntakeRecord } from "../src/mail/sorter.js";
@@ -122,4 +123,24 @@ describe("Conversation Operator unsubscribe safety", () => {
     expect(result.conversation.nextAction.kind).toBe("escalate_to_human");
     expect(result.shadow.humanAttentionRequired).toBe(true);
   });
+  it("fails closed for a low-confidence general email before any autonomous policy branch", () => {
+    const decision = decideConversationPolicy({
+      tenant: "thebinmap",
+      sourceType: "unknown",
+      sortCategory: "general_email",
+      intent: "unknown",
+      hasEntityMatch: false,
+      missingInformation: [],
+      hasDraftCandidate: true,
+      commercialSignal: false,
+      confidence: 0,
+    });
+
+    expect(decision.state).toBe("human_review");
+    expect(decision.riskAuthorityClass).toBe("uncertain");
+    expect(decision.draftPolicy).toBe("human_gate");
+    expect(decision.nextAction.kind).toBe("escalate_to_human");
+    expect(decision.nextAction.humanApprovalRequired).toBe(true);
+  });
+
 });
