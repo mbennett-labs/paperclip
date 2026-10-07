@@ -1,9 +1,9 @@
 {
-  "operation": "deploy-email-plugin",
-  "targetSha": "fdf97cec5bfed232c00541c4c95e58a903a9ab4d",
-  "targetRef": "feat/qsl-comms-foundation-staging-candidate-20261007",
-  "expectedOldSha": "be6eac052d6215cc3a02bd5f62cb332088bc6f5d",
+  "operation": "live-shadow-report",
+  "targetSha": "",
+  "targetRef": "",
+  "expectedOldSha": "",
   "issueIdentifier": "",
   "confirm": "",
-  "nonce": "2026-10-07T20:35:00Z"
+  "nonce": "2026-10-07T20:36:00Z"
 }
