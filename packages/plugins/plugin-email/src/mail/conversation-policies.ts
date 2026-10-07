@@ -71,10 +71,7 @@ export function decideConversationPolicy(input: ConversationPolicyInput): Conver
     };
   }
 
-  if (
-    input.sortCategory === "unknown" ||
-    (input.confidence < 0.5 && (input.sortCategory === "spam_irrelevant" || input.intent === "unsubscribe"))
-  ) {
+  if (input.sortCategory === "unknown" || input.confidence < 0.5) {
     return {
       state: "human_review",
       riskAuthorityClass: "uncertain",
