@@ -1,9 +1,9 @@
 {
-  "operation": "live-shadow-report",
+  "operation": "operator-version",
   "targetSha": "",
   "targetRef": "",
   "expectedOldSha": "",
   "issueIdentifier": "",
   "confirm": "",
-  "nonce": "2026-10-08T01:36:00Z"
+  "nonce": "2026-10-08T18:31:00Z"
 }
