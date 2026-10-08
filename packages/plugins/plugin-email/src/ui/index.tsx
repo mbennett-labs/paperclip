@@ -16,6 +16,7 @@ type ThreadRecord = {
   profileKey: string;
   from: string;
   fromAddress: string;
+  replyAddress?: string;
   to: string;
   subject: string;
   date: string;
@@ -89,7 +90,7 @@ export function EmailIssueTab({ context }: PluginDetailTabProps) {
     const thread = data?.thread;
     if (!thread || data?.sent) return;
     const candidate = data?.draftCandidate?.candidate ?? null;
-    setDraftSubject(data?.draft?.subject ?? candidate?.subject ?? `Re: ${thread.subject.replace(/^Re:\\s*/i, "")}`);
+    setDraftSubject(data?.draft?.subject ?? candidate?.subject ?? `Re: ${thread.subject.replace(/^Re:\s*/i, "")}`);
     setDraftText(data?.draft?.text ?? candidate?.body ?? "");
   }, [
     data?.thread?.messageId,
@@ -194,7 +195,7 @@ export function EmailIssueTab({ context }: PluginDetailTabProps) {
           <div style={{ fontWeight: 700 }}>Governed reply</div>
           <div style={row}>
             <span style={label}>Reply To</span>
-            <span>{thread.fromAddress}</span>
+            <span>{thread.replyAddress || thread.fromAddress}</span>
             <span style={{ opacity: 0.55, fontSize: 11 }}>fixed to original sender in v1</span>
           </div>
           <label style={{ display: "grid", gap: 4 }}>
@@ -245,7 +246,7 @@ export function EmailIssueTab({ context }: PluginDetailTabProps) {
             </div>
           ) : (
             <div style={{ display: "grid", gap: 8 }}>
-              <div style={{ fontWeight: 600 }}>Send this reply to {draft?.to ?? thread.fromAddress}?</div>
+              <div style={{ fontWeight: 600 }}>Send this reply to {draft?.to ?? thread.replyAddress ?? thread.fromAddress}?</div>
               <div style={{ opacity: 0.75, fontSize: 12 }}>This is an external effect. Only continue after approving the current Reply draft review card in the issue thread. The send is recorded permanently with its Message-ID.</div>
               <div style={{ display: "flex", gap: 8 }}>
                 <button style={btn} disabled={busy} onClick={() => setConfirming(false)}>Cancel</button>
