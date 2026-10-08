@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  detectSource,
   firstAddress,
   issueDescriptionFor,
   issueTitleFor,
@@ -197,6 +198,41 @@ describe("classification (classify)", () => {
   it("falls back to unknown for unrecognized content", () => {
     const result = classifyMsg("Random Message", "rando@example.com", "just saying hi, nothing special here");
     expect(result).toBe("unknown");
+  });
+});
+
+describe("provider boundary — QSL Formspree vs TheBinMap Web3Forms", () => {
+  it("routes QSL security review Formspree notifications to the QSL security-review source", () => {
+    const detection = detectSource(
+      "QSL Security Review Request",
+      "notifications@formspree.io",
+      "Name: Example\nCompany: Example Co\nMessage: Please review our AI security posture.",
+    );
+    expect(detection.sourceType).toBe("qsl_security_review");
+    expect(detection.sourceForm).toBe("qsl_security_review_form");
+    expect(detection.brand).toBe("qsl");
+  });
+
+  it("routes QSL risk-calculator Formspree notifications to the QSL risk lead source", () => {
+    const detection = detectSource(
+      "QSL Risk Calculator - New Lead",
+      "notifications@formspree.io",
+      "risk_score: 72\ncompany: Example Co",
+    );
+    expect(detection.sourceType).toBe("qsl_risk_calculator");
+    expect(detection.sourceForm).toBe("qsl_risk_calc");
+    expect(detection.brand).toBe("qsl");
+  });
+
+  it("keeps TheBinMap Web3Forms submissions on the TheBinMap source path", () => {
+    const detection = detectSource(
+      "New store submission — TheBinMap",
+      "notifications@web3forms.com",
+      "Store Name: Test Bins\nAddress: 1 Main St\nCity: Nashville\nState: TN\nSent via https://thebinmap.com/",
+    );
+    expect(detection.sourceType).toBe("store_submission");
+    expect(detection.sourceForm).toBe("thebinmap_submit");
+    expect(detection.brand).toBe("thebinmap");
   });
 });
 
