@@ -226,7 +226,7 @@ export function EmailIssueTab({ context }: PluginDetailTabProps) {
               {draftBusy ? "Saving..." : draft ? "Save new revision for review" : "Save draft for review"}
             </button>
             <span style={{ opacity: 0.65, fontSize: 11 }}>
-              Saving never sends. It creates a versioned <code>reply-draft</code> and a native Paperclip approval card.
+              Saving never sends. It creates a versioned <code>reply-draft</code> and a native Paperclip reply-review card.
             </span>
           </div>
           {data.draftCandidate && !draft ? (
