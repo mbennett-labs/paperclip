@@ -80,6 +80,23 @@ describe("normalizeMessage", () => {
     expect(msg.fromAddress).toBe("john@example.com");
   });
 
+  it("uses Reply-To as the authoritative reply address while preserving transport sender", () => {
+    const msg = normalizeMessage({
+      ...baseInput,
+      envelope: {
+        ...makeEnv("notifications@web3forms.com", "info@thebinmap.com"),
+        replyTo: [{ name: "Bassam", address: "customer@example.com" }],
+      },
+    });
+    expect(msg.fromAddress).toBe("notifications@web3forms.com");
+    expect(msg.replyAddress).toBe("customer@example.com");
+  });
+
+  it("falls back to From when Reply-To is absent", () => {
+    const msg = normalizeMessage(baseInput);
+    expect(msg.replyAddress).toBe("john@example.com");
+  });
+
   it("truncates large body text", () => {
     const bigBody = "x".repeat(25000);
     const msg = normalizeMessage({ ...baseInput, bodyText: bigBody });
