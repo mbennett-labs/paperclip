@@ -75,6 +75,7 @@ import {
 import {
   decideDraft,
   formatDraftDocument,
+  formatReplyDraftDocument,
   type DraftCandidate,
 } from "./mail/drafts.js";
 import {
@@ -125,6 +126,8 @@ type ThreadRecord = {
   inReplyTo: string | null;
   references: string[];
   snippet: string;
+  /** Normalized plain-text message body for governed issue review. Optional for legacy records. */
+  bodyText?: string;
   classHint: string;
   ventureHint: string;
   issueId: string;
@@ -387,6 +390,7 @@ async function ingestMessage(
     inReplyTo: msg.inReplyTo,
     references: msg.references,
     snippet: msg.snippet,
+    bodyText: msg.bodyText,
     classHint: msg.classHint,
     ventureHint: msg.ventureHint,
     issueId: issue.id,
@@ -1333,7 +1337,118 @@ const plugin = definePlugin({
       return { ok: true, profileKey, uid };
     });
 
-    ctx.actions.register("send-reply", async (params) => {
+    ctx.actions.register("save-reply-draft", async (params, actionCtx) => {
+      const companyId = params?.companyId as string;
+      if (!companyId) throw configError("save-reply-draft requires companyId.");
+      const issueId = params?.issueId as string;
+      if (!issueId) throw configError("save-reply-draft requires issueId.");
+
+      const actorUserId = actionCtx?.actor?.userId;
+      if (!actorUserId) {
+        throw configError("save-reply-draft requires authenticated user context.");
+      }
+
+      const sent = await ctx.state.get({ scopeKind: "issue", scopeId: issueId, namespace: STATE_NS, stateKey: "sent" });
+      if (sent) throw configError("A reply has already been sent for this issue. Refusing to replace the completed reply.");
+
+      const thread = (await ctx.state.get({ scopeKind: "issue", scopeId: issueId, namespace: STATE_NS, stateKey: "thread" })) as ThreadRecord | null;
+      if (!thread) throw configError("No inbound email thread is linked to this issue.");
+      if (!thread.fromAddress) throw configError("Inbound email has no safe reply address.");
+
+      const subject = typeof params?.subject === "string" ? params.subject.trim() : "";
+      const text = typeof params?.text === "string" ? params.text.trim() : "";
+      if (!subject) throw configError("Reply subject is required.");
+      if (subject.length > 998) throw configError("Reply subject is too long.");
+      if (!text) throw configError("Reply body is required.");
+      if (text.length > 20000) throw configError("Reply body must be 20000 characters or fewer.");
+
+      // V1 deliberately fixes the recipient to the original sender. A Board
+      // operator may edit subject/body, but cannot accidentally redirect a
+      // customer reply to a different address from this UI.
+      const formatted = formatReplyDraftDocument({
+        to: thread.fromAddress,
+        subject,
+        body: text,
+      });
+
+      const existing = await ctx.issues.documents.get(issueId, "reply-draft", companyId).catch(() => null);
+      const document = existing?.body === formatted
+        ? existing
+        : await ctx.issues.documents.upsert({
+            issueId,
+            key: "reply-draft",
+            body: formatted,
+            companyId,
+            title: "Reply draft",
+            format: "markdown",
+            changeSummary: "Board saved reply draft for governed review.",
+          });
+
+      if (!document.latestRevisionId) {
+        throw configError("Reply draft was saved but has no revision ID; refusing to request approval.");
+      }
+
+      const review = await ctx.issues.requestConfirmation(
+        issueId,
+        {
+          idempotencyKey: `email-reply-review:${document.latestRevisionId}`,
+          title: "Reply draft review",
+          summary: `Review the proposed reply to ${thread.fromAddress} before any external send.`,
+          continuationPolicy: "wake_assignee",
+          payload: {
+            version: 1,
+            prompt: `Approve this reply draft for external send to ${thread.fromAddress}?`,
+            acceptLabel: "Approve reply",
+            rejectLabel: "Reject / revise",
+            allowDeclineReason: true,
+            declineReasonPlaceholder: "What should change before this reply is sent?",
+            detailsMarkdown: formatted,
+            supersedeOnUserComment: false,
+            target: {
+              type: "issue_document",
+              issueId,
+              documentId: document.id,
+              key: "reply-draft",
+              revisionId: document.latestRevisionId,
+              revisionNumber: document.latestRevisionNumber,
+              label: "Reply draft",
+            },
+          },
+        },
+        companyId,
+      );
+
+      await ctx.activity.log({
+        companyId,
+        message: `Reply draft revision ${document.latestRevisionNumber} saved for governed review on issue ${issueId}`,
+        entityType: "issue",
+        entityId: issueId,
+        metadata: {
+          action: "reply_draft_saved_for_review",
+          actorUserId,
+          recipient: thread.fromAddress,
+          documentId: document.id,
+          revisionId: document.latestRevisionId,
+          revisionNumber: document.latestRevisionNumber,
+          interactionId: review.id,
+        },
+      });
+
+      return {
+        ok: true,
+        recipient: thread.fromAddress,
+        documentId: document.id,
+        revisionId: document.latestRevisionId,
+        revisionNumber: document.latestRevisionNumber,
+        reviewInteractionId: review.id,
+      };
+    });
+
+    ctx.actions.register("send-reply", async (params, actionCtx) => {
+      const actorUserId = actionCtx?.actor?.userId;
+      if (!actorUserId) {
+        throw configError("send-reply requires authenticated user context.");
+      }
       const companyId = params?.companyId as string;
       if (!companyId) throw configError("send-reply requires companyId.");
       const config = (await ctx.config.get(companyId)) as EmailPluginConfig;
@@ -1353,13 +1468,12 @@ const plugin = definePlugin({
       if (!thread) throw configError("No inbound email thread is linked to this issue.");
 
       const doc = await ctx.issues.documents.get(issueId, "reply-draft", companyId).catch(() => null);
-      const overrideBody = typeof params?.body === "string" && params.body.trim() ? params.body.trim() : null;
-      if (!doc?.body && !overrideBody) {
-        throw configError("No reply-draft document on this issue. The Communications Drafter must attach a draft before the Board sends.");
+      if (!doc?.body) {
+        throw configError("No persisted reply-draft document on this issue. Save and review a draft before the Board sends.");
       }
-      const draft = doc?.body ? parseReplyDraft(doc.body) : { to: null, subject: null, text: overrideBody as string };
-      const text = overrideBody ?? draft.text;
-      if (!text) throw configError("The reply draft is empty.");
+      const draft = parseReplyDraft(doc.body);
+      const text = draft.text;
+      if (!text) throw configError("The persisted reply draft is empty.");
 
       const to = draft.to || thread.fromAddress || thread.from;
       const subject = draft.subject || thread.subject;
@@ -1421,7 +1535,7 @@ const plugin = definePlugin({
         message: `Board-approved reply sent for "${thread.subject}" to ${to}`,
         entityType: "issue",
         entityId: issueId,
-        metadata: { sentMessageId: result.sentMessageId, threadMessageId: thread.messageId },
+        metadata: { sentMessageId: result.sentMessageId, threadMessageId: thread.messageId, actorUserId, draftRevisionId: doc.latestRevisionId },
       });
       return { ok: true, sent };
     });
