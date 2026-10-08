@@ -1055,6 +1055,7 @@ const plugin = definePlugin({
               profileKey,
               mailboxUsername: profileKey ? mailboxUsernameByKey.get(profileKey) ?? null : null,
               fromAddress: typeof evidenceRecord?.fromAddress === "string" ? evidenceRecord.fromAddress : null,
+              replyAddress: typeof evidenceRecord?.replyAddress === "string" ? evidenceRecord.replyAddress : null,
               to: typeof evidenceRecord?.to === "string" ? evidenceRecord.to : null,
               messageSubject: typeof evidenceRecord?.subject === "string" ? evidenceRecord.subject : issue.title,
               messageDate: typeof evidenceRecord?.date === "string" ? evidenceRecord.date : issue.createdAt,
