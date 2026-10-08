@@ -196,7 +196,7 @@ export function EmailIssueTab({ context }: PluginDetailTabProps) {
           <div style={row}>
             <span style={label}>Reply To</span>
             <span>{thread.replyAddress || thread.fromAddress}</span>
-            <span style={{ opacity: 0.55, fontSize: 11 }}>fixed to original sender in v1</span>
+            <span style={{ opacity: 0.55, fontSize: 11 }}>locked to inbound Reply-To, falling back to From</span>
           </div>
           <label style={{ display: "grid", gap: 4 }}>
             <span style={{ fontWeight: 600 }}>Subject</span>
