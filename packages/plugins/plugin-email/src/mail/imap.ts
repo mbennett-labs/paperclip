@@ -22,6 +22,7 @@ export type FetchedMessage = {
   envelope: {
     messageId?: string;
     from?: unknown;
+    replyTo?: unknown;
     to?: unknown;
     subject?: string;
     date?: Date | string;
