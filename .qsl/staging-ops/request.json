@@ -1,9 +1,9 @@
 {
-  "operation": "health",
-  "targetSha": "",
-  "targetRef": "",
-  "expectedOldSha": "",
+  "operation": "deploy-email-plugin",
+  "targetSha": "ddadcf915dbce14cc36ac227cb9f605d33bfbbf7",
+  "targetRef": "feat/thebinmap-governed-customer-loop-v1-20261008",
+  "expectedOldSha": "cd8942be1e8ed342ccf2830dbe2091072ed8d0a9",
   "issueIdentifier": "",
   "confirm": "",
-  "nonce": "2026-10-08T18:35:30Z"
+  "nonce": "2026-10-08T18:37:30Z"
 }
