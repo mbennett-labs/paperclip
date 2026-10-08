@@ -3,6 +3,7 @@ import {
   decideDraft,
   prepareDraftDocument,
   formatDraftDocument,
+  formatReplyDraftDocument,
   type DraftCandidate,
 } from "../src/mail/drafts.js";
 import type { IntakeSortCategory } from "../src/mail/sorter.js";
@@ -199,6 +200,28 @@ describe("formatDraftDocument", () => {
     expect(formatted).toContain("To: owner@store.example");
     expect(formatted).toContain("Subject: Re: New store submission — TheBinMap");
     expect(formatted).toContain("\n\nThank you");
+  });
+});
+
+describe("formatReplyDraftDocument", () => {
+  it("formats a Board-edited reply without changing its content", () => {
+    const formatted = formatReplyDraftDocument({
+      to: "owner@example.com",
+      subject: "Re: Store question",
+      body: "Thanks for reaching out.\n\nWe are checking this now.",
+    });
+    expect(formatted).toBe(
+      "To: owner@example.com\nSubject: Re: Store question\n\nThanks for reaching out.\n\nWe are checking this now.",
+    );
+  });
+
+  it("trims outer whitespace but preserves internal line breaks", () => {
+    const formatted = formatReplyDraftDocument({
+      to: " owner@example.com ",
+      subject: " Re: Hello ",
+      body: "  Line one\n\nLine two  ",
+    });
+    expect(formatted).toBe("To: owner@example.com\nSubject: Re: Hello\n\nLine one\n\nLine two");
   });
 });
 

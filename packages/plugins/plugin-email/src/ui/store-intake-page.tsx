@@ -34,6 +34,7 @@ type QueueItem = {
   profileKey: string | null;
   mailboxUsername: string | null;
   fromAddress: string | null;
+  replyAddress: string | null;
   to: string | null;
   messageSubject: string | null;
   messageDate: string | null;
@@ -402,6 +403,7 @@ export function StoreIntakePage({ context }: PluginPageProps) {
           item.profileKey,
           item.mailboxUsername,
           item.fromAddress,
+          item.replyAddress,
           item.to,
           item.conversationIntent,
           item.conversationState,
@@ -595,7 +597,13 @@ export function StoreIntakePage({ context }: PluginPageProps) {
                       </div>
                       <div style={{ marginTop: 2, fontSize: 10, opacity: 0.55 }}>
                         {item.conversationEntityName && displayTitle !== item.conversationEntityName ? displayTitle + " · " : ""}
-                        {item.fromAddress ? "from " + item.fromAddress : item.sourceForm || item.sourceType || "unknown source"}
+                        {item.replyAddress && item.fromAddress && item.replyAddress.toLowerCase() !== item.fromAddress.toLowerCase()
+                          ? `from ${item.replyAddress} · via ${item.fromAddress}`
+                          : item.replyAddress
+                            ? "from " + item.replyAddress
+                            : item.fromAddress
+                              ? "from " + item.fromAddress
+                              : item.sourceForm || item.sourceType || "unknown source"}
                       </div>
                     </td>
                     <td style={tdStyle}>

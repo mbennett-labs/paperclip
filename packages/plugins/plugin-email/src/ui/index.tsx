@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   usePluginAction,
   usePluginData,
@@ -16,10 +16,12 @@ type ThreadRecord = {
   profileKey: string;
   from: string;
   fromAddress: string;
+  replyAddress?: string;
   to: string;
   subject: string;
   date: string;
   snippet: string;
+  bodyText?: string;
   classHint: string;
   ventureHint: string;
   ingestedAt: string;
@@ -37,6 +39,17 @@ type IssueEmailData = {
   thread: ThreadRecord | null;
   sent: SentRecord | null;
   draft: { to: string | null; subject: string | null; text: string } | null;
+  draftCandidate: {
+    candidate: {
+      kind: string;
+      to: string;
+      subject: string;
+      body: string;
+      reason: string;
+    };
+    generatedAt: string;
+    reason: string;
+  } | null;
 };
 
 type MailboxStatus = {
@@ -61,11 +74,32 @@ export function EmailIssueTab({ context }: PluginDetailTabProps) {
   const { data, loading, error, refresh } = usePluginData<IssueEmailData>("issue-email", { issueId, companyId });
   const { data: configData } = usePluginData<{ outboundEnabled?: boolean } | null>("plugin-config", { companyId });
   const sendReply = usePluginAction("send-reply");
+  const saveReplyDraft = usePluginAction("save-reply-draft");
   const [confirming, setConfirming] = useState(false);
   const [busy, setBusy] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
+  const [draftSubject, setDraftSubject] = useState("");
+  const [draftText, setDraftText] = useState("");
+  const [draftBusy, setDraftBusy] = useState(false);
+  const [draftError, setDraftError] = useState<string | null>(null);
+  const [draftSuccess, setDraftSuccess] = useState<string | null>(null);
 
   const outboundEnabled = configData?.outboundEnabled === true;
+
+  useEffect(() => {
+    const thread = data?.thread;
+    if (!thread || data?.sent) return;
+    const candidate = data?.draftCandidate?.candidate ?? null;
+    setDraftSubject(data?.draft?.subject ?? candidate?.subject ?? `Re: ${thread.subject.replace(/^Re:\s*/i, "")}`);
+    setDraftText(data?.draft?.text ?? candidate?.body ?? "");
+  }, [
+    data?.thread?.messageId,
+    data?.thread?.subject,
+    data?.draft?.subject,
+    data?.draft?.text,
+    data?.draftCandidate?.generatedAt,
+    data?.sent?.sentMessageId,
+  ]);
 
   if (loading) return <div style={box}>Loading email record…</div>;
   if (error) return <div style={box}><span style={errStyle}>Error: {error.message}</span></div>;
@@ -74,6 +108,33 @@ export function EmailIssueTab({ context }: PluginDetailTabProps) {
   }
 
   const { thread, sent, draft } = data;
+
+  async function handleSaveDraft() {
+    if (!draftSubject.trim() || !draftText.trim()) return;
+    setDraftBusy(true);
+    setDraftError(null);
+    setDraftSuccess(null);
+    try {
+      const result = await saveReplyDraft({
+        issueId,
+        companyId,
+        subject: draftSubject,
+        text: draftText,
+      }) as { ok?: boolean; revisionNumber?: number; reviewInteractionId?: string } | undefined;
+      if (!result?.ok) {
+        setDraftError("Draft save failed. Check the worker log.");
+        return;
+      }
+      setDraftSuccess(
+        `Draft revision ${result.revisionNumber ?? "saved"} is ready for review. A Paperclip reply-review card was created on this issue.`,
+      );
+      refresh();
+    } catch (err) {
+      setDraftError(err instanceof Error ? err.message : "Draft save failed");
+    } finally {
+      setDraftBusy(false);
+    }
+  }
 
   async function handleSend() {
     setBusy(true);
@@ -102,6 +163,23 @@ export function EmailIssueTab({ context }: PluginDetailTabProps) {
         <div style={row}><span style={label}>Class / venture</span><span><code>{thread.classHint}</code> / <code>{thread.ventureHint}</code> (hints)</span></div>
         <div style={row}><span style={label}>Message-ID</span><span style={mono}>{thread.messageId}</span></div>
         <div style={row}><span style={label}>Profile</span><span>{thread.profileKey}</span></div>
+        <div style={{ marginTop: 4, fontWeight: 700 }}>Message</div>
+        <div style={{
+          whiteSpace: "pre-wrap",
+          maxHeight: 360,
+          overflow: "auto",
+          border: "1px solid rgba(127,127,127,0.25)",
+          borderRadius: 6,
+          padding: 10,
+          lineHeight: 1.45,
+        }}>
+          {thread.bodyText || thread.snippet || "(No message text retained.)"}
+        </div>
+        {!thread.bodyText ? (
+          <div style={{ opacity: 0.6, fontSize: 11 }}>
+            Legacy intake record: only the stored message snippet is available. New intake retains the bounded normalized body for governed review.
+          </div>
+        ) : null}
       </div>
 
       {sent ? (
@@ -115,27 +193,61 @@ export function EmailIssueTab({ context }: PluginDetailTabProps) {
       ) : (
         <div style={card}>
           <div style={{ fontWeight: 700 }}>Governed reply</div>
-          {draft ? (
-            <>
-              <div style={row}><span style={label}>Draft To</span><span>{draft.to ?? thread.fromAddress}</span></div>
-              <div style={row}><span style={label}>Draft Subject</span><span>{draft.subject ?? `Re: ${thread.subject}`}</span></div>
-              <div style={{ whiteSpace: "pre-wrap", maxHeight: 220, overflow: "auto", border: "1px dashed rgba(127,127,127,0.4)", borderRadius: 6, padding: 8 }}>{draft.text}</div>
-            </>
-          ) : (
-            <div style={{ opacity: 0.75 }}>No <code>reply-draft</code> document yet. The Communications Drafter attaches one; only then can the Board send.</div>
-          )}
+          <div style={row}>
+            <span style={label}>Reply To</span>
+            <span>{thread.replyAddress || thread.fromAddress}</span>
+            <span style={{ opacity: 0.55, fontSize: 11 }}>fixed to original sender in v1</span>
+          </div>
+          <label style={{ display: "grid", gap: 4 }}>
+            <span style={{ fontWeight: 600 }}>Subject</span>
+            <input
+              value={draftSubject}
+              onChange={(event) => setDraftSubject(event.target.value)}
+              disabled={draftBusy}
+              style={{ padding: "7px 9px", borderRadius: 6, border: "1px solid rgba(127,127,127,0.4)" }}
+            />
+          </label>
+          <label style={{ display: "grid", gap: 4 }}>
+            <span style={{ fontWeight: 600 }}>Reply body</span>
+            <textarea
+              value={draftText}
+              onChange={(event) => setDraftText(event.target.value)}
+              disabled={draftBusy}
+              rows={10}
+              style={{ padding: "9px", borderRadius: 6, border: "1px solid rgba(127,127,127,0.4)", resize: "vertical", font: "inherit", lineHeight: 1.45 }}
+            />
+          </label>
+          <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+            <button
+              style={{ ...btn, opacity: draftSubject.trim() && draftText.trim() ? 1 : 0.5 }}
+              disabled={draftBusy || !draftSubject.trim() || !draftText.trim()}
+              onClick={() => void handleSaveDraft()}
+            >
+              {draftBusy ? "Saving..." : draft ? "Save new revision for review" : "Save draft for review"}
+            </button>
+            <span style={{ opacity: 0.65, fontSize: 11 }}>
+              Saving never sends. It creates a versioned <code>reply-draft</code> and a native Paperclip reply-review card.
+            </span>
+          </div>
+          {data.draftCandidate && !draft ? (
+            <div style={{ opacity: 0.65, fontSize: 11 }}>
+              Editor initialized from the generated <code>{data.draftCandidate.candidate.kind}</code> candidate. Review and edit before saving.
+            </div>
+          ) : null}
+          {draftSuccess ? <div style={okStyle}>{draftSuccess}</div> : null}
+          {draftError ? <div style={errStyle}>{draftError}</div> : null}
           {!outboundEnabled ? (
             <div style={errStyle}>Outbound email is disabled for this company. Enable outboundEnabled in plugin settings to send replies.</div>
           ) : !confirming ? (
             <div>
               <button style={{ ...btn, opacity: draft ? 1 : 0.5 }} disabled={!draft || busy} onClick={() => setConfirming(true)}>
-                Send approved reply
+                Send Board-approved reply
               </button>
             </div>
           ) : (
             <div style={{ display: "grid", gap: 8 }}>
-              <div style={{ fontWeight: 600 }}>Send this reply to {draft?.to ?? thread.fromAddress}?</div>
-              <div style={{ opacity: 0.75, fontSize: 12 }}>This is an external effect. It is recorded permanently on the issue timeline with the sent Message-ID.</div>
+              <div style={{ fontWeight: 600 }}>Send this reply to {draft?.to ?? thread.replyAddress ?? thread.fromAddress}?</div>
+              <div style={{ opacity: 0.75, fontSize: 12 }}>This is an external effect. Only continue after approving the current Reply draft review card in the issue thread. The send is recorded permanently with its Message-ID.</div>
               <div style={{ display: "flex", gap: 8 }}>
                 <button style={btn} disabled={busy} onClick={() => setConfirming(false)}>Cancel</button>
                 <button style={{ ...btn, background: "#1e8449", color: "#fff", borderColor: "#1e8449" }} disabled={busy} onClick={() => void handleSend()}>
@@ -145,7 +257,7 @@ export function EmailIssueTab({ context }: PluginDetailTabProps) {
             </div>
           )}
           {sendError ? <div style={errStyle}>{sendError}</div> : null}
-          <div style={{ opacity: 0.6, fontSize: 12 }}>Board-only action. Agents have no send capability in this deployment.</div>
+          <div style={{ opacity: 0.6, fontSize: 12 }}>Board-only action. Agents have no send capability in this deployment. Saving or rejecting a draft does not send email.</div>
         </div>
       )}
     </div>
