@@ -1,0 +1,64 @@
+name: QSL TheBinMap Governed Customer Loop Validation
+
+on:
+  push:
+    branches:
+      - feat/thebinmap-governed-customer-loop-v1-20261008
+
+permissions:
+  contents: read
+
+jobs:
+  validate-governed-customer-loop:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+
+    steps:
+      - name: Checkout candidate
+        uses: actions/checkout@v7
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          version: 9.15.4
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build plugin SDK test dependencies
+        run: pnpm --filter @paperclipai/plugin-sdk ensure-build-deps
+
+      - name: Governed reply regressions
+        working-directory: packages/plugins/plugin-email
+        run: >-
+          pnpm exec vitest run --config vitest.config.ts
+          tests/drafts.spec.ts
+          tests/worker-safety.spec.ts
+          tests/normalize.spec.ts
+          tests/integration-contract.spec.ts
+
+      - name: Communications Foundation safety slice
+        working-directory: packages/plugins/plugin-email
+        run: >-
+          pnpm exec vitest run --config vitest.config.ts
+          tests/conversation-replay.spec.ts
+          tests/conversation-continuity.spec.ts
+          tests/conversation-live-shadow-report.spec.ts
+          tests/conversation-unsubscribe-safety.spec.ts
+          tests/mime.spec.ts
+
+      - name: Full plugin-email suite
+        working-directory: packages/plugins/plugin-email
+        run: pnpm exec vitest run --config vitest.config.ts
+
+      - name: Plugin-email typecheck
+        run: pnpm --filter @qsl/plugin-email typecheck
+
+      - name: Plugin-email build
+        run: pnpm --filter @qsl/plugin-email build
