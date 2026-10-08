@@ -21,6 +21,8 @@ export type NormalizedMessage = {
   profileKey: string;
   from: string;
   fromAddress: string;
+  /** Authoritative reply mailbox from Reply-To, falling back to From. */
+  replyAddress: string;
   to: string;
   subject: string;
   date: string;
@@ -707,6 +709,7 @@ export function normalizeMessage(input: {
   envelope: {
     messageId?: string;
     from?: unknown;
+    replyTo?: unknown;
     to?: unknown;
     subject?: string;
     date?: Date | string;
@@ -718,6 +721,7 @@ export function normalizeMessage(input: {
 }): NormalizedMessage {
   const { envelope } = input;
   const from = decodeAddrList(envelope.from);
+  const replyTo = decodeAddrList(envelope.replyTo);
   const to = decodeAddrList(envelope.to);
   const subject = (envelope.subject ?? "(no subject)").trim() || "(no subject)";
   const body = input.bodyText.replace(/\r\n/g, "\n").trim();
@@ -729,6 +733,7 @@ export function normalizeMessage(input: {
       : [];
   const messageId = envelope.messageId?.trim() || `uid-${input.uid}@${input.profileKey}`;
   const fromAddress = firstAddress(from);
+  const replyAddress = firstAddress(replyTo) || fromAddress;
   const evidenceId = `ev-${createHash("sha1").update(`${messageId}:${input.profileKey}`).digest("hex")}`;
 
   return {
@@ -738,6 +743,7 @@ export function normalizeMessage(input: {
     profileKey: input.profileKey,
     from,
     fromAddress,
+    replyAddress,
     to,
     subject,
     date: envelope.date ? new Date(envelope.date).toISOString() : new Date().toISOString(),
