@@ -1,0 +1,75 @@
+name: QSL Communications Foundation Validation
+
+on:
+  push:
+    branches:
+      - feat/qsl-comms-foundation-staging-candidate-20261007
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  validate-email-safety:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+
+    steps:
+      - name: Checkout candidate
+        uses: actions/checkout@v7
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          version: 9.15.4
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build plugin SDK test dependencies
+        run: pnpm --filter @paperclipai/plugin-sdk ensure-build-deps
+
+      - name: Targeted low-confidence regression
+        working-directory: packages/plugins/plugin-email
+        run: pnpm exec vitest run --config vitest.config.ts tests/conversation-unsubscribe-safety.spec.ts
+
+      - name: MIME normalization regression
+        working-directory: packages/plugins/plugin-email
+        run: pnpm exec vitest run --config vitest.config.ts tests/mime.spec.ts
+
+      - name: Conversation Operator safety slice
+        working-directory: packages/plugins/plugin-email
+        run: >-
+          pnpm exec vitest run --config vitest.config.ts
+          tests/conversation-replay.spec.ts
+          tests/conversation-continuity.spec.ts
+          tests/conversation-live-shadow-report.spec.ts
+          tests/conversation-unsubscribe-safety.spec.ts
+          tests/mime.spec.ts
+
+      - name: Full plugin-email suite
+        working-directory: packages/plugins/plugin-email
+        run: pnpm exec vitest run --config vitest.config.ts
+
+      - name: Plugin-email typecheck
+        run: pnpm --filter @qsl/plugin-email typecheck
+
+      - name: Plugin-email build
+        run: pnpm --filter @qsl/plugin-email build
+
+      - name: Publish validation result
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RESULT: ${{ job.status }}
+          CANDIDATE_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          BODY=$(printf '### QSL Communications Foundation Candidate Validation\n\n- candidate_sha: `%s`\n- result: **%s**\n- workflow_run: `%s`\n- scope: low-confidence regression, MIME normalization, Conversation Operator safety slice, full plugin-email suite, typecheck, build\n' "$CANDIDATE_SHA" "$RESULT" "$GITHUB_RUN_ID")
+          gh issue comment 34 --repo "$GITHUB_REPOSITORY" --body "$BODY"

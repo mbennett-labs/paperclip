@@ -122,4 +122,28 @@ describe("Conversation Operator unsubscribe safety", () => {
     expect(result.conversation.nextAction.kind).toBe("escalate_to_human");
     expect(result.shadow.humanAttentionRequired).toBe(true);
   });
+  it("fails closed for a real low-confidence general email through the conversation pipeline", () => {
+    const result = replay({
+      subject: "Quick question",
+      from: { name: "Controlled Sender", address: "controlled.sender@example.test" },
+      to: { name: "TheBinMap", address: "michael@thebinmap.com" },
+      bodyText: "Hi — could you take a look at this and let me know what you think? I’m not sure where it belongs.",
+    });
+
+    expect(result.detection.sourceType).toBe("unknown");
+    expect(result.detection.confidence).toBe(0);
+    expect(result.msg.classHint).toBe("contact_general");
+    expect(result.sortResult.category).toBe("general_email");
+    expect(result.conversation.intent.category).toBe("contact_general");
+    expect(result.conversation.intent.confidence).toBe(0);
+    expect(result.conversation.state).toBe("human_review");
+    expect(result.conversation.riskAuthorityClass).toBe("uncertain");
+    expect(result.conversation.output.mode).toBe("human_gate");
+    expect(result.conversation.nextAction.kind).toBe("escalate_to_human");
+    expect(result.conversation.nextAction.humanApprovalRequired).toBe(true);
+    expect(result.shadow.humanAttentionRequired).toBe(true);
+    expect(result.shadow.humanApprovalRequired).toBe(true);
+    expect(result.shadow.shadowActionKind).toBe("would_escalate");
+  });
+
 });
