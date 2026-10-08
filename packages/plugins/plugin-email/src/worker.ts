@@ -120,6 +120,8 @@ type ThreadRecord = {
   profileKey: string;
   from: string;
   fromAddress: string;
+  /** Safe reply target captured from Reply-To, falling back to From. */
+  replyAddress?: string;
   to: string;
   subject: string;
   date: string;
@@ -164,6 +166,7 @@ type IntakeEvidence = {
   profileKey: string;
   from: string;
   fromAddress: string;
+  replyAddress?: string;
   to: string;
   subject: string;
   date: string;
@@ -236,7 +239,7 @@ export function computeSortAndDraft(
   intakeMetadata: IntakeMetadata | null,
   inReplyTo: string | null,
   references: string[],
-  fromAddress: string,
+  replyAddress: string,
   fromDisplay: string,
   subject: string,
 ): SortAndDraftResult {
@@ -252,7 +255,7 @@ export function computeSortAndDraft(
   });
 
   const draftDecision = decideDraft(sortResult.category, {
-    fromAddress,
+    fromAddress: replyAddress,
     from: fromDisplay,
     subject,
   });
@@ -384,6 +387,7 @@ async function ingestMessage(
     profileKey: profile.key,
     from: msg.from,
     fromAddress: msg.fromAddress,
+    replyAddress: msg.replyAddress,
     to: msg.to,
     subject: msg.subject,
     date: msg.date,
@@ -421,6 +425,7 @@ async function ingestMessage(
       profileKey: profile.key,
       from: msg.from,
       fromAddress: msg.fromAddress,
+      replyAddress: msg.replyAddress,
       to: msg.to,
       subject: msg.subject,
       date: msg.date,
@@ -553,7 +558,7 @@ async function ingestMessage(
       storeIntake?.intakeMetadata ?? null,
       msg.inReplyTo,
       msg.references,
-      msg.fromAddress,
+      msg.replyAddress,
       msg.from,
       msg.subject,
     );
@@ -1353,12 +1358,14 @@ const plugin = definePlugin({
 
       const thread = (await ctx.state.get({ scopeKind: "issue", scopeId: issueId, namespace: STATE_NS, stateKey: "thread" })) as ThreadRecord | null;
       if (!thread) throw configError("No inbound email thread is linked to this issue.");
-      if (!thread.fromAddress) throw configError("Inbound email has no safe reply address.");
+      const replyAddress = thread.replyAddress || thread.fromAddress;
+      if (!replyAddress) throw configError("Inbound email has no safe reply address.");
 
       const subject = typeof params?.subject === "string" ? params.subject.trim() : "";
       const text = typeof params?.text === "string" ? params.text.trim() : "";
       if (!subject) throw configError("Reply subject is required.");
       if (subject.length > 998) throw configError("Reply subject is too long.");
+      if (/[\r\n]/.test(subject)) throw configError("Reply subject must be a single line.");
       if (!text) throw configError("Reply body is required.");
       if (text.length > 20000) throw configError("Reply body must be 20000 characters or fewer.");
 
@@ -1366,7 +1373,7 @@ const plugin = definePlugin({
       // operator may edit subject/body, but cannot accidentally redirect a
       // customer reply to a different address from this UI.
       const formatted = formatReplyDraftDocument({
-        to: thread.fromAddress,
+        to: replyAddress,
         subject,
         body: text,
       });
@@ -1393,11 +1400,11 @@ const plugin = definePlugin({
         {
           idempotencyKey: `email-reply-review:${document.latestRevisionId}`,
           title: "Reply draft review",
-          summary: `Review the proposed reply to ${thread.fromAddress} before any external send.`,
+          summary: `Review the proposed reply to ${replyAddress} before any external send.`,
           continuationPolicy: "wake_assignee",
           payload: {
             version: 1,
-            prompt: `Approve this reply draft for external send to ${thread.fromAddress}?`,
+            prompt: `Approve this reply draft for external send to ${replyAddress}?`,
             acceptLabel: "Approve reply",
             rejectLabel: "Reject / revise",
             allowDeclineReason: true,
@@ -1426,7 +1433,7 @@ const plugin = definePlugin({
         metadata: {
           action: "reply_draft_saved_for_review",
           actorUserId,
-          recipient: thread.fromAddress,
+          recipient: replyAddress,
           documentId: document.id,
           revisionId: document.latestRevisionId,
           revisionNumber: document.latestRevisionNumber,
@@ -1436,7 +1443,7 @@ const plugin = definePlugin({
 
       return {
         ok: true,
-        recipient: thread.fromAddress,
+        recipient: replyAddress,
         documentId: document.id,
         revisionId: document.latestRevisionId,
         revisionNumber: document.latestRevisionNumber,
@@ -1475,7 +1482,12 @@ const plugin = definePlugin({
       const text = draft.text;
       if (!text) throw configError("The persisted reply draft is empty.");
 
-      const to = draft.to || thread.fromAddress || thread.from;
+      const replyAddress = thread.replyAddress || thread.fromAddress;
+      if (!replyAddress) throw configError("Inbound email has no safe reply address.");
+      const to = (draft.to || replyAddress).trim().toLowerCase();
+      if (to !== replyAddress.trim().toLowerCase()) {
+        throw configError("Persisted reply recipient does not match the inbound Reply-To/From address. Refusing to send.");
+      }
       const subject = draft.subject || thread.subject;
       const profiles = buildProfiles(config);
       const profile = profiles.find((candidate) => candidate.key === thread.profileKey);
