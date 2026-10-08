@@ -208,8 +208,23 @@ function buildDraftCandidate(
  * headers followed by a blank line and the draft text, matching the format
  * expected by parseReplyDraft() in worker.ts.
  */
+export function formatReplyDraftDocument(input: {
+  to: string;
+  subject: string;
+  body: string;
+}): string {
+  const to = input.to.trim();
+  const subject = input.subject.trim();
+  const body = input.body.trim();
+  return `To: ${to}\nSubject: ${subject}\n\n${body}`;
+}
+
 export function formatDraftDocument(candidate: DraftCandidate): string {
-  return `To: ${candidate.to}\nSubject: ${candidate.subject}\n\n${candidate.body}`;
+  return formatReplyDraftDocument({
+    to: candidate.to,
+    subject: candidate.subject,
+    body: candidate.body,
+  });
 }
 
 /**
