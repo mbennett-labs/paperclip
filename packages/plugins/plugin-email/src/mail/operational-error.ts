@@ -38,7 +38,7 @@ export function summarizeOperationalError(
 }
 
 function compact(value: string): string {
-  return value.replace(/[\\r\\n\\t]+/g, " ").replace(/\\s+/g, " ").trim().slice(0, 500);
+  return value.replace(/[\r\n\t]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 500);
 }
 
 function redactSensitive(value: string, sensitiveValues: string[]): string {
