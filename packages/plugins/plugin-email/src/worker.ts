@@ -102,6 +102,8 @@ import {
   type MailboxProfileHostConfig,
   type ResolvedMailboxProfile,
 } from "./mail/mailbox-profiles.js";
+import { summarizeOperationalError } from "./mail/operational-error.js";
+import { probeMailboxConnectivity } from "./mail/connectivity.js";
 
 type EmailPluginConfig = MailboxProfileHostConfig & {
   scheduledPollingEnabled?: boolean;
@@ -174,9 +176,8 @@ type IntakeEvidence = {
   ingestedAt: string;
 };
 
-function summarizeError(error: unknown): string {
-  if (error instanceof Error) return error.message;
-  return String(error);
+function summarizeError(error: unknown, sensitiveValues: string[] = []): string {
+  return summarizeOperationalError(error, sensitiveValues);
 }
 
 function isValidIntakeDate(s: string): boolean {
@@ -1210,6 +1211,42 @@ const plugin = definePlugin({
       return { ok: true, review: reviewRecord, totalReviews: existingKeys.length };
     });
 
+    ctx.actions.register("probe-mailbox", async (params) => {
+      const companyId = params?.companyId as string;
+      if (!companyId) throw configError("probe-mailbox requires companyId.");
+      const profileKey = typeof params?.profileKey === "string" ? params.profileKey.trim() : "";
+      if (!profileKey) throw configError("probe-mailbox requires profileKey.");
+
+      const config = (await ctx.config.get(companyId)) as EmailPluginConfig;
+      if (config?.enabled === false) throw configError("Connector is disabled for this company.");
+      const profile = buildProfiles(config).find((candidate) => candidate.key === profileKey);
+      if (!profile) throw configError("Mailbox profile " + profileKey + " was not found.");
+      if (profile.operationalStatus !== "active") {
+        throw configError("Mailbox profile " + profileKey + " is " + profile.operationalStatus + "; only active mailboxes can be probed.");
+      }
+
+      const password = await resolvePassword(ctx, profile, companyId);
+      const result = await probeMailboxConnectivity(profile, password);
+      await ctx.activity.log({
+        companyId,
+        message: "Mailbox connectivity probe: " + profile.key + " - IMAP " + (result.imap.ok ? "ok" : "failed") + ", SMTP " + (result.smtp.ok ? "ok" : "failed"),
+        metadata: {
+          action: "probe-mailbox",
+          profileKey: profile.key,
+          username: profile.username,
+          imap: { host: profile.imapHost, port: profile.imapPort, ok: result.imap.ok, durationMs: result.imap.durationMs, error: result.imap.error ?? null },
+          smtp: { host: profile.smtpHost, port: profile.smtpPort, ok: result.smtp.ok, durationMs: result.smtp.durationMs, error: result.smtp.error ?? null },
+        },
+      });
+      return {
+        ok: result.ok,
+        profileKey: profile.key,
+        username: profile.username,
+        imap: result.imap,
+        smtp: result.smtp,
+      };
+    });
+
     ctx.actions.register("poll-now", async (params) => {
       const companyId = params?.companyId as string;
       if (companyId) {
@@ -1474,7 +1511,7 @@ const plugin = definePlugin({
         ok: true,
         warnings: [
           ...warnings,
-          `Configuration valid. ${profiles.length} mailbox profile(s): ${activeCount} active, ${standbyCount} standby, ${reservedCount} reserved. Live IMAP/SMTP verification runs only for active mailboxes.`,
+          `Configuration valid. ${profiles.length} mailbox profile(s): ${activeCount} active, ${standbyCount} standby, ${reservedCount} reserved. This validates structure and secret references only; use Mailbox Connections for live IMAP/SMTP verification.`,
         ],
       };
     } catch (err) {
