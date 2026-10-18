@@ -278,6 +278,25 @@ Paperclip is a full control plane, not a wrapper. Before you build any of this y
 
 <br/>
 
+## QSL Operator Login (Existing Deployment)
+
+This is the sign-in guide for the existing QSL Paperclip deployment. It is separate from the local development Quickstart below.
+
+**Connect to the QSL Tailscale network before opening these links.** The deployment is private and is not reachable from the public internet.
+
+| Destination | URL |
+|---|---|
+| Paperclip sign-in | [https://srv1935597.taild11ef6.ts.net/](https://srv1935597.taild11ef6.ts.net/) |
+| QSL Revenue Operations dashboard | [https://srv1935597.taild11ef6.ts.net/QSL/dashboard](https://srv1935597.taild11ef6.ts.net/QSL/dashboard) |
+| Agent Market Operations Board Desk | [https://srv1935597.taild11ef6.ts.net/AGE/board-desk](https://srv1935597.taild11ef6.ts.net/AGE/board-desk) |
+
+1. Connect Tailscale to the QSL tailnet.
+2. Open the sign-in link and use your existing Paperclip account.
+3. After signing in, use the company selector in the upper-left to switch between **QSL Revenue Operations** and **Agent Market Operations**.
+4. Use the dashboard or Board Desk links above for the corresponding workspace.
+
+Account sign-up is disabled. Use an account already provisioned for you. If the hostname does not load, check Tailscale connectivity first. Do not use the local development address below to reach the hosted instance.
+
 ## Quickstart
 
 Open source. Self-hosted. No Paperclip account required.
@@ -305,7 +324,7 @@ pnpm install
 pnpm dev
 ```
 
-This starts the API server at `http://localhost:3100`. An embedded PostgreSQL database is created automatically — no setup required.
+This starts Paperclip locally at `http://localhost:3100` for development on this computer. It is not the hosted QSL sign-in address. An embedded PostgreSQL database is created automatically — no setup required. For the hosted QSL instance, use [QSL Operator Login](#qsl-operator-login-existing-deployment).
 
 > **Requirements:** Node.js 20+, pnpm 9.15+
 
